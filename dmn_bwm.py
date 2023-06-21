@@ -34,6 +34,8 @@ from matplotlib.gridspec import GridSpec
 from statsmodels.stats.multitest import multipletests
 from matplotlib.lines import Line2D
 
+import warnings
+warnings.filterwarnings("ignore")
 
 '''
 script to process the BWM dataset for manifold analysis,
@@ -41,14 +43,14 @@ saving intermediate results (PETHs), computing
 metrics and plotting them (plot_all, also supp figures)
 
 A split is a variable, such as stim, where the trials are
-disected by it - e.g. left stim side and right stim side
+averaged within a certain time window
 
 To compute all from scratch, including data download, run:
 
 ##################
-for split in ['choice', 'stim','fback','block']:
-    get_all_d_vars(split)  # computes PETHs, distance sums
-    d_var_stacked(split)  # combine results across insertions
+for split in align:
+    get_all_PETHs(split)  # computes PETHs, squared firing rates
+    stack(split)  # combine results across insertions
     
 plot_all()  # plot main figure    
 ##################    
@@ -383,7 +385,7 @@ def check_for_load_errors(splits):
     # re-run with missing pids
     for split in g:
         h = [fn2_eid_probe_pid(u) for u in g[split]]
-        get_all_PETH(split, eids_plus=h)
+        get_all_PETHs(split, eids_plus=h)
 
 
     print('POST CORRECTION')
@@ -412,8 +414,10 @@ def stack(split, min_reg=20, mapping='Beryl'):
     
     # pool data for illustrative PCA
     ids = []
+    xyz = []
     ws = []
     base = []
+    
 
     # group results across insertions
     for s in ss:
@@ -424,10 +428,12 @@ def stack(split, min_reg=20, mapping='Beryl'):
         ids.append(D_['ids'])
         ws.append(D_['ws'])
         base.append(D_['base'])
+        xyz.append(D_['xyz'])
 
     ids = np.concatenate(ids)
     ws = np.concatenate(ws, axis=0)
     base = np.concatenate(base, axis=0)
+    xyz = np.concatenate(xyz)
 
     acs = np.array(br.id2acronym(ids, mapping=mapping))
 
@@ -435,9 +441,11 @@ def stack(split, min_reg=20, mapping='Beryl'):
     goodcells = ~np.bitwise_or.reduce([acs == reg for
                                        reg in ['void', 'root']])
 
+    ids = ids[goodcells]
     acs = acs[goodcells]
     ws = ws[goodcells] 
     base = base[goodcells]
+    xyz = xyz[goodcells]
     
     print('computing grand average metrics ...')
     ncells, nt = ws.shape
@@ -449,6 +457,9 @@ def stack(split, min_reg=20, mapping='Beryl'):
     ga['v0'] = np.std(ws, axis=0) / (ncells**0.5)
     ga['vs'] = np.std(base, axis=0) / (ncells**0.5)
 
+    ga['xyz'] = xyz
+    ga['Beryl'] = acs
+    ga['ids'] = ids
     ga['nclus'] = ncells
 
     # first is window, second is base window
@@ -457,10 +468,18 @@ def stack(split, min_reg=20, mapping='Beryl'):
                                             axis=1).T).T
     ga['pcs'] = wsc
     
+    # temporal dim reduction
+    pca = PCA(n_components=2)
+    ga['pcst'] = pca.fit_transform(ws)
+    ga['pcstb'] = pca.fit_transform(base)
+    
     # differences of window and base, pooling all cells
-
     ga['d_euc'] = np.mean(ws, axis=0)**0.5                    
-    ga['d_eucb'] = np.mean(base, axis=0)**0.5                           
+    ga['d_eucb'] = np.mean(base, axis=0)**0.5
+    
+    # per cell amplitudes
+    ga['amp'] = np.max(ws, axis=1)
+    ga['ampb'] = np.max(base, axis=1)          
 
     np.save(Path(pth_res, f'{split}_grand_averages.npy'), ga,
             allow_pickle=True)
@@ -725,7 +744,7 @@ def plot_all(splits=None, curve='euc', show_tra=True, axs=None,
             else:
                 if alone:
                     axs.append(fig.add_subplot(gs[row, :3],
-                                               projection='3d'))            
+                               projection='3d'))            
 
             npcs, allnobs = dd['pcs'].shape
             lenw = len(dd['d_euc'])  # window length
@@ -931,6 +950,12 @@ def get_cmap(split):
                      "#E8AC22","#DA4727"],
           'fback': ["#ffffff","#F1D3D0","#F5968A",
                     "#E34335","#A23535"],
+          'fback1': ["#ffffff","#F1D3D0","#F5968A",
+                    "#E34335","#A23535"],                    
+          'fback0': ["#ffffff","#F1D3D0","#F5968A",
+                    "#E34335","#A23535"],                    
+          'end': ["#ffffff","#D0CDE4","#998DC3",
+                    "#6159A6","#42328E"],         
           'block': ["#ffffff","#D0CDE4","#998DC3",
                     "#6159A6","#42328E"]}
 
@@ -940,16 +965,12 @@ def get_cmap(split):
     return LinearSegmentedColormap.from_list("mycmap", dc[split])
    
     
-def plot_swanson_supp(splits = None, curve = 'euc',
+def plot_swanson_supp(splits = align, curve = 'eucb',
                       show_legend = False, bina=False):
  
     '''
     swanson maps for maxes
     '''
-    
-    if splits is None:
-        splits0 = ['stim', 'choice', 'fback','block']
-        splits = [x+'_restr' for x in splits0]
     
     nrows = 2  # one for amplitudes, one for latencies
     ncols = len(splits)  # one per variable
@@ -965,13 +986,21 @@ def plot_swanson_supp(splits = None, curve = 'euc',
         plot_swanson_vector(annotate=True, ax=ax0)
         ax0.axis('off')
    
-    '''
-    max dist_split onto swanson flat maps
-    (only regs with p < sigl)
-    '''
-    
     k = 0  # panel counter
     c = 0  # column counter
+
+
+    # normalize across variable values
+    all_amps = []
+    for split in splits:
+
+        d = np.load(Path(pth_res, f'{split}.npy'),
+                    allow_pickle=True).flat[0]    
+        all_amps.append([d[x][f'amp_{curve}'] for x in d])
+        
+    aa = [item for sublist in all_amps for item in sublist]
+    vmax0 = np.max(aa)
+    vmin0 = np.min(aa)
     
     sws = []
     for split in splits:
@@ -980,8 +1009,7 @@ def plot_swanson_supp(splits = None, curve = 'euc',
                     allow_pickle=True).flat[0]
                     
         # get significant regions only
-        acronyms = [reg for reg in d
-                if d[reg][f'p_{curve}'] < sigl]
+        acronyms = list(d.keys())
 
 
         # plot amplitudes
@@ -990,16 +1018,20 @@ def plot_swanson_supp(splits = None, curve = 'euc',
             amps = np.array([1 for x in acronyms])
         
         else:
-            amps = np.array([d[x][f'amp_{curve}_can'] for x in acronyms])
+            amps = np.array([d[x][f'amp_{curve}'] for x in acronyms])
             
-        plot_swanson_vector(np.array(acronyms), np.array(amps), 
+        plot_swanson_vector(np.array(acronyms), np.array(amps)/vmax0, 
                             cmap=get_cmap(split), 
                             ax=axs[0,c], br=br, 
                             orientation='portrait',
-                            linewidth=0.1)
+                            linewidth=0.1,
+                            vmin=vmin0,
+                            vmax=vmax0,
+                            annotate=True)
                             
         # add colorbar
-        clevels = (np.nanmin(amps), np.nanmax(amps))
+        #clevels = (np.nanmin(amps), np.nanmax(amps))
+        clevels = vmin0, vmax0
         norm = mpl.colors.Normalize(vmin=clevels[0], 
                                     vmax=clevels[1])
                                     
@@ -1010,7 +1042,7 @@ def plot_swanson_supp(splits = None, curve = 'euc',
     
         cbar.set_label('effect size [spikes/second]')
 
-                            
+        axs[0,c].set_title(f'{split}')                    
         axs[0,c].axis('off')
         put_panel_label(axs[0,c], k)
         k += 1
@@ -1222,8 +1254,30 @@ def plot_single_cell(split, pid, recomp = True, curve = 'base'):
     
     
 
+def variance_analysis(split):
 
+    '''
+    show activity distribution; one dot per cell
+    2 dims being pca on PETH; 
+    colored by region; by insertion; 
+    '''
+    
+    ga = np.load(Path(pth_res, f'{split}_grand_averages.npy'),
+                 allow_pickle=True).flat[0]    
 
+    fig, ax = plt.subplots()
+    _,pa = get_allen_info()
+    cols = [pa[reg] for reg in ga['Beryl']]
+    
+
+    #x, y = ga[f'pcst{base}'][:, 0], ga[f'pcst{base}'][:, 1]
+    # get amplitudes 
+    x, y = ga['amp'], ga['ampb']
+    
+    ax.scatter(x, y, marker='o', c=cols, s=2)   
+    plt.xlabel('amp')
+    plt.ylabel('ampb')
+    plt.title(f'each point a cell, x,y is amps of PETH**2; {split}')
 
 
 
