@@ -12,7 +12,9 @@ from scipy import signal
 import pandas as pd
 import numpy as np
 from collections import Counter
-from sklearn.decomposition import PCA
+from sklearn.decomposition import PCA, FastICA
+from sklearn.manifold import TSNE
+from scipy.cluster.hierarchy import dendrogram, linkage
 import gc
 from pathlib import Path
 import random
@@ -23,6 +25,7 @@ import math
 import string
 import os
 from scipy.stats import spearmanr
+import umap
 
 from matplotlib.axis import Axis
 import matplotlib.pyplot as plt
@@ -88,14 +91,20 @@ sigl = 0.05  # significance level (for stacking, plotting, fdr)
 
 # trial split types, with string to define alignment
 align = {'stim': 'stimOn_times',
+         'stimL': 'stimOn_times',
+         'stimR': 'stimOn_times',
          'choice': 'firstMovement_times',
+         'choiceL': 'firstMovement_times',
+         'choiceR': 'firstMovement_times',
          'fback1': 'feedback_times',
          'fback0': 'feedback_times',
          'block': 'stimOn_times',
+         'blockL': 'stimOn_times',
+         'blockR': 'stimOn_times',
          'end': 'intervals_1'}
 
 
-def pre_post(split, can=False):
+def pre_post(split, con=False):
     '''
     [pre_time, post_time] relative to alignment event
     split could be contr or restr variant, then
@@ -112,14 +121,17 @@ def pre_post(split, can=False):
                  'end': [0,0.5]}
 
     # canonical windows
-    pre_post_can =  {'stim': [0, 0.1],
-                     'choice': [0.1, 0],
-                     'fback1': [0, 0.2],
-                     'fback0': [0, 0.7],
-                     'block': [0.4, -0.1],
-                     'end': [0,0.5]}
+    pre_post_con =  {'stimL': [0, 0.15],
+                    'stimR':  [0, 0.15],
+                    'blockL':  [0.4, -0.1],
+                    'blockR': [0.4, -0.1],
+                    'choiceL': [0.15, 0],
+                    'choiceR': [0.15, 0],
+                    'fback1': [0, 0.3],
+                    'fback0': [0, 0.3],
+                    'end': [0, 0.3]}
 
-    pp = pre_post_can if can else pre_post0
+    pp = pre_post_con if con else pre_post0
 
     if '_' in split:
         return pp[split.split('_')[0]]
@@ -309,6 +321,79 @@ def get_PETHs(split, pid):
     return D
 
 
+def concat_PETHs(pid):
+
+    '''
+    for each cell concat all possible PETHs
+    '''
+    
+    eid, probe = one.pid2eid(pid)
+
+    # load in spikes
+    spikes, clusters = load_good_units(one, pid)        
+    assert len(
+            spikes['times']) == len(
+            spikes['clusters']), 'spikes != clusters'
+            
+    D = {}
+    D['ids'] = np.array(clusters['atlas_id'])
+    D['xyz'] = np.array(clusters[['x','y','z']])
+
+    # Load in trials data and mask bad trials (False if bad)
+    trials, mask = load_trials_and_mask(one, eid)     
+        
+    # define align, trial type, window length   
+    tts = {
+        'stimL': ['stimOn_times', ~np.isnan(trials[f'contrastLeft']), [0, 0.15]],
+        'stimR': ['stimOn_times', ~np.isnan(trials[f'contrastRight']), [0, 0.15]],
+        'blockL': ['stimOn_times', trials['probabilityLeft'] == 0.8, [0.4, -0.1]],
+        'blockR': ['stimOn_times', trials['probabilityLeft'] == 0.2, [0.4, -0.1]],
+        'choiceL': ['firstMovement_times', trials['choice'] == 1, [0.15, 0]],
+        'choiceR': ['firstMovement_times', trials['choice'] == -1, [0.15, 0]],
+        'fback1': ['feedback_times', trials['feedbackType'] == 1, [0, 0.3]],
+        'fback0': ['feedback_times', trials['feedbackType'] == -1, [0, 0.3]],
+        'end': ['intervals_1', np.full(len(trials['choice']), True), [0, 0.3]]}
+
+
+    tls = {}  # trial numbers for each type
+    ws = []  # list of binned data
+    
+    for tt in tts:
+
+        event = trials[tts[tt][0]][np.bitwise_and.reduce([mask, tts[tt][1]])]
+        tls[tt] = len(event)
+
+        # bin and cut into trials
+        # overlapping time bins, bin size = b_size, stride = sts
+        bis = []
+        st = int(b_size // sts)
+
+        for ts in range(st):
+
+            bi, _ = bin_spikes2D(
+                spikes['times'],
+                clusters['cluster_id'][spikes['clusters']],
+                clusters['cluster_id'],
+                np.array(event) + ts * sts,
+                tts[tt][-1][0], tts[tt][-1][1],
+                b_size)
+            bis.append(bi)
+
+        ntr, nn, nbin = bi.shape
+        ar = np.zeros((ntr, nn, st * nbin))
+
+        for ts in range(st):
+            ar[:, :, ts::st] = bis[ts]
+
+        # average squared firing rates across trials
+        ws.append(np.mean(ar**2, axis=0))        
+
+    D['tls'] = tls
+    D['trial_names'] = list(tts.keys())
+    D['ws'] = ws  
+    return D
+
+
 '''
 ###
 ### bulk processing
@@ -341,7 +426,11 @@ def get_all_PETHs(split, eids_plus=None):
 
         time0 = time.perf_counter()
         try:
-            D = get_PETHs(split, pid)
+        
+            if split == 'concat':
+                D = concat_PETHs(pid)    
+            else:
+                D = get_PETHs(split, pid)
                             
             eid_probe = eid + '_' + probe
             np.save(Path(pth, f'{eid_probe}.npy'), D, 
@@ -396,7 +485,7 @@ def check_for_load_errors(splits):
 
 
 
-def stack(split, min_reg=20, mapping='Beryl'):
+def stack(split, min_reg=20, mapping='Beryl', layers=False, per_cell=False):
 
     time0 = time.perf_counter()
 
@@ -417,7 +506,9 @@ def stack(split, min_reg=20, mapping='Beryl'):
     xyz = []
     ws = []
     base = []
-    
+ 
+    if layers:
+        mapping = 'Allen'        
 
     # group results across insertions
     for s in ss:
@@ -446,6 +537,9 @@ def stack(split, min_reg=20, mapping='Beryl'):
     ws = ws[goodcells] 
     base = base[goodcells]
     xyz = xyz[goodcells]
+
+    if per_cell:
+        return xyz, base
     
     print('computing grand average metrics ...')
     ncells, nt = ws.shape
@@ -479,7 +573,10 @@ def stack(split, min_reg=20, mapping='Beryl'):
     
     # per cell amplitudes
     ga['amp'] = np.max(ws, axis=1)
-    ga['ampb'] = np.max(base, axis=1)          
+    ga['ampb'] = np.max(base, axis=1)
+    
+    ga['sum'] = np.sum(ws, axis=1)
+    ga['sumb'] = np.sum(base, axis=1)              
 
     np.save(Path(pth_res, f'{split}_grand_averages.npy'), ga,
             allow_pickle=True)
@@ -487,10 +584,37 @@ def stack(split, min_reg=20, mapping='Beryl'):
     print('computing regional metrics ...')  
     
     regs0 = Counter(acs)
-    regs = {reg: regs0[reg] for reg in regs0 if regs0[reg] > min_reg}
-    print(len(regs), 'regions')
 
+    if layers:
 
+        # goup by last number
+        regs = {reg: regs0[reg] for reg in regs0 
+                if reg[-1].isdigit()}
+        
+        for reg in regs:        
+            acs[acs == reg] = reg[-1]       
+        
+        # extra class of thalamic (and hypothalamic) regions 
+        names = dict(zip(regs0,[get_name(reg) for reg in regs0]))
+        thal = {x:names[x] for x in names if 'thala' in names[x]}
+                                          
+        for reg in thal: 
+            acs[acs == reg] = 'thal'       
+        
+        mask = np.array([(x.isdigit() or x == 'thal') for x in acs])
+        acs[~mask] = '0' 
+        regsl = Counter(acs)
+        regs = {reg:regsl[reg] for reg in regsl if regsl[reg] > min_reg}
+        print('layers')
+        print(regs)
+        
+                 
+    else:
+        regs = {reg: regs0[reg] for reg in regs0 
+                if regs0[reg] > min_reg}
+                
+        print(len(regs), 'regions')    
+    
     r = {}
     for reg in regs:
         res = {}
@@ -508,10 +632,6 @@ def stack(split, min_reg=20, mapping='Beryl'):
         res['pcs'] = wsc
         res['nclus'] = regs[reg]
 
-        '''
-        euc
-        '''
-        
         v = datb.mean(axis=1)
         res['d_euc'] = np.mean(dat, axis=0)**0.5
         res['d_eucb'] = np.mean(datb, axis=0)**0.5 
@@ -520,13 +640,19 @@ def stack(split, min_reg=20, mapping='Beryl'):
         res['amp_euc'] = max(res['d_euc'])
         res['amp_eucb'] = max(res['d_eucb'])
         
-        # latency, must be significant
-        loc = np.where(res['d_euc'] > 0.7 * res['amp_euc'])[0]
+        # sum
+        res['sum_euc'] = np.sum(res['d_euc'])
+        res['sum_eucb'] = np.sum(res['d_eucb'])        
+        
+        # latency
+        loc = np.where((res['d_euc'] - min(res['d_euc'])) 
+                        > 0.7 * (res['amp_euc'] - min(res['d_euc'])))[0]
         res['lat_euc'] = np.linspace(-pre_post(split)[0],
                                      pre_post(split)[1],
                                      len(res['d_euc']))[loc[0]]
                                      
-        loc = np.where(res['d_eucb'] > 0.7 * res['amp_eucb'])[0]
+        loc = np.where((res['d_eucb'] - min(res['d_eucb'])) 
+                        > 0.7 * (res['amp_eucb'] - min(res['d_eucb'])))[0]
         res['lat_eucb'] = np.linspace(-pre_post(split)[0],
                                      pre_post(split)[1],
                                      len(res['d_eucb']))[loc[0]]
@@ -541,6 +667,57 @@ def stack(split, min_reg=20, mapping='Beryl'):
     print('total time:', np.round(time1 - time0, 0), 'sec')
 
 
+def stack_concat():
+
+    split = 'concat'
+    pth = Path(one.cache_dir, 'dmn', split)
+    ss = os.listdir(pth)  # get insertions
+    print(f'combining {len(ss)} insertions for split {split}') 
+
+    # pool data
+    ids = []
+    xyz = []
+    ws = []   
+
+    # group results across insertions
+    for s in ss:
+                   
+        D_ = np.load(Path(pth, s),
+                     allow_pickle=True).flat[0]
+
+        ws.append(np.concatenate(D_['ws'],axis=1))
+        
+        ids.append(D_['ids'])
+        xyz.append(D_['xyz'])
+        
+    r = {}  
+    r['len'] = dict(zip(D_['trial_names'],
+                        [x.shape[1] for x in D_['ws']]))  
+    r['ids'] = np.concatenate(ids)
+    r['xyz'] = np.concatenate(xyz)       
+    cs = np.concatenate(ws, axis=0)
+    
+    # remove cells with nan entries
+    goodcells = [~np.isnan(k).any() for k in cs]
+
+    r['ids'] = r['ids'][goodcells]
+    r['xyz'] = r['xyz'][goodcells]    
+    cs = cs[goodcells] 
+    
+    r['mean'] = cs.mean(axis=0) 
+    r['std'] = cs.std(axis=0)
+
+    # various dim reduction to 2 dims
+    ncomp = 2
+    r['umap'] = umap.UMAP(n_components=ncomp).fit_transform(cs)
+    r['tSNE'] = TSNE(n_components=ncomp).fit_transform(cs)
+    r['PCA'] = PCA(n_components=ncomp).fit_transform(cs)
+    r['ICA'] = FastICA(n_components=ncomp).fit_transform(cs) 
+
+    np.save(Path(pth_res, f'{split}.npy'),
+            r, allow_pickle=True)            
+        
+
 '''
 #####################################################
 ### plotting
@@ -548,52 +725,67 @@ def stack(split, min_reg=20, mapping='Beryl'):
 '''
 
 
-def get_allen_info():
+def get_allen_info(rerun=False):
     '''
     Function to load Allen atlas info, like region colors
     '''
-
-    p = (Path(ibllib.__file__).parent /
-         'atlas/allen_structure_tree.csv')
-
-    dfa = pd.read_csv(p)
-
-    # replace yellow by brown #767a3a    
-    cosmos = []
-    cht = []
     
-    for i in range(len(dfa)):
-        try:
-            ind = dfa.iloc[i]['structure_id_path'].split('/')[4]
-            cr = br.id2acronym(ind, mapping='Cosmos')[0]
-            cosmos.append(cr)
-            if cr == 'CB':
-                cht.append('767A3A')
-            else:
-                cht.append(dfa.iloc[i]['color_hex_triplet'])    
-                    
-        except:
-            cosmos.append('void')
-            cht.append('FFFFFF')
-            
-
-    dfa['Cosmos'] = cosmos
-    dfa['color_hex_triplet2'] = cht
+    pth_dmn = Path(one.cache_dir, 'dmn', 'alleninfo.npy')
     
-    # get colors per acronym and transfomr into RGB
-    dfa['color_hex_triplet2'] = dfa['color_hex_triplet2'].fillna('FFFFFF')
-    dfa['color_hex_triplet2'] = dfa['color_hex_triplet2'
-                                   ].replace('19399', '19399a')
-    dfa['color_hex_triplet2'] = dfa['color_hex_triplet2'].replace(
-                                                     '0', 'FFFFFF')
-    dfa['color_hex_triplet2'] = '#' + dfa['color_hex_triplet2'].astype(str)
-    dfa['color_hex_triplet2'] = dfa['color_hex_triplet2'
-                                   ].apply(lambda x:
-                                           mpl.colors.to_rgba(x))
+    if (not pth_dmn.is_file() or rerun):
+        p = (Path(ibllib.__file__).parent /
+             'atlas/allen_structure_tree.csv')
 
-    palette = dict(zip(dfa.acronym, dfa.color_hex_triplet2))
+        dfa = pd.read_csv(p)
 
-    return dfa, palette
+        # replace yellow by brown #767a3a    
+        cosmos = []
+        cht = []
+        
+        for i in range(len(dfa)):
+            try:
+                ind = dfa.iloc[i]['structure_id_path'].split('/')[4]
+                cr = br.id2acronym(ind, mapping='Cosmos')[0]
+                cosmos.append(cr)
+                if cr == 'CB':
+                    cht.append('767A3A')
+                else:
+                    cht.append(dfa.iloc[i]['color_hex_triplet'])    
+                        
+            except:
+                cosmos.append('void')
+                cht.append('FFFFFF')
+                
+
+        dfa['Cosmos'] = cosmos
+        dfa['color_hex_triplet2'] = cht
+        
+        # get colors per acronym and transfomr into RGB
+        dfa['color_hex_triplet2'] = dfa['color_hex_triplet2'].fillna('FFFFFF')
+        dfa['color_hex_triplet2'] = dfa['color_hex_triplet2'
+                                       ].replace('19399', '19399a')
+        dfa['color_hex_triplet2'] = dfa['color_hex_triplet2'].replace(
+                                                         '0', 'FFFFFF')
+        dfa['color_hex_triplet2'] = '#' + dfa['color_hex_triplet2'].astype(str)
+        dfa['color_hex_triplet2'] = dfa['color_hex_triplet2'
+                                       ].apply(lambda x:
+                                               mpl.colors.to_rgba(x))
+
+        palette = dict(zip(dfa.acronym, dfa.color_hex_triplet2))
+
+        #add layer colors
+        bc = ['b', 'g', 'r', 'c', 'm', 'y', 'k', 'w']
+        for i in range(6):
+            palette[str(i)] = bc[i]
+        
+        palette['thal'] = 'k'    
+        r = {}
+        r['dfa'] = dfa
+        r['palette'] = palette    
+        np.save(pth_dmn, r, allow_pickle=True)   
+
+    r = np.load(pth_dmn, allow_pickle=True).flat[0]
+    return r['dfa'], r['palette']  
 
 
 def put_panel_label(ax, k):
@@ -639,16 +831,9 @@ def plot_all(splits=None, curve='euc', show_tra=True, axs=None,
         
     k = 0  # panel counter
 
-
-    if not show_tra:
-        fsize = 12 # font size
-        dsize = 13  # diamond marker size
-        lw = 1  # linewidth        
-
-    else:
-        fsize = 12  # font size
-        dsize = 13  # diamond marker size
-        lw = 1  # linewidth       
+    fsize = 12  # font size
+    dsize = 13  # diamond marker size
+    lw = 1  # linewidth       
 
     dfa, palette = get_allen_info()
 
@@ -679,19 +864,13 @@ def plot_all(splits=None, curve='euc', show_tra=True, axs=None,
 
     #  get Cosmos parent region for yellow color adjustment
     regsa = np.unique(np.concatenate(regsa))
-    cosregs_ = [
-        dfa[dfa['id'] == int(dfa[dfa['acronym'] == reg][
-            'structure_id_path'].values[0].split('/')[4])][
-            'acronym'].values[0] for reg in regsa]
-
-    cosregs = dict(zip(regsa, cosregs_))
 
     '''
     example regions per split for embedded space and line plots
     
     first in list is used for pca illustration
     '''
-
+    
     exs0 = {'stim': ['LGd','VISp', 'PRNc','VISam','IRN', 'VISl',
                      'VISpm', 'VM', 'MS','VISli'],
 
@@ -709,14 +888,19 @@ def plot_all(splits=None, curve='euc', show_tra=True, axs=None,
     exs1 = ['LGd','VISp', 'PRNc','VISam','IRN', 'VISl',
             'VISpm', 'VM', 'MS','VISli']
 
-
     # use same example regions for variant splits
     exs = exs0.copy()
     for split in splits:
         for split0 in exs0:
             if split0 in split:
                 exs[split] = exs0[split0]
-
+                
+                
+    if len(Counter(regsa)) < 10:
+        print(f'{len(Counter(regsa))} regs detected, show all')  
+        exs1 = list(Counter(regsa))
+        for split in splits:
+            exs[split] = exs1
 
     if show_tra:
 
@@ -1269,15 +1453,156 @@ def variance_analysis(split):
     _,pa = get_allen_info()
     cols = [pa[reg] for reg in ga['Beryl']]
     
+    xl, yl  = 'sum' ,'sumb' #'amp', 'ampb'
 
     #x, y = ga[f'pcst{base}'][:, 0], ga[f'pcst{base}'][:, 1]
     # get amplitudes 
-    x, y = ga['amp'], ga['ampb']
+    x, y = ga[xl], ga[yl]
     
+
     ax.scatter(x, y, marker='o', c=cols, s=2)   
-    plt.xlabel('amp')
-    plt.ylabel('ampb')
+    plt.xlabel(xl)
+    plt.ylabel(yl)
     plt.title(f'each point a cell, x,y is amps of PETH**2; {split}')
+
+
+def plot_xyz(split):
+
+    '''
+    3d plot of feature per cell
+    '''
+    
+    xyz, b = stack(split, per_cell=True)
+    ft = np.max(b,axis=1)**3
+    
+    fig = plt.figure()
+    ax = fig.add_subplot(111,projection='3d')
+        
+#    ax.plot(xyz[:,0], xyz[:,1],xyz[:,2], marker='o', 
+#            linestyle='', markersize=ft)
+
+    ax.scatter(xyz[:,0], xyz[:,1],xyz[:,2], marker='o', s = ft)
+
+    ax.set_xlabel('x')
+    ax.set_ylabel('y')
+    ax.set_zlabel('z')
+    ax.set_title(f'{split} max')
+
+
+def plot_dim_reduction(algo='PCA', mapping='Beryl'):
+    '''
+    2 dims being pca on concat PETH; 
+    colored by region
+    '''
+    
+    r = np.load(Path(pth_res, 'concat.npy'),
+                 allow_pickle=True).flat[0]  
+
+    acs = np.array(br.id2acronym(r['ids'], 
+                                 mapping=mapping))
+                                 
+    _,pa = get_allen_info()
+    cols = [pa[reg] for reg in acs]
+
+    fig, ax = plt.subplots()
+    ax.scatter(r[algo][:,0], r[algo][:,1], marker='o', c=cols, s=2)
+    
+    ax.set_xlabel(f'{algo} dim1')
+    ax.set_ylabel(f'{algo} dim2')
+    ax.set_title(f'concat PETHs reduction, colors {mapping}')    
+    
+    
+def plot_ave_PETHs():
+
+    '''
+    average PETHs across cells
+    plot as lines within average trial times
+    '''   
+    evs = {'stimOn_times':'gray', 'firstMovement_times':'cyan',
+           'feedback_times':'orange', 'intervals_1':'purple'}
+           
+    tts = {'stimL': blue_left,
+         'stimR': red_right,
+         'blockL': blue_left,
+         'blockR': red_right,
+         'choiceL': blue_left,
+         'choiceR': red_right,
+         'fback1': 'g',
+         'fback0': 'k',
+         'end': 'brown'}
+            
+    # get average temporal distances between events    
+    pth_dmn = Path(one.cache_dir, 'dmn', 'mean_event_diffs.npy')
+    
+    if not pth_dmn.is_file():      
+
+        eids = np.unique(bwm_query(one)['eid'])
+ 
+        
+        diffs = []
+        for eid in eids:
+            trials, mask = load_trials_and_mask(one, eid)    
+            trials = trials[mask][:-100]
+            diffs.append(np.mean(np.diff(trials[evs]),axis=0))
+        
+        d = {}
+        d['mean'] = np.nanmean(diffs,axis=0) 
+        d['std'] = np.nanstd(diffs,axis=0)
+        d['diffs'] = diffs
+        d['av_tr_times'] = [np.cumsum([0]+ list(x)) for x in d['diffs']]
+
+        d['av_times'] = dict(zip(evs, 
+                             zip(np.cumsum([0]+ list(d['mean'])),
+                                 np.cumsum([0]+ list(d['std'])))))
+        
+        np.save(pth_dmn, d, allow_pickle=True)   
+
+    d = np.load(pth_dmn, allow_pickle=True).flat[0]
+    
+    fig, ax = plt.subplots(figsize=(8.57, 4.8))
+    r = np.load(Path(pth_res, 'concat.npy'),allow_pickle=True).flat[0]
+    
+    # plot trial averages
+    yys = []  # to find maxes for annotation
+    st = 0
+    for tt in r['len']:
+  
+        xx = np.linspace(-pre_post(tt, con=True)[0],
+                         pre_post(tt, con=True)[1],
+                         r['len'][tt]) + d['av_times'][align[tt]][0]
+
+        yy = r['mean'][st: st + r['len'][tt]]
+        yys.append(max(yy))
+
+        st += r['len'][tt]
+
+        ax.plot(xx, yy, label=tt, color=tts[tt])
+        ax.annotate(tt, (xx[-1], yy[-1]), color=tts[tt])
+        
+    
+    for ev in d['av_times']:
+        ax.axvline(x=d['av_times'][ev][0], label=ev,
+                   color=evs[ev], linestyle='-')
+        ax.annotate(ev, (d['av_times'][ev][0], 0.8*max(yys)), 
+                    color=evs[ev], rotation=90, 
+                    textcoords='offset points', xytext=(-15, 0))
+    
+                   
+    d['av_tr_times'] = [np.cumsum([0]+ list(x)) for x in d['diffs']]               
+    for s in d['av_tr_times']:
+        k = 0
+        for t in s:
+            ax.axvline(x=t, color=evs[list(evs)[k]], 
+                       linestyle='-', linewidth=0.01)
+            k +=1            
+    
+    ax.set_xlabel('time [sec]')
+    ax.set_ylabel('trial averaged fr [Hz]')
+    ax.set_title('PETHs averaged across all BWM cells')
+    ax.set_xlim(-0.5,3)
+    fig.tight_layout()
+         
+
 
 
 
