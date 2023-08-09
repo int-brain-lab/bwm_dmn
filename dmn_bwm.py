@@ -14,7 +14,7 @@ import numpy as np
 from collections import Counter
 from sklearn.decomposition import PCA, FastICA
 from sklearn.manifold import TSNE
-from scipy.cluster.hierarchy import dendrogram, linkage
+from scipy.cluster.hierarchy import linkage, fcluster
 import gc
 from pathlib import Path
 import random
@@ -667,7 +667,7 @@ def stack(split, min_reg=20, mapping='Beryl', layers=False, per_cell=False):
     print('total time:', np.round(time1 - time0, 0), 'sec')
 
 
-def stack_concat():
+def stack_concat(get_concat=False):
 
     split = 'concat'
     pth = Path(one.cache_dir, 'dmn', split)
@@ -691,8 +691,8 @@ def stack_concat():
         xyz.append(D_['xyz'])
         
     r = {}  
-    r['len'] = dict(zip(D_['trial_names'],
-                        [x.shape[1] for x in D_['ws']]))  
+
+                        
     r['ids'] = np.concatenate(ids)
     r['xyz'] = np.concatenate(xyz)       
     cs = np.concatenate(ws, axis=0)
@@ -703,18 +703,30 @@ def stack_concat():
     r['ids'] = r['ids'][goodcells]
     r['xyz'] = r['xyz'][goodcells]    
     cs = cs[goodcells] 
+
+    if get_concat:
+        return cs
+    
+    r['len'] = dict(zip(D_['trial_names'],
+                    [x.shape[1] for x in D_['ws']]))
     
     r['mean'] = cs.mean(axis=0) 
     r['std'] = cs.std(axis=0)
 
-    # various dim reduction to 2 dims
+    # hierarchical clustering on PETHs
+    r['linked'] = linkage(cs, 'ward')   
+    
+    # hierarchical clustering on xys dist in histology space
+    r['linked_xyz'] = linkage(r['xyz'], 'ward')
+    
+    # various dim reduction of PETHs to 2 dims
     ncomp = 2
     r['umap'] = umap.UMAP(n_components=ncomp).fit_transform(cs)
     r['tSNE'] = TSNE(n_components=ncomp).fit_transform(cs)
     r['PCA'] = PCA(n_components=ncomp).fit_transform(cs)
     r['ICA'] = FastICA(n_components=ncomp).fit_transform(cs) 
 
-    np.save(Path(pth_res, f'{split}.npy'),
+    np.save(Path(pth_res, 'concat.npy'),
             r, allow_pickle=True)            
         
 
@@ -774,8 +786,8 @@ def get_allen_info(rerun=False):
         palette = dict(zip(dfa.acronym, dfa.color_hex_triplet2))
 
         #add layer colors
-        bc = ['b', 'g', 'r', 'c', 'm', 'y', 'k', 'w']
-        for i in range(6):
+        bc = ['b', 'g', 'r', 'c', 'm', 'y', 'brown', 'pink']
+        for i in range(7):
             palette[str(i)] = bc[i]
         
         palette['thal'] = 'k'    
@@ -1489,7 +1501,7 @@ def plot_xyz(split):
     ax.set_title(f'{split} max')
 
 
-def plot_dim_reduction(algo='PCA', mapping='Beryl'):
+def plot_dim_reduction(algo='umap', mapping='Beryl'):
     '''
     2 dims being pca on concat PETH; 
     colored by region
@@ -1498,20 +1510,94 @@ def plot_dim_reduction(algo='PCA', mapping='Beryl'):
     r = np.load(Path(pth_res, 'concat.npy'),
                  allow_pickle=True).flat[0]  
 
-    acs = np.array(br.id2acronym(r['ids'], 
-                                 mapping=mapping))
-                                 
-    _,pa = get_allen_info()
-    cols = [pa[reg] for reg in acs]
+    if mapping == 'clusters':
+        # use clusters from hierarchical clustering to color
+        nclus = 1000
+        clusters = fcluster(r['linked'], t=nclus, criterion='maxclust')
+        cmap = mpl.cm.get_cmap('Spectral')
+        cols = cmap(clusters/nclus)
+
+
+    elif mapping == 'layers':       
+    
+        acs = np.array(br.id2acronym(r['ids'], 
+                                     mapping='Allen'))
+        
+        regs0 = Counter(acs)
+                                     
+        # get regs with number at and of acronym
+        regs = [reg for reg in regs0 
+                if reg[-1].isdigit()]
+        
+        for reg in regs:        
+            acs[acs == reg] = reg[-1]       
+        
+        # extra class of thalamic (and hypothalamic) regions 
+        names = dict(zip(regs0,[get_name(reg) for reg in regs0]))
+        thal = {x:names[x] for x in names if 'thala' in names[x]}
+                                          
+        for reg in thal: 
+            acs[acs == reg] = 'thal'       
+        
+        mask = np.array([(x.isdigit() or x == 'thal') for x in acs])
+        acs[~mask] = '0'
+        
+        remove_0 = True
+        
+        if remove_0:
+        
+            zeros = np.arange(len(acs))[acs == '0']
+            acs = np.delete(acs, zeros)
+            r[algo] = np.delete(r[algo], zeros, axis=0)
+                    
+        
+        _,pa = get_allen_info()
+        cols = [pa[reg] for reg in acs]
+        
+        regs = Counter(acs)      
+        els = [Line2D([0], [0], color=pa[reg], 
+               lw=4, label=f'{reg} {regs[reg]}')
+               for reg in regs]               
+
+
+    elif mapping == 'clusters_xyz':
+   
+        # use clusters from hierarchical clustering to color
+        nclus = 1000
+        clusters = fcluster(r['linked_xyz'], t=nclus, 
+                            criterion='maxclust')
+        cmap = mpl.cm.get_cmap('Spectral')
+        cols = cmap(clusters/nclus)   
+      
+
+    else:
+        acs = np.array(br.id2acronym(r['ids'], 
+                                     mapping=mapping))
+                                     
+        _,pa = get_allen_info()
+        cols = [pa[reg] for reg in acs]
 
     fig, ax = plt.subplots()
-    ax.scatter(r[algo][:,0], r[algo][:,1], marker='o', c=cols, s=2)
+    im = ax.scatter(r[algo][:,0], r[algo][:,1], marker='o', c=cols, s=2)
     
     ax.set_xlabel(f'{algo} dim1')
     ax.set_ylabel(f'{algo} dim2')
     ax.set_title(f'concat PETHs reduction, colors {mapping}')    
     
-    
+    if mapping == 'layers':
+        ax.legend(handles=els, ncols=1).set_draggable(True)
+
+    elif 'clusters' in mapping:
+        cax = fig.add_axes([0.27, 0.2, 0.5, 0.01])
+        norm = mpl.colors.Normalize(vmin=0, 
+                                    vmax=nclus)
+                                    
+        fig.colorbar(mpl.cm.ScalarMappable(
+                                norm=norm, 
+                                cmap=cmap), 
+                                cax=cax, orientation='horizontal')
+                     
+
 def plot_ave_PETHs():
 
     '''
