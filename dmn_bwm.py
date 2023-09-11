@@ -36,6 +36,8 @@ from matplotlib.colors import ListedColormap, LinearSegmentedColormap
 from matplotlib.gridspec import GridSpec   
 from statsmodels.stats.multitest import multipletests
 from matplotlib.lines import Line2D
+import mpldatacursor
+
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -1447,8 +1449,7 @@ def plot_single_cell(split, pid, recomp = True, curve = 'base'):
            for reg in regs]               
 
     ax.legend(handles=els, ncols=1)
-    
-    
+
 
 def variance_analysis(split):
 
@@ -1465,7 +1466,7 @@ def variance_analysis(split):
     _,pa = get_allen_info()
     cols = [pa[reg] for reg in ga['Beryl']]
     
-    xl, yl  = 'sum' ,'sumb' #'amp', 'ampb'
+    xl, yl  = 'sum' ,'sumb' 
 
     #x, y = ga[f'pcst{base}'][:, 0], ga[f'pcst{base}'][:, 1]
     # get amplitudes 
@@ -1501,10 +1502,13 @@ def plot_xyz(split):
     ax.set_title(f'{split} max')
 
 
-def plot_dim_reduction(algo='umap', mapping='Beryl'):
+def plot_dim_reduction(algo='umap', mapping='layers', means=True, exa=True):
     '''
     2 dims being pca on concat PETH; 
     colored by region
+    algo in ['umap','tSNE','PCA','ICA']
+    means: plot average dots per region
+    exa: plot some example feature vectors
     '''
     
     r = np.load(Path(pth_res, 'concat.npy'),
@@ -1516,7 +1520,12 @@ def plot_dim_reduction(algo='umap', mapping='Beryl'):
         clusters = fcluster(r['linked'], t=nclus, criterion='maxclust')
         cmap = mpl.cm.get_cmap('Spectral')
         cols = cmap(clusters/nclus)
-
+        
+        # get average point and color per region
+        av = {reg: [np.mean(r[algo][clusters == clus], axis=0), 
+                    cmap(clus/nclus)] 
+              for clus in range(1,nclus+1)} 
+        
 
     elif mapping == 'layers':       
     
@@ -1547,18 +1556,24 @@ def plot_dim_reduction(algo='umap', mapping='Beryl'):
         if remove_0:
         
             zeros = np.arange(len(acs))[acs == '0']
-            acs = np.delete(acs, zeros)
-            r[algo] = np.delete(r[algo], zeros, axis=0)
-                    
+            for key in r:
+                if type(r[key]) == np.ndarray and len(r[key]) == len(acs):
+                    print(key)
+                    r[key] = np.delete(r[key], zeros, axis=0)
+                       
+            acs = np.delete(acs, zeros)        
         
         _,pa = get_allen_info()
         cols = [pa[reg] for reg in acs]
-        
         regs = Counter(acs)      
         els = [Line2D([0], [0], color=pa[reg], 
                lw=4, label=f'{reg} {regs[reg]}')
-               for reg in regs]               
-
+               for reg in regs]
+               
+        # get average points and color per region
+        av = {reg: [np.mean(r[algo][acs == reg], axis=0), pa[reg]] 
+              for reg in regs}
+               
 
     elif mapping == 'clusters_xyz':
    
@@ -1568,17 +1583,32 @@ def plot_dim_reduction(algo='umap', mapping='Beryl'):
                             criterion='maxclust')
         cmap = mpl.cm.get_cmap('Spectral')
         cols = cmap(clusters/nclus)   
-      
+        # get average points per region
+        av = {reg: [np.mean(r[algo][clusters == clus], axis=0), 
+                    cmap(clus/nclus)] 
+              for clus in range(1,nclus+1)}      
 
     else:
         acs = np.array(br.id2acronym(r['ids'], 
-                                     mapping=mapping))
-                                     
+                                     mapping=mapping))                         
         _,pa = get_allen_info()
         cols = [pa[reg] for reg in acs]
+        
+        # get average points and color per region
+        regs = Counter(acs)  
+        av = {reg: [np.mean(r[algo][acs == reg], axis=0), pa[reg]] 
+              for reg in regs}
 
     fig, ax = plt.subplots()
     im = ax.scatter(r[algo][:,0], r[algo][:,1], marker='o', c=cols, s=2)
+    
+    if means:
+        # show means
+        emb1 = [av[reg][0][0] for reg in av] 
+        emb2 = [av[reg][0][1] for reg in av]
+        cs = [av[reg][1] for reg in av]
+        ax.scatter(emb1, emb2, marker='o', facecolors='none', 
+                   edgecolors=cs, s=600, linewidths=4)  
     
     ax.set_xlabel(f'{algo} dim1')
     ax.set_ylabel(f'{algo} dim2')
@@ -1596,7 +1626,42 @@ def plot_dim_reduction(algo='umap', mapping='Beryl'):
                                 norm=norm, 
                                 cmap=cmap), 
                                 cax=cax, orientation='horizontal')
-                     
+
+    if exa:
+        # plot certain example cells' feature vectors 
+        fig_extra, ax_extra = plt.subplots()
+        line, = ax_extra.plot(r['concat'][0], 
+                              label='Extra Line Plot')
+        
+        # add point names to dict
+        r['nums'] = range(len(r[algo][:,0]))         
+        
+        # Define a function to update the extra line plot based on the selected point
+        def update_line(event):
+            if event.mouseevent.inaxes == ax:
+                x_clicked = event.mouseevent.xdata
+                y_clicked = event.mouseevent.ydata
+                
+                selected_point = None
+                for key, value in zip(r['nums'], r[algo]):
+                    if (abs(value[0] - x_clicked) < 0.01 and 
+                       abs(value[1] - y_clicked) < 0.01):
+                        selected_point = key
+                        break
+                
+                if selected_point:
+
+                    line.set_data(np.arange(len(r['concat'][key])),
+                                  r['concat'][key])
+                    ax_extra.relim()
+                    ax_extra.autoscale_view()              
+                    ax_extra.set_title(f'Line Plot for {key}')
+                    fig_extra.canvas.draw()   
+    
+        # Connect the pick event to the scatter plot
+        fig.canvas.mpl_connect('pick_event', update_line)
+        im.set_picker(5)  # Set the picker radius for hover detection
+                   
 
 def plot_ave_PETHs():
 
