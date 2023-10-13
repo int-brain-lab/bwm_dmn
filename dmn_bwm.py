@@ -15,17 +15,25 @@ from collections import Counter
 from sklearn.decomposition import PCA, FastICA
 from sklearn.manifold import TSNE
 from scipy.cluster.hierarchy import linkage, fcluster
+from statsmodels.stats.multitest import multipletests
+from sklearn.metrics import confusion_matrix
+
+from scipy.spatial import distance
+from sklearn.preprocessing import StandardScaler
+from random import shuffle
+from sklearn.linear_model import LogisticRegression
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn.model_selection import KFold
 import gc
 from pathlib import Path
 import random
 from copy import deepcopy
-import time
-import sys
-import math
-import string
-import os
-from scipy.stats import spearmanr
-import umap
+import time, sys, math, string, os
+from scipy.stats import spearmanr, zscore
+import umap, trimap
+from itertools import combinations, chain
+from datetime import datetime
+import scipy.ndimage as ndi
 
 from matplotlib.axis import Axis
 import matplotlib.pyplot as plt
@@ -34,10 +42,8 @@ import seaborn as sns
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 from matplotlib.colors import ListedColormap, LinearSegmentedColormap   
 from matplotlib.gridspec import GridSpec   
-from statsmodels.stats.multitest import multipletests
-from matplotlib.lines import Line2D
 import mpldatacursor
-
+from matplotlib.lines import Line2D
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -80,7 +86,6 @@ ntravis = 30  # #trajectories for vis, first 2 real, rest pseudo
 one = ONE(base_url='https://openalyx.internationalbrainlab.org',
           password='international', silent=True)
           
-ba = AllenAtlas()
 br = BrainRegions()
 #units_df = bwm_units(one)  # canonical set of cells
 
@@ -693,7 +698,6 @@ def stack_concat(get_concat=False):
         xyz.append(D_['xyz'])
         
     r = {}  
-
                         
     r['ids'] = np.concatenate(ids)
     r['xyz'] = np.concatenate(xyz)       
@@ -706,9 +710,21 @@ def stack_concat(get_concat=False):
     r['xyz'] = r['xyz'][goodcells]    
     cs = cs[goodcells] 
 
+    # remove cells that are zero all the time
+    goodcells = [np.any(x) for x in cs]
+    
+    r['ids'] = r['ids'][goodcells]
+    r['xyz'] = r['xyz'][goodcells]    
+    cs = cs[goodcells]
+
     if get_concat:
         return cs
+        
+    r['concat'] = cs
+    cs_z = zscore(cs,axis=1)
     
+    
+    r['concat_z'] = cs_z
     r['len'] = dict(zip(D_['trial_names'],
                     [x.shape[1] for x in D_['ws']]))
     
@@ -724,13 +740,223 @@ def stack_concat(get_concat=False):
     # various dim reduction of PETHs to 2 dims
     ncomp = 2
     r['umap'] = umap.UMAP(n_components=ncomp).fit_transform(cs)
+    r['umap_z'] = umap.UMAP(n_components=ncomp).fit_transform(cs_z)
     r['tSNE'] = TSNE(n_components=ncomp).fit_transform(cs)
+    r['tSNE_z'] = TSNE(n_components=ncomp).fit_transform(cs_z)
     r['PCA'] = PCA(n_components=ncomp).fit_transform(cs)
+    r['PCA_z'] = PCA(n_components=ncomp).fit_transform(cs_z)
     r['ICA'] = FastICA(n_components=ncomp).fit_transform(cs) 
-
+    r['trimap'] = trimap.TRIMAP(n_dims=ncomp).fit_transform(cs)
     np.save(Path(pth_res, 'concat.npy'),
             r, allow_pickle=True)            
         
+
+def NN(x, y, decoder='LDA', CC=1.0, confusion=False,
+       return_weights=False, shuf=False, verb=True):
+    '''
+    decode region label y from activity x
+    '''
+    
+    nclasses = len(Counter(y))
+    startTime = datetime.now()
+    
+    if shuf:
+        np.random.shuffle(y)
+
+    if len(x.shape) == 1:
+        x = x.reshape(-1, 1)
+
+    acs = []
+
+    # predicted labels for train/test
+    yp_train = []  
+    yp_test = []
+    
+    # true labels for train/test
+    yt_train = []  
+    yt_test = []  
+    
+    ws = []
+    
+    folds = 5  # 20
+    
+    kf = KFold(n_splits=folds, shuffle=True)
+
+    if verb:
+        print('input dimension:', np.shape(x))    
+        print(f'# classes = {nclasses}')
+        print(f'uniform chance at 1 / {nclasses} = {np.round(1/nclasses,5)}')
+        print('x.shape:', x.shape, 'y.shape:', y.shape)
+        print(f'{folds}-fold cross validation')
+        if shuf: 
+            print('labels are SHUFFLED')
+
+    k = 1
+    for train_index, test_index in kf.split(x):
+
+        sc = StandardScaler()
+        train_X = sc.fit_transform(x[train_index])
+        test_X = sc.fit_transform(x[test_index])
+
+        train_y = y[train_index]
+        test_y = y[test_index]
+
+        if k == 1:
+            if verb:    
+                print('train/test samples:', len(train_y), len(test_y))
+            
+
+        if decoder == 'LR':
+            # CC = 1  #0.00001
+            clf = LogisticRegression(C=CC, random_state=0, n_jobs=-1)
+            clf.fit(train_X, train_y)
+
+            y_pred_test = clf.predict(test_X)
+            y_pred_train = clf.predict(train_X)
+
+        elif decoder == 'LDA':
+
+            clf = LinearDiscriminantAnalysis()
+            clf.fit(train_X, train_y)
+
+            y_pred_test = clf.predict(test_X)
+            y_pred_train = clf.predict(train_X)
+
+        else:
+            return 'what model??'
+
+        yp_train.append(y_pred_train)
+        yt_train.append(train_y)
+
+        yp_test.append(y_pred_test)
+        yt_test.append(test_y)
+
+        res_test = np.mean(test_y == y_pred_test)
+        res_train = np.mean(train_y == y_pred_train)
+
+
+        ac_test = round(np.mean(res_test), 4)
+        ac_train = round(np.mean(res_train), 4)
+        acs.append([ac_train, ac_test])
+
+        k += 1
+
+    r_train = round(np.mean(np.array(acs)[:, 0]), 3)
+    r_test = round(np.mean(np.array(acs)[:, 1]), 3)
+    
+    if verb:
+        print('')
+        print('Mean train accuracy:', r_train)
+        print('Mean test accuracy:', r_test)
+        print('')
+        print('time to compute:', datetime.now() - startTime)
+        print('')
+        
+    if return_weights:
+        if decoder == 'LR':
+            clf = LogisticRegression(C=CC, random_state=0, n_jobs=-1)
+        else:
+            clf = LinearDiscriminantAnalysis()
+
+        clf.fit(x, y)
+
+        return clf.coef_
+
+    if confusion:
+        cm_train = confusion_matrix(list(chain.from_iterable(yt_train)),
+                                    list(chain.from_iterable(yp_train)))    
+        cm_test = confusion_matrix(list(chain.from_iterable(yt_test)),
+                                    list(chain.from_iterable(yp_test)))
+                                    
+        return cm_train, cm_test                              
+
+    return np.array(acs)
+
+
+def decode(mapping='Beryl', minreg=20, decoder='LDA', z_sco=True,
+           n_runs = 1, confusion=False):
+           
+    print(mapping, f', minreg: {minreg},', decoder, 'z_score', z_sco)
+        
+    r = np.load(Path(pth_res, 'concat.npy'),
+                allow_pickle=True).flat[0]
+
+    if mapping == 'layers':
+        acs = np.array(br.id2acronym(r['ids'], 
+                                     mapping='Allen'))
+        
+        regs0 = Counter(acs)
+                                     
+        # get regs with number at and of acronym
+        regs = [reg for reg in regs0 
+                if reg[-1].isdigit()]
+        
+        for reg in regs:        
+            acs[acs == reg] = reg[-1]       
+        
+        # extra class of thalamic (and hypothalamic) regions 
+        names = dict(zip(regs0,[get_name(reg) for reg in regs0]))
+        thal = {x:names[x] for x in names if 'thala' in names[x]}
+                                          
+        for reg in thal: 
+            acs[acs == reg] = 'thal'       
+        
+        mask = np.array([(x.isdigit() or x == 'thal') for x in acs])
+        acs[~mask] = '0'
+        
+        remove_0 = True
+        
+        if remove_0:
+        
+            zeros = np.arange(len(acs))[acs == '0']
+            for key in r:
+                if type(r[key]) == np.ndarray and len(r[key]) == len(acs):
+                    r[key] = np.delete(r[key], zeros, axis=0)
+                       
+            acs = np.delete(acs, zeros)
+    
+    else:
+        acs = np.array(br.id2acronym(r['ids'], 
+                                     mapping=mapping))                         
+        
+    
+    # get average points and color per region
+    regs = Counter(acs)
+    
+    x = r['concat_z' if z_sco else 'concat']
+    y = acs
+
+    # restrict to regions with minreg cells
+    regs2 = [reg for reg in regs if regs[reg]>minreg]
+    mask = [True if ac in regs2 else False for ac in acs]
+
+    x = x[mask]    
+    y = y[mask]
+    
+    # remove void and root
+    mask = [False if ac in ['void', 'root'] else True for ac in y]
+    x = x[mask]    
+    y = y[mask]  
+    regs = Counter(y)  
+
+    if confusion:
+        cm_train, cm_test = NN(x, y, decoder=decoder, confusion=True)
+        return cm_train, cm_test, regs    
+
+    
+    res = []
+    res_shuf = []  
+    for i in range(n_runs):
+        y_ = deepcopy(y)
+        
+        res.append(NN(x, y_, decoder=decoder, shuf=False, 
+                      verb=False if n_runs > 1 else True))
+        res_shuf.append(NN(x, y_, decoder=decoder, shuf=True, 
+                      verb=False if n_runs > 1 else True))        
+            
+    return res, res_shuf
+        
+    
 
 '''
 #####################################################
@@ -1502,13 +1728,15 @@ def plot_xyz(split):
     ax.set_title(f'{split} max')
 
 
-def plot_dim_reduction(algo='umap', mapping='layers', means=True, exa=True):
+def plot_dim_reduction(algo='umap_z', mapping='layers', space = 'concat', 
+                       means=True, exa=False, plotdist=False, shuf=False):
     '''
     2 dims being pca on concat PETH; 
     colored by region
     algo in ['umap','tSNE','PCA','ICA']
     means: plot average dots per region
     exa: plot some example feature vectors
+    space: 'concat'  # can also be tSNE, PCA, umap, for distance space
     '''
     
     r = np.load(Path(pth_res, 'concat.npy'),
@@ -1520,7 +1748,7 @@ def plot_dim_reduction(algo='umap', mapping='layers', means=True, exa=True):
         clusters = fcluster(r['linked'], t=nclus, criterion='maxclust')
         cmap = mpl.cm.get_cmap('Spectral')
         cols = cmap(clusters/nclus)
-        
+        acs = clusters
         # get average point and color per region
         av = {reg: [np.mean(r[algo][clusters == clus], axis=0), 
                     cmap(clus/nclus)] 
@@ -1558,7 +1786,6 @@ def plot_dim_reduction(algo='umap', mapping='layers', means=True, exa=True):
             zeros = np.arange(len(acs))[acs == '0']
             for key in r:
                 if type(r[key]) == np.ndarray and len(r[key]) == len(acs):
-                    print(key)
                     r[key] = np.delete(r[key], zeros, axis=0)
                        
             acs = np.delete(acs, zeros)        
@@ -1582,7 +1809,8 @@ def plot_dim_reduction(algo='umap', mapping='layers', means=True, exa=True):
         clusters = fcluster(r['linked_xyz'], t=nclus, 
                             criterion='maxclust')
         cmap = mpl.cm.get_cmap('Spectral')
-        cols = cmap(clusters/nclus)   
+        cols = cmap(clusters/nclus)
+        acs = clusters   
         # get average points per region
         av = {reg: [np.mean(r[algo][clusters == clus], axis=0), 
                     cmap(clus/nclus)] 
@@ -1600,6 +1828,9 @@ def plot_dim_reduction(algo='umap', mapping='layers', means=True, exa=True):
               for reg in regs}
 
     fig, ax = plt.subplots()
+    if shuf:
+        shuffle(cols)
+    
     im = ax.scatter(r[algo][:,0], r[algo][:,1], marker='o', c=cols, s=2)
     
     if means:
@@ -1608,11 +1839,63 @@ def plot_dim_reduction(algo='umap', mapping='layers', means=True, exa=True):
         emb2 = [av[reg][0][1] for reg in av]
         cs = [av[reg][1] for reg in av]
         ax.scatter(emb1, emb2, marker='o', facecolors='none', 
-                   edgecolors=cs, s=600, linewidths=4)  
+                   edgecolors=cs, s=600, linewidths=4)
+    
+    
+    if plotdist:
+        # show bar plot for pairwise Euc distance of groups       
+        combis = list(combinations(list(Counter(acs).keys()), 2))
+        data_dict = {}
+
+        for combi in combis:
+            a = r[space][acs == combi[0]]
+            b = r[space][acs == combi[1]]
+            m1_squ = np.sum(a**2, axis=1, keepdims=True)
+            m2_squ = np.sum(b**2, axis=1)
+            
+            # for each vector pair ij this matrix has the Euc dist
+            pair_dists = np.sqrt(m1_squ + m2_squ - 2 * np.dot(a, b.T))
+            
+            # also get euc dist of average points per group
+            m_dist = np.sum(((np.mean(a,axis=0) - 
+                              np.mean(b,axis=0))**2))*0.5
+            
+            data_dict[str(combi)] = [np.nanmean(pair_dists), 
+                                     np.nanstd(pair_dists),
+                                     m_dist]
+
+        npoints, ndims = r[space].shape
+            
+        keys = list(data_dict.keys())
+        means = [data[0] for data in data_dict.values()]
+        std_devs = [data[1] for data in data_dict.values()]
+        mdists = [data[2] for data in data_dict.values()]       
+        sorted_keys, sorted_means, sorted_std_devs, sorted_mdists = zip(*sorted(
+                                            zip(keys, means, std_devs, mdists), 
+                                            key=lambda x: x[1], reverse=True))
+
+        fig_d, ax_d = plt.subplots(figsize=(10, 6))
+        ax_d.bar(sorted_keys, sorted_means, yerr=sorted_std_devs, 
+                capsize=10, color='skyblue', alpha=0.7, 
+                label=f'first pariwise Euc then mean')
+                       
+        ax_d.plot(sorted_mdists, linestyle='', marker='o', color='k',
+                  label='mean across cells per cluster then Euc')
+                  
+        ax_d.set_xlabel('Group pairs')
+        ax_d.set_ylabel('Mean euc dist')
+        ax_d.set_title(f'Mean Euc dists in {space}'
+                       f' ({ndims} dims, {npoints} points)')
+        ax_d.set_xticklabels(sorted_keys, rotation=45, ha='right')
+        ax_d.legend(loc='best')   
+        fig_d.tight_layout()
+        
+            
     
     ax.set_xlabel(f'{algo} dim1')
     ax.set_ylabel(f'{algo} dim2')
-    ax.set_title(f'concat PETHs reduction, colors {mapping}')    
+    ss = 'shuf' if shuf else ''
+    ax.set_title(f'concat PETHs reduction, colors {mapping} {ss}')    
     
     if mapping == 'layers':
         ax.legend(handles=els, ncols=1).set_draggable(True)
@@ -1628,15 +1911,18 @@ def plot_dim_reduction(algo='umap', mapping='layers', means=True, exa=True):
                                 cax=cax, orientation='horizontal')
 
     if exa:
-        # plot certain example cells' feature vectors 
+        # plot a cells' feature vector in extra panel when hovering over point
         fig_extra, ax_extra = plt.subplots()
-        line, = ax_extra.plot(r['concat'][0], 
+        feat = 'concat_z' if algo[-1] == 'z' else 'concat'
+        line, = ax_extra.plot(r[feat][0], 
                               label='Extra Line Plot')
         
         # add point names to dict
         r['nums'] = range(len(r[algo][:,0]))         
         
-        # Define a function to update the extra line plot based on the selected point
+        # Define a function to update the extra line plot 
+        # based on the selected point
+        
         def update_line(event):
             if event.mouseevent.inaxes == ax:
                 x_clicked = event.mouseevent.xdata
@@ -1651,11 +1937,15 @@ def plot_dim_reduction(algo='umap', mapping='layers', means=True, exa=True):
                 
                 if selected_point:
 
-                    line.set_data(np.arange(len(r['concat'][key])),
-                                  r['concat'][key])
+                    line.set_data(b_size *np.arange(len(r[feat][key])),
+                                  r[feat][key])
                     ax_extra.relim()
+                    ax_extra.set_ylabel(feat)
+                    ax_extra.set_xlabel('time [sec]')
                     ax_extra.autoscale_view()              
-                    ax_extra.set_title(f'Line Plot for {key}')
+                    ax_extra.set_title(
+                        f'Line Plot for x,y ='
+                        f' {np.round(x_clicked,2), np.round(y_clicked,2)}')
                     fig_extra.canvas.draw()   
     
         # Connect the pick event to the scatter plot
@@ -1753,6 +2043,192 @@ def plot_ave_PETHs():
     ax.set_xlim(-0.5,3)
     fig.tight_layout()
          
+
+def smooth_dist(algo='umap_z', mapping='layers', show_imgs=False):
+
+
+    r = np.load(Path(pth_res, 'concat.npy'),
+                 allow_pickle=True).flat[0]
+                 
+    _,pa = get_allen_info()
+    if mapping == 'layers':
+        acs = np.array(br.id2acronym(r['ids'], 
+                                     mapping='Allen'))
+        
+        regs0 = Counter(acs)
+                                     
+        # get regs with number at and of acronym
+        regs = [reg for reg in regs0 
+                if reg[-1].isdigit()]
+        
+        for reg in regs:        
+            acs[acs == reg] = reg[-1]       
+        
+        # extra class of thalamic (and hypothalamic) regions 
+        names = dict(zip(regs0,[get_name(reg) for reg in regs0]))
+        thal = {x:names[x] for x in names if 'thala' in names[x]}
+                                          
+        for reg in thal: 
+            acs[acs == reg] = 'thal'       
+        
+        mask = np.array([(x.isdigit() or x == 'thal') for x in acs])
+        acs[~mask] = '0'
+        
+        remove_0 = True
+        
+        if remove_0:
+        
+            zeros = np.arange(len(acs))[acs == '0']
+            for key in r:
+                if type(r[key]) == np.ndarray and len(r[key]) == len(acs):
+                    r[key] = np.delete(r[key], zeros, axis=0)
+                       
+            acs = np.delete(acs, zeros)        
+        
+        cols = [pa[reg] for reg in acs]
+    
+    else:
+        acs = np.array(br.id2acronym(r['ids'], 
+                                     mapping=mapping))                         
+        
+        cols = [pa[reg] for reg in acs]
+
+
+    # Define grid size and density kernel size
+    x_min = np.floor(np.min(r[algo][:,0]))
+    x_max = np.ceil(np.max(r[algo][:,0]))
+    y_min = np.floor(np.min(r[algo][:,1]))
+    y_max = np.ceil(np.max(r[algo][:,1]))
+    
+    imgs = {}
+    xys = {}
+    
+    regs = Counter(acs)
+    regcol = {reg: pa[reg] for reg in regs}    
+
+    for reg in regcol:
+        x = (r[algo][np.array(acs)==reg,0] - x_min)/ (x_max - x_min)    
+        y = (r[algo][np.array(acs)==reg,1] - y_min)/ (y_max - y_min)
+
+        data = np.array([x,y]).T         
+        inds = (data * 255).astype('uint')       ## convert to indices
+
+        img = np.zeros((256,256))                ## blank image
+        for i in np.arange(data.shape[0]):          ## draw pixels
+            img[inds[i,0], inds[i,1]] += 1
+
+        imgs[reg] = ndi.gaussian_filter(img.T, (10,10))
+        xys[reg] = [x,y]
+  
+
+    if show_imgs:
+
+        # tweak for other mapping than "layers"
+        fig, axs = plt.subplots(nrows=2, ncols=len(regs))        
+        axs = axs.flatten()    
+        [ax.set_axis_off() for ax in axs]
+
+        vmin = np.min([np.min(imgs[reg].flatten()) for reg in imgs])
+        vmax = np.max([np.max(imgs[reg].flatten()) for reg in imgs])
+        
+        k = 0 
+        for reg in imgs:
+            axs[k].imshow(imgs[reg], origin='lower', vmin=vmin, vmax=vmax)
+            axs[k].set_title(f'{reg}, ({regs[reg]})')
+            axs[k].set_axis_off()
+            k+=1 
+            
+        for reg in imgs:
+            axs[k].scatter(xys[reg][0], xys[reg][1], color=regcol[reg], s=2)
+            axs[k].set_title(f'{reg}, ({regs[reg]})')
+            axs[k].set_axis_off()
+            k+=1               
+        
+        fig.suptitle(f'algo: {algo}, mapping: {mapping}')
+        fig.tight_layout()    
+
+    # show dot product of density vectors
+    res = np.zeros((len(regs),len(regs)))
+    i = 0
+    for reg_i in imgs:
+        j = 0
+        for reg_j in imgs:
+            res[i,j] = np.inner(imgs[reg_i].flatten(), 
+                              imgs[reg_j].flatten())
+            j+=1
+        i+=1            
+                     
+    plt.imshow(res, origin='lower')
+    plt.xticks(np.arange(len(regs)), list(imgs.keys()))
+    plt.yticks(np.arange(len(regs)), list(imgs.keys()))
+    plt.title('dot product of smooth images')
+    plt.ylabel(mapping)
+    plt.colorbar()
+    
+    
+def plot_dec(r, rs):
+
+    r = np.array(r)
+    rs = np.array(rs)
+
+    fig, ax = plt.subplots()
+    ax.scatter(np.concatenate(r[:,:,0]), 
+               np.concatenate(r[:,:,1]), color='r', label='true')
+               
+    # borders
+    ax.axvline(min(np.concatenate(r[:,:,0])), color='r')
+    ax.axhline(min(np.concatenate(r[:,:,1])), color='r')           
+    ax.scatter(np.concatenate(rs[:,:,0]), 
+               np.concatenate(rs[:,:,1]), color='b', label='shuf')
+    ax.set_xlabel('train accuracy')
+    ax.set_ylabel('test accuracy')
+   
+
+def plot_dec_confusion(mapping='Beryl', minreg=20, decoder='LDA', z_sco=True,
+           n_runs = 1):
+           
+    '''
+    For train and test, plot a confusion matrix
+    '''       
+
+    cm_train, cm_test, regs = decode(mapping=mapping, minreg=minreg, 
+                                     decoder=decoder, z_sco=z_sco,
+                                     confusion=True)
+    
+    cms = {'train': cm_train, 'test': cm_test}
+                                     
+    
+
+    vmin, vmax = np.min([cm_train, cm_test]), np.max([cm_train, cm_test])
+        
+    fig, axs = plt.subplots(nrows=1, ncols=2)
+    k = 0
+    for ty in cms:
+        axs[k].imshow(cms[ty], interpolation=None, 
+               cmap=plt.get_cmap('Blues'), vmin=vmin, vmax=vmax)
+        axs[k].set_title(f'Confusion Matrix {ty}')
+        
+        tick_marks = range(len(regs))
+        axs[k].set_xticks(tick_marks, list(regs), rotation=45)
+        axs[k].set_yticks(tick_marks, list(regs))
+
+        for i in range(len(regs)):
+            for j in range(len(regs)):
+                axs[k].text(j, i, cms[ty][i, j], ha='center', 
+                         va='center', color='k')
+
+        axs[k].set_ylabel('True label')
+        axs[k].set_xlabel('Predicted label')
+        k+=1
+    
+    plt.colorbar()   
+    fig.tight_layout()
+
+                                     
+
+
+
+
 
 
 
