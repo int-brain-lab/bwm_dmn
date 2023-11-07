@@ -347,18 +347,19 @@ def load_atlas_data():
      D['df_clusters'], 
      D['df_channels'], 
      D['df_probes']) = ephys_atlas.data.download_tables(
-                    label='latest', 
-                    local_path=LOCAL_DATA_PATH, one=one)                    
+                        label='latest', 
+                        local_path=LOCAL_DATA_PATH, 
+                        one=one)                    
                     
-     merged_df0 = D['df_raw_features'].merge(
-                  D['df_channels'], 
-                    on=['pid','channel'])               
-                    
-     merged_df = merged_df0.merge(
-                    D['df_clusters'], 
-                    on=['pid', 'axial_um', 'lateral_um'])                     
+    merged_df0 = D['df_raw_features'].merge(D['df_channels'], 
+                                     on=['pid','channel'])               
+                
+    merged_df = merged_df0.merge(
+                D['df_clusters'], 
+                on=['pid', 'axial_um', 'lateral_um'])                     
                     
     return merged_df       
+
 
 def get_allen_info(rerun=False):
     '''
@@ -436,6 +437,9 @@ def regional_group(mapping, algo, EAtlas=False):
     r['nums'] = range(len(r[algo][:,0]))
                        
     if EAtlas:
+    
+        print('loading and concatenating ephys features')
+    
         #  include ephys atlas info
         df = pd.DataFrame({'uuids':r['uuids']})
         merged_df = load_atlas_data()
@@ -445,10 +449,11 @@ def regional_group(mapping, algo, EAtlas=False):
         dfr = set(r['uuids']).difference(set(dfm['uuids']))
         rmv = [True if u in dfr else False for u in r['uuids']]
 
+        l0 = deepcopy(len(r['uuids']))
         for key in r:
-            if type(r[key]) == np.ndarray and len(r[key]) == len(r[algo]):
+            if len(r[key]) == l0:
                 r[key] = np.delete(r[key], rmv, axis=0)
-                   
+     
         
         # make ephys feature vector, concat those:
         fts = ['alpha_mean', 'alpha_std', 'depolarisation_slope', 
@@ -460,16 +465,27 @@ def regional_group(mapping, algo, EAtlas=False):
         'psd_theta', 'psd_theta_csd', 
         'recovery_slope', 'recovery_time_secs', 
         'repolarisation_slope', 
-        'rms_ap', 'rms_lf', 'rms_lf_csd', 'spike_count', 'spike_count_x', 
+        'rms_ap', 'rms_lf', 'rms_lf_csd', 'spike_count_x', 
         'spike_count_y', 'tip_time_secs', 'tip_val', 
         'trough_time_secs', 
         'trough_val']
+
+        r['ephysTF'] = np.array([dfm[dfm['uuids'] == u][fts].values[0] 
+                            for u in r['uuids']])
         
-        # for u in 
-        d2 = [
+        r['fts'] = fts
         
         
-        
+        # remove cells with nan/inf/allzero entries
+        goodcells = np.bitwise_and.reduce([
+                    [~np.isinf(k).any() for k in r['ephysTF']],
+                    [np.any(x) for x in r['ephysTF']],
+                    [~np.isnan(k).any() for k in r['ephysTF']]])
+                    
+        l0 = deepcopy(len(r['uuids']))
+        for key in r:
+            if len(r[key]) == l0:
+                r[key] = r[key][goodcells]     
          
                          
 
@@ -516,7 +532,7 @@ def regional_group(mapping, algo, EAtlas=False):
         
             zeros = np.arange(len(acs))[acs == '0']
             for key in r:
-                if type(r[key]) == np.ndarray and len(r[key]) == len(acs):
+                if len(r[key]) == len(acs):
                     r[key] = np.delete(r[key], zeros, axis=0)
                        
             acs = np.delete(acs, zeros)        
@@ -549,7 +565,18 @@ def regional_group(mapping, algo, EAtlas=False):
 
     else:
         acs = np.array(br.id2acronym(r['ids'], 
-                                     mapping=mapping))                         
+                                     mapping=mapping))
+                                     
+        # remove void and root
+        zeros = np.arange(len(acs))[np.bitwise_or(acs == 'root',
+                                                  acs == 'void')]
+        for key in r:
+            if len(r[key]) == len(acs):
+                r[key] = np.delete(r[key], zeros, axis=0)
+                   
+        acs = np.delete(acs, zeros)          
+        
+                                                              
         _,pa = get_allen_info()
         cols = [pa[reg] for reg in acs]
         
@@ -694,62 +721,29 @@ def NN(x, y, decoder='LDA', CC=1.0, confusion=False,
     return np.array(acs)
 
 
-def decode(mapping='Beryl', minreg=20, decoder='LDA', z_sco=True,
-           n_runs = 1, confusion=False):
+def decode(src='concat', mapping='Beryl', minreg=20, decoder='LDA', 
+           algo='umap_z', n_runs = 1, confusion=False):
+    
+    '''
+    src in ['concat', 'concat_z', 'ephysTF']
+    '''
+    
            
-    print(mapping, f', minreg: {minreg},', decoder, 'z_score', z_sco)
-        
-    r = np.load(Path(pth_res, 'concat.npy'),
-                allow_pickle=True).flat[0]
-
-    if mapping == 'layers':
-        acs = np.array(br.id2acronym(r['ids'], 
-                                     mapping='Allen'))
-        
-        regs0 = Counter(acs)
-                                     
-        # get regs with number at and of acronym
-        regs = [reg for reg in regs0 
-                if reg[-1].isdigit()]
-        
-        for reg in regs:        
-            acs[acs == reg] = reg[-1]       
-        
-        # extra class of thalamic (and hypothalamic) regions 
-        names = dict(zip(regs0,[get_name(reg) for reg in regs0]))
-        thal = {x:names[x] for x in names if 'thala' in names[x]}
-                                          
-        for reg in thal: 
-            acs[acs == reg] = 'thal'       
-        
-        mask = np.array([(x.isdigit() or x == 'thal') for x in acs])
-        acs[~mask] = '0'
-        
-        remove_0 = True
-        
-        if remove_0:
-        
-            zeros = np.arange(len(acs))[acs == '0']
-            for key in r:
-                if type(r[key]) == np.ndarray and len(r[key]) == len(acs):
-                    r[key] = np.delete(r[key], zeros, axis=0)
-                       
-            acs = np.delete(acs, zeros)
-    
-    else:
-        acs = np.array(br.id2acronym(r['ids'], 
-                                     mapping=mapping))                         
-        
-    
+    print(src, mapping, f', minreg: {minreg},', decoder)
+                               
+    r = regional_group(mapping, 
+                       'umap_z' if src[-1] == 'z' else 'umap',
+                       EAtlas= True if 'ephys' in src else False)
+     
     # get average points and color per region
-    regs = Counter(acs)
+    regs = Counter(r['acs'])
     
-    x = r['concat_z' if z_sco else 'concat']
-    y = acs
+    x = r[src]
+    y = r['acs']
 
     # restrict to regions with minreg cells
     regs2 = [reg for reg in regs if regs[reg]>minreg]
-    mask = [True if ac in regs2 else False for ac in acs]
+    mask = [True if ac in regs2 else False for ac in r['acs']]
 
     x = x[mask]    
     y = y[mask]
