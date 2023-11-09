@@ -424,70 +424,20 @@ def get_allen_info(rerun=False):
     return r['dfa'], r['palette']  
 
 
-def regional_group(mapping, algo, EAtlas=False):
+def regional_group(mapping, algo, vers='concat'):
 
     '''
     find group labels for all cells
     mapping: [Allen, Beryl, Cosmos, layers, clusters, clusters_xyz]
     '''
 
-    r = np.load(Path(pth_res, 'concat.npy'),
-                 allow_pickle=True).flat[0]               
+    r = np.load(Path(pth_res, f'{vers}.npy'),
+                 allow_pickle=True).flat[0]
+                 
+                              
     # add point names to dict
     r['nums'] = range(len(r[algo][:,0]))
-                       
-    if EAtlas:
-    
-        print('loading and concatenating ephys features')
-    
-        #  include ephys atlas info
-        df = pd.DataFrame({'uuids':r['uuids']})
-        merged_df = load_atlas_data()
-        dfm = df.merge(merged_df, on=['uuids'])
-        
-        # remove cells that have no ephys info
-        dfr = set(r['uuids']).difference(set(dfm['uuids']))
-        rmv = [True if u in dfr else False for u in r['uuids']]
-
-        l0 = deepcopy(len(r['uuids']))
-        for key in r:
-            if len(r[key]) == l0:
-                r[key] = np.delete(r[key], rmv, axis=0)
-     
-        
-        # make ephys feature vector, concat those:
-        fts = ['alpha_mean', 'alpha_std', 'depolarisation_slope', 
-        'peak_time_secs', 'peak_val', 
-        'polarity', 'psd_alpha', 'psd_alpha_csd', 
-        'psd_beta', 'psd_beta_csd', 'psd_delta', 
-        'psd_delta_csd', 'psd_gamma', 
-        'psd_gamma_csd', 'psd_lfp', 'psd_lfp_csd', 
-        'psd_theta', 'psd_theta_csd', 
-        'recovery_slope', 'recovery_time_secs', 
-        'repolarisation_slope', 
-        'rms_ap', 'rms_lf', 'rms_lf_csd', 'spike_count_x', 
-        'spike_count_y', 'tip_time_secs', 'tip_val', 
-        'trough_time_secs', 
-        'trough_val']
-
-        r['ephysTF'] = np.array([dfm[dfm['uuids'] == u][fts].values[0] 
-                            for u in r['uuids']])
-        
-        r['fts'] = fts
-        
-        
-        # remove cells with nan/inf/allzero entries
-        goodcells = np.bitwise_and.reduce([
-                    [~np.isinf(k).any() for k in r['ephysTF']],
-                    [np.any(x) for x in r['ephysTF']],
-                    [~np.isnan(k).any() for k in r['ephysTF']]])
-                    
-        l0 = deepcopy(len(r['uuids']))
-        for key in r:
-            if len(r[key]) == l0:
-                r[key] = r[key][goodcells]     
-         
-                         
+                   
 
     if mapping == 'clusters':
         # use clusters from hierarchical clustering to color
@@ -497,7 +447,7 @@ def regional_group(mapping, algo, EAtlas=False):
         cols = cmap(clusters/nclus)
         acs = clusters
         # get average point and color per region
-        av = {reg: [np.mean(r[algo][clusters == clus], axis=0), 
+        av = {clus: [np.mean(r[algo][clusters == clus], axis=0), 
                     cmap(clus/nclus)] 
               for clus in range(1,nclus+1)} 
         
@@ -731,9 +681,7 @@ def decode(src='concat', mapping='Beryl', minreg=20, decoder='LDA',
            
     print(src, mapping, f', minreg: {minreg},', decoder)
                                
-    r = regional_group(mapping, 
-                       'umap_z' if src[-1] == 'z' else 'umap',
-                       EAtlas= True if 'ephys' in src else False)
+    r = regional_group(mapping, 'umap')
      
     # get average points and color per region
     regs = Counter(r['acs'])
@@ -836,6 +784,12 @@ def get_all_PETHs(split, eids_plus=None):
 
 def stack_concat(get_concat=False):
 
+    '''
+    stack concatenated PETHs; 
+    compute embedding for lower dim 
+    '''
+
+
     split = 'concat'
     pth = Path(one.cache_dir, 'dmn', split)
     ss = os.listdir(pth)  # get insertions
@@ -906,6 +860,63 @@ def stack_concat(get_concat=False):
 #    r['trimap'] = trimap.TRIMAP(n_dims=ncomp).fit_transform(cs)
 
 
+    print('loading and concatenating ephys features')
+
+    #  include ephys atlas info
+    df = pd.DataFrame({'uuids':r['uuids']})
+    merged_df = load_atlas_data()
+    dfm = df.merge(merged_df, on=['uuids'])
+    
+    # remove cells that have no ephys info
+    dfr = set(r['uuids']).difference(set(dfm['uuids']))
+    rmv = [True if u in dfr else False for u in r['uuids']]
+
+    l0 = deepcopy(len(r['uuids']))
+    for key in r:
+        if len(r[key]) == l0:
+            r[key] = np.delete(r[key], rmv, axis=0)
+ 
+    
+    # make ephys feature vector, concat those:
+    fts = ['alpha_mean', 'alpha_std', 'depolarisation_slope', 
+    'peak_time_secs', 'peak_val', 
+    'polarity', 'psd_alpha', 'psd_alpha_csd', 
+    'psd_beta', 'psd_beta_csd', 'psd_delta', 
+    'psd_delta_csd', 'psd_gamma', 
+    'psd_gamma_csd', 'psd_lfp', 'psd_lfp_csd', 
+    'psd_theta', 'psd_theta_csd', 
+    'recovery_slope', 'recovery_time_secs', 
+    'repolarisation_slope', 
+    'rms_ap', 'rms_lf', 'rms_lf_csd', 'spike_count_x', 
+    'spike_count_y', 'tip_time_secs', 'tip_val', 
+    'trough_time_secs', 
+    'trough_val']
+
+    r['ephysTF'] = np.array([dfm[dfm['uuids'] == u][fts].values[0] 
+                        for u in r['uuids']])
+    
+    r['fts'] = fts
+    
+    
+    # remove cells with nan/inf/allzero entries
+    goodcells = np.bitwise_and.reduce([
+                [~np.isinf(k).any() for k in r['ephysTF']],
+                [np.any(x) for x in r['ephysTF']],
+                [~np.isnan(k).any() for k in r['ephysTF']]])
+                
+    l0 = deepcopy(len(r['uuids']))
+    for key in r:
+        if len(r[key]) == l0:
+            r[key] = r[key][goodcells]
+
+
+    # dim reducing ephys features
+    r['umap_e'] = umap.UMAP(
+                    n_components=ncomp).fit_transform(r['ephysTF'])      
+    r['tSNE_e'] = TSNE(n_components=ncomp).fit_transform(r['ephysTF'])
+    r['PCA_e'] = PCA(n_components=ncomp).fit_transform(r['ephysTF'])
+
+
     np.save(Path(pth_res, 'concat.npy'),
             r, allow_pickle=True)            
 
@@ -935,7 +946,7 @@ def plot_dim_reduction(algo='umap_z', mapping='layers',
     space: 'concat'  # can also be tSNE, PCA, umap, for distance space
     '''
     
-    feat = 'concat_z' if algo[-1] == 'z' else 'concat'
+    feat = 'concat_z' if algo[-1] == 'z'  else 'concat'
     
     r = regional_group(mapping, algo)
 
@@ -956,7 +967,7 @@ def plot_dim_reduction(algo='umap_z', mapping='layers',
     ax.set_xlabel(f'{algo} dim1')
     ax.set_ylabel(f'{algo} dim2')
     ss = 'shuf' if shuf else ''
-    ax.set_title(f'concat PETHs reduction, colors {mapping} {ss}')    
+    ax.set_title(f'source {src}, colors {mapping} {ss}')    
     
     if mapping == 'layers':
         ax.legend(handles=r['els'], ncols=1).set_draggable(True)
@@ -1278,16 +1289,17 @@ def plot_dec(r, rs):
     ax.set_ylabel('test accuracy')
    
 
-def plot_dec_confusion(mapping='Beryl', minreg=20, decoder='LDA', z_sco=True,
-           n_runs = 1):
+def plot_dec_confusion(src ='concat', mapping='Beryl', 
+                       minreg=20, decoder='LDA', n_runs = 1):
            
     '''
     For train and test, plot a confusion matrix
+    src in ['concat', 'concat_z', 'ephysTF']
     '''       
 
-    cm_train, cm_test, regs, r_train, r_test  = decode(
+    cm_train, cm_test, regs, r_train, r_test  = decode(src=src,
         mapping=mapping, minreg=minreg, 
-        decoder=decoder, z_sco=z_sco,
+        decoder=decoder,
         confusion=True)
     
     cms = {'train': cm_train, 'test': cm_test}
@@ -1318,7 +1330,7 @@ def plot_dec_confusion(mapping='Beryl', minreg=20, decoder='LDA', z_sco=True,
     
         cb = plt.colorbar(ims,fraction=0.046, pad=0.04)
     
-    fig.suptitle(f'z-scored:{z_sco}; '
+    fig.suptitle(f'source:{src}; '
                  f'ac. train:{r_train}, ac. test:{r_test}')   
     fig.tight_layout()
 
@@ -1460,6 +1472,28 @@ def plot_ave_PETHs(feat = 'concat'):
     ax.set_title('PETHs averaged across all BWM cells')
     ax.set_xlim(-0.5,3)
     fig.tight_layout()
+
+
+def latency_per_window(minreg=20):
+
+    '''
+    Per window of the BWM, average PETHS, get latecy
+    '''
+    r = regional_group('Beryl', 'umap_z', vers='concat0')    
+    
+    # get average z-scored PETHs per Beryl region 
+    regs = Counter(r['acs'])
+    regs2 = [reg for reg in regs if regs[reg]>minreg]
+    
+
+
+
+
+
+
+
+
+
 
 
 
