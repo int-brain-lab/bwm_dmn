@@ -80,6 +80,37 @@ pth_res.mkdir(parents=True, exist_ok=True)
 sigl = 0.05  # significance level (for stacking, plotting, fdr)
 
 
+def put_panel_label(ax, k):
+    ax.annotate(string.ascii_lowercase[k], (-0.05, 1.15),
+                xycoords='axes fraction',
+                fontsize=f_size * 1.5, va='top',
+                ha='right', weight='bold')
+
+def get_cmap(split):
+    '''
+    for each split, get a colormap defined by Yanliang
+    '''
+    
+    
+    dc = {'stim': ["#ffffff","#D5E1A0","#A3C968",
+                   "#86AF40","#517146"],
+          'choice': ["#ffffff","#F8E4AA","#F9D766",
+                     "#E8AC22","#DA4727"],
+          'fback': ["#ffffff","#F1D3D0","#F5968A",
+                    "#E34335","#A23535"],
+          'block': ["#ffffff","#D0CDE4","#998DC3",
+                    "#6159A6","#42328E"]}
+
+    if '_' in split:
+        split = split.split('_')[0]
+
+    for k in dc:
+        if k in split:
+            x = k
+
+    return LinearSegmentedColormap.from_list("mycmap", dc[x])
+
+
 def grad(c, nobs, fr=1):
     '''
     color gradient for plotting trajectories
@@ -151,7 +182,7 @@ def eid2pids(eid):
     return Counter(units_df[units_df['eid'] == eid]['pid'])  
 
 
-def concat_PETHs(pid, get_tts=False):
+def concat_PETHs(pid, get_tts=False, vers='concat'):
 
     '''
     for each cell concat all possible PETHs
@@ -163,120 +194,130 @@ def concat_PETHs(pid, get_tts=False):
 
     # Load in trials data and mask bad trials (False if bad)
     trials, mask = load_trials_and_mask(one, eid)     
-        
-#    # define align, trial type, window length   
-#    tts0 = {
-#        'stimL': ['stimOn_times', ~np.isnan(trials[f'contrastLeft']), [0, 0.15]],
-#        'stimR': ['stimOn_times', ~np.isnan(trials[f'contrastRight']), [0, 0.15]],
-#        'blockL': ['stimOn_times', trials['probabilityLeft'] == 0.8, [0.4, -0.1]],
-#        'blockR': ['stimOn_times', trials['probabilityLeft'] == 0.2, [0.4, -0.1]],
-#        'choiceL': ['firstMovement_times', trials['choice'] == 1, [0.15, 0]],
-#        'choiceR': ['firstMovement_times', trials['choice'] == -1, [0.15, 0]],
-#        'fback1': ['feedback_times', trials['feedbackType'] == 1, [0, 0.3]],
-#        'fback0': ['feedback_times', trials['feedbackType'] == -1, [0, 0.3]],
-#        'end': ['intervals_1', np.full(len(trials['choice']), True), [0, 0.3]]}
 
+    if vers == 'concat0':        
+        # define align, trial type, window length   
+        tts = {
+            'stimL': ['stimOn_times', 
+            ~np.isnan(trials[f'contrastLeft']), [0, 0.15]],
+            'stimR': ['stimOn_times', 
+            ~np.isnan(trials[f'contrastRight']), [0, 0.15]],
+            'blockL': ['stimOn_times', 
+            trials['probabilityLeft'] == 0.8, [0.4, -0.1]],
+            'blockR': ['stimOn_times', 
+            trials['probabilityLeft'] == 0.2, [0.4, -0.1]],
+            'choiceL': ['firstMovement_times', 
+            trials['choice'] == 1, [0.15, 0]],
+            'choiceR': ['firstMovement_times', 
+            trials['choice'] == -1, [0.15, 0]],
+            'fback1': ['feedback_times', 
+            trials['feedbackType'] == 1, [0, 0.3]],
+            'fback0': ['feedback_times', 
+            trials['feedbackType'] == -1, [0, 0.3]],
+            'end': ['intervals_1', 
+            np.full(len(trials['choice']), True), [0, 0.3]]}
 
-    # define align, trial type, window length
-    # including Ari splits
-    tts = {
-        'blockL': ['stimOn_times', 
-                   trials['probabilityLeft'] == 0.8, [0.4, -0.1]],
-        'blockR': ['stimOn_times', 
-                   trials['probabilityLeft'] == 0.2, [0.4, -0.1]],
-        
-        'stimLbLcL': ['stimOn_times',
-             np.bitwise_and.reduce([~np.isnan(trials[f'contrastLeft']), 
-                                    trials['probabilityLeft'] == 0.8,
-                                    trials['choice'] == 1]), 
-                                    [0, 0.15]], 
-        'stimLbRcL': ['stimOn_times',
-             np.bitwise_and.reduce([~np.isnan(trials[f'contrastLeft']), 
-                                    trials['probabilityLeft'] == 0.2,
-                                    trials['choice'] == 1]), 
-                                    [0, 0.15]],
-        'stimLbRcR': ['stimOn_times',
-             np.bitwise_and.reduce([~np.isnan(trials[f'contrastLeft']), 
-                                    trials['probabilityLeft'] == 0.2,
-                                    trials['choice'] == -1]), 
-                                    [0, 0.15]],           
-        'stimLbLcR': ['stimOn_times',
-             np.bitwise_and.reduce([~np.isnan(trials[f'contrastLeft']), 
-                                    trials['probabilityLeft'] == 0.8,
-                                    trials['choice'] == -1]), 
-                                    [0, 0.15]],
-        'stimRbLcL': ['stimOn_times',
-             np.bitwise_and.reduce([~np.isnan(trials[f'contrastRight']), 
-                                    trials['probabilityLeft'] == 0.8,
-                                    trials['choice'] == 1]), 
-                                    [0, 0.15]], 
-        'stimRbRcL': ['stimOn_times',
-             np.bitwise_and.reduce([~np.isnan(trials[f'contrastRight']), 
-                                    trials['probabilityLeft'] == 0.2,
-                                    trials['choice'] == 1]), 
-                                    [0, 0.15]],
-        'stimRbRcR': ['stimOn_times',
-             np.bitwise_and.reduce([~np.isnan(trials[f'contrastRight']), 
-                                    trials['probabilityLeft'] == 0.2,
-                                    trials['choice'] == -1]), 
-                                    [0, 0.15]],        
-        'stimRbLcR': ['stimOn_times',
-             np.bitwise_and.reduce([~np.isnan(trials[f'contrastRight']), 
-                                    trials['probabilityLeft'] == 0.8,
-                                    trials['choice'] == -1]), 
-                                    [0, 0.15]],
-        'sLbLchoiceL': ['firstMovement_times',
-             np.bitwise_and.reduce([~np.isnan(trials[f'contrastLeft']), 
-                                    trials['probabilityLeft'] == 0.8,
-                                    trials['choice'] == 1]), 
-                                    [0.15, 0]], 
-        'sLbRchoiceL': ['firstMovement_times',
-             np.bitwise_and.reduce([~np.isnan(trials[f'contrastLeft']), 
-                                    trials['probabilityLeft'] == 0.2,
-                                    trials['choice'] == 1]), 
-                                    [0.15, 0]],
-        'sLbRchoiceR': ['firstMovement_times',
-             np.bitwise_and.reduce([~np.isnan(trials[f'contrastLeft']), 
-                                    trials['probabilityLeft'] == 0.2,
-                                    trials['choice'] == -1]), 
-                                    [0.15, 0]],           
-        'sLbLchoiceR': ['firstMovement_times',
-             np.bitwise_and.reduce([~np.isnan(trials[f'contrastLeft']), 
-                                    trials['probabilityLeft'] == 0.8,
-                                    trials['choice'] == -1]), 
-                                    [0.15, 0]],
-        'sRbLchoiceL': ['firstMovement_times',
-             np.bitwise_and.reduce([~np.isnan(trials[f'contrastRight']), 
-                                    trials['probabilityLeft'] == 0.8,
-                                    trials['choice'] == 1]), 
-                                    [0.15, 0]], 
-        'sRbRchoiceL': ['firstMovement_times',
-             np.bitwise_and.reduce([~np.isnan(trials[f'contrastRight']), 
-                                    trials['probabilityLeft'] == 0.2,
-                                    trials['choice'] == 1]), 
-                                    [0.15, 0]],
-        'sRbRchoiceR': ['firstMovement_times',
-             np.bitwise_and.reduce([~np.isnan(trials[f'contrastRight']), 
-                                    trials['probabilityLeft'] == 0.2,
-                                    trials['choice'] == -1]), 
-                                    [0.15, 0]],        
-        'sRbLchoiceR': ['firstMovement_times',
-             np.bitwise_and.reduce([~np.isnan(trials[f'contrastRight']), 
-                                    trials['probabilityLeft'] == 0.8,
-                                    trials['choice'] == -1]), 
-                                    [0.15, 0]],        
-        
-        'choiceL': ['firstMovement_times', trials['choice'] == 1, 
-                    [0, 0.15]],
-        'choiceR': ['firstMovement_times', trials['choice'] == -1, 
-                    [0, 0.15]],       
+    else:
+        # define align, trial type, window length
+        # including Ari splits
+        tts = {
+            'blockL': ['stimOn_times', 
+                       trials['probabilityLeft'] == 0.8, [0.4, -0.1]],
+            'blockR': ['stimOn_times', 
+                       trials['probabilityLeft'] == 0.2, [0.4, -0.1]],
+            
+            'stimLbLcL': ['stimOn_times',
+                 np.bitwise_and.reduce([~np.isnan(trials[f'contrastLeft']), 
+                                        trials['probabilityLeft'] == 0.8,
+                                        trials['choice'] == 1]), 
+                                        [0, 0.15]], 
+            'stimLbRcL': ['stimOn_times',
+                 np.bitwise_and.reduce([~np.isnan(trials[f'contrastLeft']), 
+                                        trials['probabilityLeft'] == 0.2,
+                                        trials['choice'] == 1]), 
+                                        [0, 0.15]],
+            'stimLbRcR': ['stimOn_times',
+                 np.bitwise_and.reduce([~np.isnan(trials[f'contrastLeft']), 
+                                        trials['probabilityLeft'] == 0.2,
+                                        trials['choice'] == -1]), 
+                                        [0, 0.15]],           
+            'stimLbLcR': ['stimOn_times',
+                 np.bitwise_and.reduce([~np.isnan(trials[f'contrastLeft']), 
+                                        trials['probabilityLeft'] == 0.8,
+                                        trials['choice'] == -1]), 
+                                        [0, 0.15]],
+            'stimRbLcL': ['stimOn_times',
+                 np.bitwise_and.reduce([~np.isnan(trials[f'contrastRight']), 
+                                        trials['probabilityLeft'] == 0.8,
+                                        trials['choice'] == 1]), 
+                                        [0, 0.15]], 
+            'stimRbRcL': ['stimOn_times',
+                 np.bitwise_and.reduce([~np.isnan(trials[f'contrastRight']), 
+                                        trials['probabilityLeft'] == 0.2,
+                                        trials['choice'] == 1]), 
+                                        [0, 0.15]],
+            'stimRbRcR': ['stimOn_times',
+                 np.bitwise_and.reduce([~np.isnan(trials[f'contrastRight']), 
+                                        trials['probabilityLeft'] == 0.2,
+                                        trials['choice'] == -1]), 
+                                        [0, 0.15]],        
+            'stimRbLcR': ['stimOn_times',
+                 np.bitwise_and.reduce([~np.isnan(trials[f'contrastRight']), 
+                                        trials['probabilityLeft'] == 0.8,
+                                        trials['choice'] == -1]), 
+                                        [0, 0.15]],
+            'sLbLchoiceL': ['firstMovement_times',
+                 np.bitwise_and.reduce([~np.isnan(trials[f'contrastLeft']), 
+                                        trials['probabilityLeft'] == 0.8,
+                                        trials['choice'] == 1]), 
+                                        [0.15, 0]], 
+            'sLbRchoiceL': ['firstMovement_times',
+                 np.bitwise_and.reduce([~np.isnan(trials[f'contrastLeft']), 
+                                        trials['probabilityLeft'] == 0.2,
+                                        trials['choice'] == 1]), 
+                                        [0.15, 0]],
+            'sLbRchoiceR': ['firstMovement_times',
+                 np.bitwise_and.reduce([~np.isnan(trials[f'contrastLeft']), 
+                                        trials['probabilityLeft'] == 0.2,
+                                        trials['choice'] == -1]), 
+                                        [0.15, 0]],           
+            'sLbLchoiceR': ['firstMovement_times',
+                 np.bitwise_and.reduce([~np.isnan(trials[f'contrastLeft']), 
+                                        trials['probabilityLeft'] == 0.8,
+                                        trials['choice'] == -1]), 
+                                        [0.15, 0]],
+            'sRbLchoiceL': ['firstMovement_times',
+                 np.bitwise_and.reduce([~np.isnan(trials[f'contrastRight']), 
+                                        trials['probabilityLeft'] == 0.8,
+                                        trials['choice'] == 1]), 
+                                        [0.15, 0]], 
+            'sRbRchoiceL': ['firstMovement_times',
+                 np.bitwise_and.reduce([~np.isnan(trials[f'contrastRight']), 
+                                        trials['probabilityLeft'] == 0.2,
+                                        trials['choice'] == 1]), 
+                                        [0.15, 0]],
+            'sRbRchoiceR': ['firstMovement_times',
+                 np.bitwise_and.reduce([~np.isnan(trials[f'contrastRight']), 
+                                        trials['probabilityLeft'] == 0.2,
+                                        trials['choice'] == -1]), 
+                                        [0.15, 0]],        
+            'sRbLchoiceR': ['firstMovement_times',
+                 np.bitwise_and.reduce([~np.isnan(trials[f'contrastRight']), 
+                                        trials['probabilityLeft'] == 0.8,
+                                        trials['choice'] == -1]), 
+                                        [0.15, 0]],        
+            
+            'choiceL': ['firstMovement_times', trials['choice'] == 1, 
+                        [0, 0.15]],
+            'choiceR': ['firstMovement_times', trials['choice'] == -1, 
+                        [0, 0.15]],       
 
-        'fback1': ['feedback_times', trials['feedbackType'] == 1, 
-                   [0, 0.3]],
-        'fback0': ['feedback_times', trials['feedbackType'] == -1, 
-                   [0, 0.3]],
-        'end': ['intervals_1', np.full(len(trials['choice']), True), 
-                [0, 0.3]]}
+            'fback1': ['feedback_times', trials['feedbackType'] == 1, 
+                       [0, 0.3]],
+            'fback0': ['feedback_times', trials['feedbackType'] == -1, 
+                       [0, 0.3]],
+            'end': ['intervals_1', np.full(len(trials['choice']), True), 
+                    [0, 0.3]]}
 
     if get_tts:
         return tts
@@ -292,9 +333,6 @@ def concat_PETHs(pid, get_tts=False):
     D['ids'] = np.array(clusters['atlas_id'])
     D['xyz'] = np.array(clusters[['x','y','z']])
     D['uuids'] = np.array(clusters['uuids'])
-
-
-
 
     tls = {}  # trial numbers for each type
     ws = []  # list of binned data
@@ -1262,9 +1300,7 @@ def smooth_dist(algo='umap_z', mapping='layers', show_imgs=True,
     ax1.set_title(f'cosine similarity of smooth images, norm:{norm_}')
     ax1.set_xlabel(mapping)
     fig1.tight_layout()    
-    
-    
-    
+
     
 def plot_dec(r, rs):
     
@@ -1337,7 +1373,7 @@ def plot_dec_confusion(src ='concat', mapping='Beryl',
     return cms                                         
 
 
-def plot_ave_PETHs(feat = 'concat'):
+def plot_ave_PETHs(feat = 'concat', vers='concat'):
 
     '''
     average PETHs across cells
@@ -1393,7 +1429,7 @@ def plot_ave_PETHs(feat = 'concat'):
         '''
 
         pid = '1a60a6e1-da99-4d4e-a734-39b1d4544fad'
-        tts = concat_PETHs(pid, get_tts=True)
+        tts = concat_PETHs(pid, get_tts=True, vers=vers)
         
         return tts[win][2]
 
@@ -1427,7 +1463,7 @@ def plot_ave_PETHs(feat = 'concat'):
     d = np.load(pth_dmn, allow_pickle=True).flat[0]
     
     fig, ax = plt.subplots(figsize=(8.57, 4.8))
-    r = np.load(Path(pth_res, 'concat.npy'),allow_pickle=True).flat[0]
+    r = np.load(Path(pth_res, f'{vers}.npy'),allow_pickle=True).flat[0]
     r['mean'] = np.mean(r[feat],axis=0)
     
     
@@ -1478,24 +1514,72 @@ def latency_per_window(minreg=20):
 
     '''
     Per window of the BWM, average PETHS, get latecy
+    put on swanson, one per aligment event
     '''
     r = regional_group('Beryl', 'umap_z', vers='concat0')    
     
     # get average z-scored PETHs per Beryl region 
     regs = Counter(r['acs'])
     regs2 = [reg for reg in regs if regs[reg]>minreg]
+
+    # average all PETHs per region, then z-score and get latency
+    # plot latency in swanson; put average peths on top
+    avs = {}
+
+    for reg in regs2:
+        orgl = np.mean(r['concat'][r['acs'] == reg],axis=0)
+                    
+        lats = []
+        for length in r['len'].values():
+            seg = zscore(orgl[:length])
+            seg = seg - np.min(seg)
+            loc = np.where(seg > 0.7 * (np.max(seg)))[0][0]
+            lats.append(loc * b_size)
+            orgl = orgl[length:]     
+        
+        avs[reg] = dict(zip(list(r['len'].keys()),lats))
+
+        k0 = list(avs[reg].keys())
+        for k in k0:
+            if ('block' in k) or ('end' in k):
+                del avs[reg][k]
+
+
+    fig, axs = plt.subplots(nrows=2,ncols=3)
+    axs = axs.flatten('F')
     
+    k = 0
+    for s in avs[reg].keys():
+        
+        # plot latencies (cmap reversed, dark is early)    
+        lats = np.array([avs[x][s] for x in avs])
+        yy = np.argsort(lats)
+        print(s)
+        print(lats[yy[:5]], np.array(list(avs.keys()))[yy[:5]])
+        
+        plot_swanson_vector(np.array(list(avs.keys())),
+                            np.array(lats), 
+                            cmap=get_cmap(s).reversed(), 
+                            ax=axs[k], br=br, 
+                            orientation='portrait')
+#                            annotate= True,
+#                            annotate_n=5,
+#                            annotate_order='bottom')
 
+        clevels = (np.nanmin(lats), np.nanmax(lats))
+        norm = mpl.colors.Normalize(vmin=clevels[0], 
+                                    vmax=clevels[1])
+                                    
+        cbar = fig.colorbar(mpl.cm.ScalarMappable(
+                                norm=norm, 
+                                cmap=get_cmap(s).reversed()), 
+                                ax=axs[k],
+                                location='bottom')
+                                
+        cbar.set_label('latency [second]')
 
-
-
-
-
-
-
-
-
-
-
-
+        axs[k].axis('off')
+        axs[k].set_title(s)
+        put_panel_label(axs[k], k)
+        k+=1
 
