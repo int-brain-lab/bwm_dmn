@@ -4,6 +4,7 @@ from pathlib import Path
 from spectral_connectivity import Multitaper, Connectivity
 import time
 from itertools import product
+from scipy.stats import norm
 
 from brainwidemap import load_good_units, bwm_query
 from iblutil.numerical import bincount2D
@@ -12,10 +13,11 @@ from iblatlas.regions import BrainRegions
 import seaborn as sns
 import pandas as pd
 
-
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import gc as garbage
+import matplotlib
+#matplotlib.use('QtAgg')
 
 one = ONE(base_url='https://openalyx.internationalbrainlab.org',
           password='international', silent=True)
@@ -31,6 +33,18 @@ def get_allen_info():
     r = np.load(Path(one.cache_dir, 'dmn', 'alleninfo.npy'),
                 allow_pickle=True).flat[0]
     return r['dfa'], r['palette']
+
+
+def make_data(T=300000):
+
+    x1 = np.random.normal(0, 1,T+3)
+    x2 = np.random.normal(0, 1,T+3)
+
+    for t in range(2,T+2):
+        x2[t] = 0.55*x2[t-1] - 0.8*x2[t-2] + x2[t+1]
+        x1[t] = 0.55*x1[t-1] - 0.8*x1[t-2] + 0.2 * x2[t-1] + x1[t+1]
+    
+    return np.array([x1[2:-1],x2[2:-1]])
     
     
 def bin_average_neural(eid, mapping='Beryl', nmin=1):
@@ -103,13 +117,14 @@ def gc(r, segl=10):
     segment_length = int(segl / T_BIN)
     num_segments = nobs // segment_length
     
-
+    # reshape into: n_signals x n_segments x n_time_samples
     r_segments = r[:, :num_segments * segment_length
                    ].reshape((nchans, num_segments, 
                    segment_length))
                    
-    #  (n_time_samples, n_trials, n_signals)               
+    # reshape into:  n_time_samples x n_segments x n_signals               
     r_segments_reshaped = r_segments.transpose((2, 1, 0))
+
 
     m = Multitaper(
         r_segments_reshaped,
@@ -121,40 +136,49 @@ def gc(r, segl=10):
         fourier_coefficients=m.fft(), 
         frequencies=m.frequencies, 
         time=m.time)
-
-    # pairwise directed_spectral_granger; freqs x chans x chans
-    psg = c.pairwise_spectral_granger_prediction()[0] 
-    return psg, c.frequencies    
+ 
+    return c    
 
 
-def get_gc(eid, segl=10, show_fig=False):
+def get_gc(eid, segl=10, show_fig=False,
+           metric='pairwise_spectral_granger_prediction'):
 
     '''
     For all regions, plot example segment time series, psg,
     matrix for max gc across freqs
     '''
-    
     time00 = time.perf_counter()
     
-       
-    r, ts, regsd = bin_average_neural(eid)
-    psg, freqs = gc(r, segl=segl)
+    if eid == 'sim':
+        r = make_data()
+        regsd = {'dep':1, 'indep':1}
+        ts = np.linspace(0, (r.shape[1] - 1) * T_BIN, r.shape[1])
+    else:
+        r, ts, regsd = bin_average_neural(eid)   
     
-    m = np.max(psg, axis=0)
+    c = gc(r, segl=segl)
 
-    time11 = time.perf_counter()
-    
-    print('runtime [min]: ', (time11 - time00) / 60)
-    
-    
-    if show_fig:    
+    if not show_fig:
+        return regsd, c    
+           
+    else:
+        # freqs x chans x chans
+        psg = getattr(c, metric)()[0]
+        
+        
+        m = np.max(psg, axis=0)     
+        
         fig, axs = plt.subplots(nrows=1, ncols=3, figsize=(14,6))
         
         # plot example time series, first segment
         exdat = r[:,:int(segl/T_BIN)]/T_BIN
         extime = ts[:int(segl/T_BIN)]    
        
-        _, pal = get_allen_info()    
+        _, pal = get_allen_info()  
+        if eid == 'sim':
+            pal['dep'] = 'b'
+            pal['indep'] = 'r'
+          
         regs = list(regsd)
          
         i = 0
@@ -179,8 +203,10 @@ def get_gc(eid, segl=10, show_fig=False):
                 if ~np.isnan(m[tup])][:j]
         
         for tup in exes: 
-            yy = psg[:,tup[0],tup[1]]  
-            axs[1].plot(freqs, yy, label =f'{regs[tup[0]]} --> {regs[tup[1]]}') 
+            yy = psg[:,tup[0],tup[1]]
+            # Order is inversed! Result is:   
+            axs[1].plot(c.frequencies, yy, 
+                        label =f'{regs[tup[1]]} --> {regs[tup[0]]}') 
 
         axs[1].legend()
         axs[1].set_xlabel('frequency [Hz]')
@@ -188,7 +214,7 @@ def get_gc(eid, segl=10, show_fig=False):
         axs[1].set_title(f'top {j} tuples') 
         
         # plot directed granger matrix
-        ims = axs[2].imshow(m, interpolation=None, cmap='gray', 
+        ims = axs[2].imshow(m, interpolation=None, cmap='gray_r', 
                       origin='lower')
                       
         # highlight max connections              
@@ -201,10 +227,10 @@ def get_gc(eid, segl=10, show_fig=False):
                       
         axs[2].set_xticks(np.arange(m.shape[0]))
         axs[2].set_xticklabels(regs, rotation=90)
-        axs[2].set_ylabel('source')
+        axs[2].set_xlabel('source')
         axs[2].set_yticks(np.arange(m.shape[1]))
         axs[2].set_yticklabels(regs)
-        axs[2].set_xlabel('target')     
+        axs[2].set_ylabel('target')     
         axs[2].set_title('max GC across freqs')
                       
         cb = plt.colorbar(ims,fraction=0.046, pad=0.04)              
@@ -212,10 +238,8 @@ def get_gc(eid, segl=10, show_fig=False):
     
         fig.suptitle(f'eid = {eid}')   
         fig.tight_layout()
-
-           
-    else:
-        return regsd, psg, freqs                  
+        time11 = time.perf_counter()
+        print('runtime [sec]: ', time11 - time00)                 
     
 
 def get_all_granger(eids='all'):
@@ -235,18 +259,24 @@ def get_all_granger(eids='all'):
     for eid in eids:
                
         try:
-
-            regsd, psg, freqs = get_gc(eid)
+            time00 = time.perf_counter()
+            
+            regsd, c = get_gc(eid)
             
             D = {'regsd': regsd,
-                 'psg': psg,
-                 'freqs': freqs}
+                 'c': c,
+                 'dtf': c.direct_directed_transfer_function()[0],
+                 'psg': c.pairwise_spectral_granger_prediction()[0],
+                 'pli': c.phase_lag_index()[0]}
+
                  
             np.save(Path(pth_res, f'{eid}.npy'), D, 
                     allow_pickle=True)
 
             garbage.collect()
             print(k + 1, 'of', len(eids), 'ok')
+            time11 = time.perf_counter()
+            print('runtime [sec]: ', time11 - time00)
             
         except BaseException:
             Fs.append(eid)
@@ -295,11 +325,11 @@ def plot_res(nmin=10, sessmin = 4):
                     (D['regsd'][regs[j]] < nmin)):
                     continue
                 
-                if f'{regs[i]}__{regs[j]}' in d:
-                    d[f'{regs[i]}__{regs[j]}'].append(m[i, j])
+                if f'{regs[i]} --> {regs[j]}' in d:
+                    d[f'{regs[i]} --> {regs[j]}'].append(m[j, i])
                 else:
-                    d[f'{regs[i]}__{regs[j]}'] = []
-                    d[f'{regs[i]}__{regs[j]}'].append(m[i, j])    
+                    d[f'{regs[i]} --> {regs[j]}'] = []
+                    d[f'{regs[i]} --> {regs[j]}'].append(m[j, i])    
 
 
     dm = {x: np.mean(d[x]) for x in d if len(d[x]) > sessmin}
