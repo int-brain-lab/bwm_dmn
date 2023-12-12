@@ -72,33 +72,27 @@ def get_structural(rerun=False):
         M[M > 10**(-0.5)] = 1
         M[M < 10**(-3.5)] = 0
 
-        cols1 = [reg.strip().replace(",", "") for reg in cols]
-        rows1 = [reg.strip().replace(",", "") for reg in rows]
+        cols1 = np.array([reg.strip().replace(",", "") for reg in cols])
+        rows1 = np.array([reg.strip().replace(",", "") for reg in rows])
         
+        # average across injections
+        regsr = list(Counter(rows1))
+        M2 = []
+        for reg in regsr:
+            M2.append(np.mean(M[rows1 == reg], axis=0))       
 
+        M2 = np.array(M2)
+        regs_source = regsr
+        regs_target = cols1
 
-
-
-
-
-        d = {}
-        for row in range(len(s['Unnamed: 0'].array)):
-            for col in range(len(cols)):
-                key = ' --> '.join([s['Unnamed: 0'].array[row],
-                                    cols[col]])    
-                if key not in d:
-                    d[key] = []
-                else:  
-                    d[key].append(s[cols[col]].array[row])
-        
-        # average structural connectivity score across injections
+        # turn into dict
         d0 = {}
-        for pair in d:
-            if d[pair] == []:
-                continue
-            d0[pair] = np.mean(d[pair])
-        
-                    
+        for i in range(len(regs_source)):
+            for j in range(len(regs_target)):
+
+                d0[' --> '.join([regs_source[i], 
+                                 regs_target[j]])] = M2[i,j]
+
         np.save(pth_, d0,
                 allow_pickle=True)
                 
@@ -168,7 +162,7 @@ def get_volume(rerun=False):
 
 
 
-def make_data(T=300000):
+def make_data(T=300000, dc=False):
     
     '''
     auto-regressive data creation
@@ -178,9 +172,13 @@ def make_data(T=300000):
     x1 = np.random.normal(0, 1,T+3)
     x2 = np.random.normal(0, 1,T+3)
 
-    for t in range(2,T+2):
-        x2[t] = 0.55*x2[t-1] - 0.8*x2[t-2] + x2[t+1]
-        x1[t] = 0.55*x1[t-1] - 0.8*x1[t-2] + 0.2 * x2[t-1] + x1[t+1]
+    if dc: 
+        x2 = x1 + 0.01* np.random.normal(0,1,T+3)     
+    
+    else:
+        for t in range(2,T+2):
+            x2[t] = 0.55*x2[t-1] - 0.8*x2[t-2] + x2[t+1]
+            x1[t] = 0.55*x1[t-1] - 0.8*x1[t-2] + 0.2 * x2[t-1] + x1[t+1]
     
     return np.array([x1[2:-1],x2[2:-1]])
     
@@ -246,55 +244,6 @@ def bin_average_neural(eid, mapping='Beryl', nmin=1):
         return R2, times, regs2    
 
 
-
-def trent_(r, segl=10, shuf=False):
-
-    '''
-    idtxl
-    
-    
-    chop up times series into segments of length segl [sec]
-    Independent of trial-structure
-    
-    compute transfer entropy for channel pairs
-    '''
-
-    
-    nchans, nobs = r.shape
-    segment_length = int(segl / T_BIN)
-    num_segments = nobs // segment_length
-
-    # reshape into: n_signals x n_segments x n_time_samples
-    r_segments = r[:, :num_segments * segment_length
-                   ].reshape((nchans, num_segments, 
-                   segment_length))
-
-    if shuf:
-        
-        # shuffle segment order
-        indices = np.arange(r_segments.shape[1])
-        
-        rs = np.zeros(r_segments.shape)
-        for chan in range(r_segments.shape[0]):
-            np.random.shuffle(indices)    
-            rs[chan] = r_segments[chan, indices]
-            
-        r_segments = np.array(rs)    
-        print('segments channel-independently shuffled')
-
-
-    # reshape into:  n_time_samples x n_segments x n_signals               
-    r_segments_reshaped = r_segments.transpose((0, 2, 1))    
-    d0 = Data(r_segments_reshaped, dim_order='psr')
-    network_analysis = MultivariateTE()
-    settings = {'cmi_estimator': 'JidtGaussianCMI',
-                'max_lag_sources': 5,
-                'min_lag_sources': 1}
-    results = network_analysis.analyse_network(settings=settings, 
-                                               data=d0)
-
-
-
 def gc(r, segl=10, shuf=False):    
 
     '''
@@ -343,13 +292,13 @@ def gc(r, segl=10, shuf=False):
 
 
 def get_gc(eid, segl=10, show_fig=False, shuf=False,
-           metric='pairwise_spectral_granger_prediction'):
+           metric='coherence_magnitude'):
 
     '''
     For all regions, plot example segment time series, psg,
     matrix for max gc across freqs
     
-    metric = 'coherence_magnitude'
+    metric = 'pairwise_spectral_granger_prediction'
     
     '''
     time00 = time.perf_counter()
@@ -406,7 +355,8 @@ def get_gc(eid, segl=10, show_fig=False, shuf=False,
 
         # plot top five granger line plots with text next to it
         si = np.unravel_index(np.argsort(np.abs(m),axis=None), m.shape)
-        j = 10  # top j connections
+        # top j connections
+        j = 5 if metric == 'coherence_magnitude' else 10  
         exes = [tup for tup in reversed(list(zip(*si))) 
                 if (~np.isnan(m[tup]) and tup[0] != tup[1])][:j]
         
@@ -473,9 +423,8 @@ def get_all_granger(eids='all'):
             
             D = {'regsd': regsd,
                  'c': c,
-                 'dtf': c.direct_directed_transfer_function()[0],
-                 'psg': c.pairwise_spectral_granger_prediction()[0],
-                 'pli': c.phase_lag_index()[0]}
+                 'coherence_magnitude': c.coherence_magnitude()[0],
+                 'psg': c.pairwise_spectral_granger_prediction()[0]}
 
                  
             np.save(Path(pth_res, f'{eid}.npy'), D, 
@@ -932,14 +881,11 @@ def plot_hub(metric='coherence_magnitude'):
     fig.tight_layout()
     
 
-
-
 def replot_struc():
 
     '''
     replot structural connectivity matrix from Allen data
     '''
-    
 
     # get region order as in paper
     s=pd.read_excel('/home/mic/fig3.xlsx')
@@ -979,8 +925,13 @@ def replot_struc():
     ax.set_title('structural connectivity, fig3 in Allen paper')
       
  
- 
- 
+#def check_freq_maxs():
+
+#     '''
+#     for all region pairs, check at which frequency the 
+#     maximum appeared
+#     '''
+# 
  
  
  
