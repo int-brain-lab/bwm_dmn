@@ -162,7 +162,8 @@ def get_volume(rerun=False):
 
 
 
-def make_data(T=300000, dc=False):
+def make_data(T=300000, vers='oscil', peak_freq_factor0=0.55,
+              peak_freq_factor1=0.6, phase_lag_factor=0.2):
     
     '''
     auto-regressive data creation
@@ -172,16 +173,26 @@ def make_data(T=300000, dc=False):
     x1 = np.random.normal(0, 1,T+3)
     x2 = np.random.normal(0, 1,T+3)
 
-    if dc: 
-        x2 = x1 + 0.01* np.random.normal(0,1,T+3)     
+    if vers == 'dc': 
+        x2 = x1 + 0.7* np.random.normal(0,1,T+3)     
     
-    else:
+    elif vers == 'oscil':
         for t in range(2,T+2):
-            x2[t] = 0.55*x2[t-1] - 0.8*x2[t-2] + x2[t+1]
-            x1[t] = 0.55*x1[t-1] - 0.8*x1[t-2] + 0.2 * x2[t-1] + x1[t+1]
+            x2[t] = (peak_freq_factor1*x2[t-1] - 0.8*x2[t-2] + 
+                     x2[t+1])
+            x1[t] = (peak_freq_factor0*x1[t-1] - 0.8*x1[t-2] + 
+                     phase_lag_factor * x2[t-1] + x1[t+1])
+            
+    elif vers == 'loopy':
+        for t in range(2,T+2):
+            x2[t] = (peak_freq_factor1 * x2[t - 1] - 0.8 * x2[t - 2] 
+                     + phase_lag_factor * x1[t - 1] + x2[t + 1])
+            x1[t] = (peak_freq_factor0 * x1[t - 1] - 0.8 * x1[t - 2] 
+                     + phase_lag_factor * x2[t - 1] + x1[t + 1])        
     
     return np.array([x1[2:-1],x2[2:-1]])
     
+
     
 def bin_average_neural(eid, mapping='Beryl', nmin=1):
     '''
@@ -244,7 +255,7 @@ def bin_average_neural(eid, mapping='Beryl', nmin=1):
         return R2, times, regs2    
 
 
-def gc(r, segl=10, shuf=False):    
+def gc(r, segl=10, shuf=False, shuf_type = 'reg_shuffle'):    
 
     '''
     chop up times series into segments of length segl [sec]
@@ -262,16 +273,29 @@ def gc(r, segl=10, shuf=False):
 
     if shuf:
         
-        # shuffle segment order
-        indices = np.arange(r_segments.shape[1])
         
-        rs = np.zeros(r_segments.shape)
-        for chan in range(r_segments.shape[0]):
-            np.random.shuffle(indices)    
-            rs[chan] = r_segments[chan, indices]
+        if shuf_type == 'reg_shuffle':
+            # shuffle region order per trial        
+            indices = np.arange(r_segments.shape[0])
             
-        r_segments = np.array(rs)    
-        print('segments channel-independently shuffled')
+            rs = np.zeros(r_segments.shape)
+            for trial in range(r_segments.shape[1]):
+                np.random.shuffle(indices)    
+                rs[:,trial,:] = r_segments[indices, trial, :]
+                
+            r_segments = np.array(rs)    
+
+        else:
+            # shuffle segment order
+            indices = np.arange(r_segments.shape[1])
+            
+            rs = np.zeros(r_segments.shape)
+            for chan in range(r_segments.shape[0]):
+                np.random.shuffle(indices)    
+                rs[chan] = r_segments[chan, indices]
+                
+            r_segments = np.array(rs)    
+            #print('segments channel-independently shuffled')
             
                    
     # reshape into:  n_time_samples x n_segments x n_signals               
@@ -291,116 +315,8 @@ def gc(r, segl=10, shuf=False):
     return c    
 
 
-def get_gc(eid, segl=10, show_fig=False, shuf=False,
-           metric='coherence_magnitude'):
 
-    '''
-    For all regions, plot example segment time series, psg,
-    matrix for max gc across freqs
-    
-    metric = 'pairwise_spectral_granger_prediction'
-    
-    '''
-    time00 = time.perf_counter()
-    
-    if eid == 'sim':
-        r = make_data()
-        regsd = {'dep':1, 'indep':1}
-        ts = np.linspace(0, (r.shape[1] - 1) * T_BIN, r.shape[1])
-    else:
-        r, ts, regsd = bin_average_neural(eid)   
-    
-    c = gc(r, segl=segl, shuf=shuf)
-
-    if not show_fig:
-        return regsd, c    
-           
-    else:
-        # freqs x chans x chans
-        psg = getattr(c, metric)()[0]
-        
-        # look at max values of abs results (as phase lag negative)
-        max_indices = np.argmax(np.abs(psg), axis=0)
-        m = psg[max_indices, 
-                np.arange(psg.shape[1])[:, None],
-                np.arange(psg.shape[2])]
-        
-        fig, axs = plt.subplots(nrows=1, ncols=3, figsize=(14,6))
-        
-        # plot example time series, first segment
-        exdat = r[:,:int(segl/T_BIN)]/T_BIN
-        extime = ts[:int(segl/T_BIN)]    
-       
-        _, pal = get_allen_info()  
-        if eid == 'sim':
-            pal['dep'] = 'b'
-            pal['indep'] = 'r'
-          
-        regs = list(regsd)
-         
-        i = 0
-        s = 0
-        for y in exdat:       
-            axs[0].plot(extime, y + s,c=pal[regs[i]])
-            axs[0].text(extime[-1], s, regs[i], 
-                        c=pal[regs[i]])
-            s += np.max(y)
-            i +=1
-                  
-        axs[0].set_xlabel('time [sec]')
-        axs[0].set_ylabel('firing rate [Hz]')
-        axs[0].spines['top'].set_visible(False)
-        axs[0].spines['right'].set_visible(False)
-        axs[0].set_title('example segment')
-
-        # plot top five granger line plots with text next to it
-        si = np.unravel_index(np.argsort(np.abs(m),axis=None), m.shape)
-        # top j connections
-        j = 5 if metric == 'coherence_magnitude' else 10  
-        exes = [tup for tup in reversed(list(zip(*si))) 
-                if (~np.isnan(m[tup]) and tup[0] != tup[1])][:j]
-        
-        for tup in exes: 
-            yy = psg[:,tup[0],tup[1]]
-            # Order is inversed! Result is:   
-            axs[1].plot(c.frequencies, yy, 
-                        label =f'{regs[tup[1]]} --> {regs[tup[0]]}') 
-
-        axs[1].legend()
-        axs[1].set_xlabel('frequency [Hz]')
-        axs[1].set_ylabel(metric)   
-        axs[1].set_title(f'top {j} tuples') 
-        
-        # plot directed granger matrix
-        ims = axs[2].imshow(m, interpolation=None, cmap='gray_r', 
-                      origin='lower')
-                      
-        # highlight max connections              
-        for i, j in exes:
-            rect = patches.Rectangle((j - 0.5, i - 0.5), 1, 1, 
-                                      linewidth=2, 
-                                      edgecolor='red', 
-                                      facecolor='none')
-            axs[2].add_patch(rect)              
-                      
-        axs[2].set_xticks(np.arange(m.shape[0]))
-        axs[2].set_xticklabels(regs, rotation=90)
-        axs[2].set_xlabel('source')
-        axs[2].set_yticks(np.arange(m.shape[1]))
-        axs[2].set_yticklabels(regs)
-        axs[2].set_ylabel('target')     
-        axs[2].set_title('max across freqs')
-                      
-        cb = plt.colorbar(ims,fraction=0.046, pad=0.04)              
-    
-    
-        fig.suptitle(f'eid = {eid} {"shuffled" if shuf else ""}')   
-        fig.tight_layout()
-        time11 = time.perf_counter()
-        print('runtime [sec]: ', time11 - time00)                 
-    
-
-def get_all_granger(eids='all'):
+def get_all_granger(eids='all', nshufs = 50, segl=10):
 
     '''
     get spectral directed granger for all bwm sessions
@@ -415,16 +331,44 @@ def get_all_granger(eids='all'):
     print(f'Processing {len(eids)} sessions')
     time0 = time.perf_counter()
     for eid in eids:
-               
+        print('eid:', eid)           
         try:
             time00 = time.perf_counter()
             
-            regsd, c = get_gc(eid)
+            
+            r, ts, regsd = bin_average_neural(eid)   
+            c = gc(r, segl=segl)
+            psg = c.pairwise_spectral_granger_prediction()[0]
+            coh = c.coherence_magnitude()[0]
+            score_g = np.mean(psg,axis=0)
+            score_c = np.mean(coh,axis=0)
+            
+            # get scores after shuffling segments
+            shuf_g = []
+            shuf_c = []
+            for i in range(nshufs):
+                c_shuf = gc(r, segl=segl,shuf=True)
+                shuf_g.append(np.mean(
+                    c_shuf.pairwise_spectral_granger_prediction()[0],axis=0))
+                shuf_c.append(np.mean(
+                    c_shuf.coherence_magnitude()[0],axis=0))                
+                
+            shuf_g = np.array(shuf_g)
+            shuf_c = np.array(shuf_c)
+
+
+            p_g = np.mean(shuf_g >= score_g, axis=0)
+            p_c = np.mean(shuf_c >= score_c, axis=0)    
+
             
             D = {'regsd': regsd,
-                 'c': c,
-                 'coherence_magnitude': c.coherence_magnitude()[0],
-                 'psg': c.pairwise_spectral_granger_prediction()[0]}
+                 'freqs': c.frequencies,
+                 'p_granger': p_g,
+                 'p_coherence': p_c,
+                 'coherence': score_c,
+                 'granger': score_g,
+                 'coherence_pks': c.frequencies[np.argmax(coh,axis=0)],  
+                 'granger_pks': c.frequencies[np.argmax(psg,axis=0)]}
 
                  
             np.save(Path(pth_res, f'{eid}.npy'), D, 
@@ -449,61 +393,80 @@ def get_all_granger(eids='all'):
 
 
 
-def merge_res(nmin=10, metric='psg'):
+def get_res(nmin=10, metric='coherence', sig_only=True, rerun=False):
 
     '''
-    Group and plot results
+    Group results
     
     nmin: minimum number of neurons per region to be included
     sessmin: min number of sessions with region combi
     
-    'coherence_magnitude'
+    metric in ['coherence', 'granger']    
+    '''
+
+    pth_ = Path(one.cache_dir, 'granger', f'{metric}.npy')
+    if (not pth_.is_file() or rerun):
+
+        
+        p = pth_res.glob('**/*')
+        files = [x for x in p if x.is_file()]
+        
+        d = {}
+        nd = []
+        k = 0
+        
+        insign = []
+        
+        for sess in files:    
+            D = np.load(sess, allow_pickle=True).flat[0]
+            m = D[metric]
+            regs = list(D['regsd'])
+            p_c = D[f'p_{metric}']
+            if not isinstance(D['regsd'], dict):
+                nd.append(sess)
+                continue        
+            
+            for i in range(len(regs)):
+                for j in range(len(regs)):
+                    if i == j:
+                        continue
+                    
+                    if ((D['regsd'][regs[i]] < nmin) or
+                        (D['regsd'][regs[j]] < nmin)):
+                        continue
+                    
+                    if sig_only:
+                        if p_c[i,j] > 0.0:
+                            insign.append(f'{regs[i]} --> {regs[j]}')
+                            continue
+                        
+                    if f'{regs[i]} --> {regs[j]}' in d:
+                        d[f'{regs[i]} --> {regs[j]}'].append(m[j, i])
+
+                    else:
+                        d[f'{regs[i]} --> {regs[j]}'] = []
+                        d[f'{regs[i]} --> {regs[j]}'].append(m[j, i])
+                            
+                             
+            k+=1
+
+        print(f'{len(nd)} failures')
+        print(f'{len(insign)} pairs insign. and {len(d)} significant')
+        u = '_all' if not sig_only else ''
+        np.save(Path(one.cache_dir, 'granger', f'{metric}{u}.npy'), 
+                d, allow_pickle=True)    
+    else:
+        d = np.load(pth_, allow_pickle=True).flat[0]        
+        
+    return d    
     
+    
+def get_meta_info(rerun=False):
+
+    '''
+    get neuron number and peak freq_s per region???
     '''
     
-    p = pth_res.glob('**/*')
-    files = [x for x in p if x.is_file()]
-    
-    d = {}
-    nd = []
-    k = 0
-    for sess in files:    
-        D = np.load(sess, allow_pickle=True).flat[0]
-        
-        try:
-            m = np.max(D[metric], axis=0)
-        except:
-            m = np.max(getattr(D['c'], metric)()[0], axis=0)
-        regs = list(D['regsd'])
-        
-        if not isinstance(D['regsd'], dict):
-            nd.append(sess)
-            continue
-        
-        
-        for i in range(len(regs)):
-            for j in range(len(regs)):
-                if i == j:
-                    continue
-                
-                if ((D['regsd'][regs[i]] < nmin) or
-                    (D['regsd'][regs[j]] < nmin)):
-                    continue
-                
-                if f'{regs[i]} --> {regs[j]}' in d:
-                    d[f'{regs[i]} --> {regs[j]}'].append(m[j, i])
-                else:
-                    d[f'{regs[i]} --> {regs[j]}'] = []
-                    d[f'{regs[i]} --> {regs[j]}'].append(m[j, i])
-        print(f'{k} of {len(files)} seesions added')                
-        k+=1
-
-
-    np.save(Path(one.cache_dir, 'granger', f'{metric}.npy'), 
-            d, allow_pickle=True)    
-    
-    
-def get_all_regs(rerun=False):
 
     pth_ = Path(one.cache_dir, 'granger', f'all_regs.npy')
     if (not pth_.is_file() or rerun):
@@ -513,24 +476,27 @@ def get_all_regs(rerun=False):
         
         d = {}
         for sess in files:
-            print(sess)    
+            
             D = np.load(sess, allow_pickle=True).flat[0]
-       
 
             if not isinstance(D['regsd'], dict):
                 continue
 
-        
-            d[str(sess).split('/')[-1].split('.')[0]] = D['regsd']
+            dd = {key: D[key] for key in ['regsd', 'granger_pks',
+                                          'coherence_pks', 
+                                          'p_granger', 'p_coherence',
+                                          'granger', 'coherence']}
 
-        np.save(path_, d, allow_pickle=True)
+            d[str(sess).split('/')[-1].split('.')[0]] = dd
+
+        np.save(pth_, d, allow_pickle=True)
         
     else:
         d = np.load(pth_, allow_pickle=True).flat[0]        
         
     return d
     
-    
+
     
 '''
 #####################
@@ -538,27 +504,139 @@ plotting
 #####################    
 '''
     
+def plot_gc(eid, segl=10, shuf=False,
+            metric0='coherence', vers='oscil', 
+            peak_freq_factor0=0.55, peak_freq_factor1=0.6,
+            phase_lag_factor=0.2):
+
+    '''
+    For all regions, plot example segment time series, psg,
+    matrix for max gc across freqs
     
-def plot_strip_pairs(metric='coherence_magnitude', sessmin = 2, 
+    metric = 'pairwise_spectral_granger_prediction'
+    or 'coherence_magnitude'
+    
+    '''
+    time00 = time.perf_counter()
+    
+    if eid == 'sim':
+        r = make_data(vers = vers, peak_freq_factor0=peak_freq_factor0,
+                                   peak_freq_factor1=peak_freq_factor1,
+                      phase_lag_factor=0.2)
+        regsd = {'dep':1, 'indep':1}
+        ts = np.linspace(0, (r.shape[1] - 1) * T_BIN, r.shape[1])
+    else:
+        r, ts, regsd = bin_average_neural(eid)   
+    
+    if metric0 == 'granger':
+        metric = 'pairwise_spectral_granger_prediction'
+        
+    if metric0 == 'coherence':
+        metric = 'coherence_magnitude'
+
+    c = gc(r, segl=segl, shuf=shuf)
+    # freqs x chans x chans
+    psg = getattr(c, metric)()[0]
+    
+    # mean score across frequencies
+    m = np.mean(psg, axis=0)
+    
+    fig, axs = plt.subplots(nrows=1, ncols=3, figsize=(14,6))
+    
+    # plot example time series, first segment
+    exdat = r[:,:int(segl/T_BIN)]/T_BIN
+    extime = ts[:int(segl/T_BIN)]    
+   
+    _, pal = get_allen_info()  
+    if eid == 'sim':
+        pal['dep'] = 'b'
+        pal['indep'] = 'r'
+      
+    regs = list(regsd)
+     
+    i = 0
+    s = 0
+    for y in exdat:       
+        axs[0].plot(extime, y + s,c=pal[regs[i]])
+        axs[0].text(extime[-1], s, regs[i], 
+                    c=pal[regs[i]])
+        s += np.max(y)
+        i +=1
+              
+    axs[0].set_xlabel('time [sec]')
+    axs[0].set_ylabel('firing rate [Hz]')
+    axs[0].spines['top'].set_visible(False)
+    axs[0].spines['right'].set_visible(False)
+    axs[0].set_title('example segment')
+
+    # plot top five granger line plots with text next to it
+    si = np.unravel_index(np.argsort(np.abs(m),axis=None), m.shape)
+    # top j connections
+    j = 10  
+    exes = [tup for tup in reversed(list(zip(*si))) 
+            if (~np.isnan(m[tup]) and tup[0] != tup[1])][:j]
+    
+    for tup in exes: 
+        yy = psg[:,tup[0],tup[1]]
+        # Order is inversed! Result is:   
+        axs[1].plot(c.frequencies, yy, 
+                    label =f'{regs[tup[1]]} --> {regs[tup[0]]}') 
+
+    axs[1].legend()
+    axs[1].set_xlabel('frequency [Hz]')
+    axs[1].set_ylabel(metric)   
+    axs[1].set_title(f'top {j} tuples') 
+    
+    # plot directed granger matrix
+    ims = axs[2].imshow(m, interpolation=None, cmap='gray_r', 
+                  origin='lower')
+                  
+    # highlight max connections              
+    for i, j in exes:
+        rect = patches.Rectangle((j - 0.5, i - 0.5), 1, 1, 
+                                  linewidth=2, 
+                                  edgecolor='red', 
+                                  facecolor='none')
+        axs[2].add_patch(rect)              
+                  
+    axs[2].set_xticks(np.arange(m.shape[0]))
+    axs[2].set_xticklabels(regs, rotation=90)
+    axs[2].set_xlabel('source')
+    axs[2].set_yticks(np.arange(m.shape[1]))
+    axs[2].set_yticklabels(regs)
+    axs[2].set_ylabel('target')     
+    axs[2].set_title('mean across freqs')
+                  
+    cb = plt.colorbar(ims,fraction=0.046, pad=0.04)              
+
+
+    fig.suptitle(f'eid = {eid} {"shuffled" if shuf else ""}' 
+                 f'vers={vers}, peak_freq_factor0 = {peak_freq_factor0}, '
+                 f'peak_freq_factor1 = {peak_freq_factor1}, ' 
+                 f'phase_lag_factor={phase_lag_factor},'
+                 if eid == 'sim' else '')   
+    fig.tight_layout()
+    time11 = time.perf_counter()
+    print('runtime [sec]: ', time11 - time00)     
+    
+    
+    
+def plot_strip_pairs(metric='coherence', sessmin = 2, 
              ptype='strip', shuf=False, expo=1):
 
     '''
-    for spectral Granger, metric = 'psg'
+    for spectral Granger, metric in ['granger', coherence']
     '''
+    d0 = get_res(metric=metric)
 
-    # discard region pairs with scores below shuffle baseline
-    thresh = 0.015 if metric == 'coherence_magnitude' else 0.006
-
-    d0 = np.load(Path(one.cache_dir, 'granger', 
-                        f'{metric}.npy'), 
-                        allow_pickle=True).flat[0]
+                        
     regs = list(Counter(np.array([s.split(' --> ') for s in
                              d0]).flatten()))
                              
     _, palette = get_allen_info()
                                   
     if ptype == 'strip':                                             
-        if metric == 'coherence_magnitude':
+        if metric == 'coherence':
             # remove directionality
             sep = ','
             
@@ -570,25 +648,24 @@ def plot_strip_pairs(metric='coherence_magnitude', sessmin = 2,
                 else:
                     d[sep.join([a,b])] = d0[s]
             
-            
-            
+  
         else:
             d = d0
             sep = ' --> '
                 
                   
-        dm = {x: np.mean(d[x]) for x in d if ((len(d[x]) >= sessmin)
-              and (np.mean(d[x]) > thresh))}
+        dm = {x: np.mean(d[x]) for x in d if (len(d[x]) >= sessmin)}
+        
         dm_sorted = dict(sorted(dm.items(), key=lambda item: item[1]))
                       
         exs = list(dm_sorted.keys())
-        nrows = 5
+        nrows = 3
         per_row = len(exs)//nrows
            
         d_exs = {x:d[x] for x in exs}
     
         fig, axs = plt.subplots(nrows=nrows, 
-                                ncols=1, figsize=(20,15), sharey=True)
+                                ncols=1, figsize=(10,20), sharey=True)
 
         for row in range(nrows):
             
@@ -606,18 +683,18 @@ def plot_strip_pairs(metric='coherence_magnitude', sessmin = 2,
             axs[row].set_xticklabels([x.split(sep)[0] for x in pairs], 
                                       rotation=90, 
                                       fontsize=5 if 
-                                      (metric == 'psg') else 12)
+                                      (metric == 'psg') else 8)
             
             for label in axs[row].get_xticklabels():
                 label.set_color(palette[label.get_text()])
                 
             low_regs = [x.split(sep)[-1] for x in pairs]   
             for i, tick in enumerate(axs[row].get_xticklabels()):
-                axs[row].text(tick.get_position()[0], -0.75, low_regs[i],
+                axs[row].text(tick.get_position()[0], -0.3, low_regs[i],
                     ha='center', va='center', rotation=90,
                     color=palette[low_regs[i]],
                     transform=axs[row].get_xaxis_transform(), 
-                    fontsize=5 if (metric == 'psg') else 12)    
+                    fontsize=5 if (metric == 'psg') else 8)    
             
             axs[row].set_ylabel(metric)
                    
@@ -696,19 +773,22 @@ def scatter_psg_coh():
     '''
     
     dg = np.load(Path(one.cache_dir, 'granger', 
-                        f'psg.npy'), 
+                        f'granger_all.npy'), 
                         allow_pickle=True).flat[0]    
     
     dc = np.load(Path(one.cache_dir, 'granger', 
-                        f'coherence_magnitude.npy'), 
-                        allow_pickle=True).flat[0]        
-
+                        f'coherence_all.npy'), 
+                        allow_pickle=True).flat[0]
+                        
+    pairs = list(set(dg.keys()).intersection(set(dc.keys())))
+    
     pts = []
     gs = []
     cs = []
     
-    for p in dg:
+    for p in pairs:
         for i in range(len(dg[p])):
+            
             gs.append(dg[p][i])
             cs.append(dc[p][i])
             pts.append(p)
@@ -748,11 +828,11 @@ def plot_dist_scat(dist_='centroids'):
     
 
     dg = np.load(Path(one.cache_dir, 'granger', 
-                        f'psg.npy'), 
+                        f'granger_all.npy'), 
                         allow_pickle=True).flat[0]    
     
     dc = np.load(Path(one.cache_dir, 'granger', 
-                        f'coherence_magnitude.npy'), 
+                        f'coherence_all.npy'), 
                         allow_pickle=True).flat[0]    
         
     pts = []
@@ -925,19 +1005,58 @@ def replot_struc():
     ax.set_title('structural connectivity, fig3 in Allen paper')
       
  
-#def check_freq_maxs():
+def freq_maxs_hists(perc = 95, freqlow=10):
 
-#     '''
-#     for all region pairs, check at which frequency the 
-#     maximum appeared
-#     '''
-# 
- 
- 
- 
- 
- 
- 
+    '''
+    histograms of peak frequencies
+    perc: threshold of percentile of scores to highlight 
+        high freq interaction 
+    '''
+
+    d = get_meta_info()
+
+    thr = {metric: np.nanpercentile(np.concatenate([d[eid][metric].flatten() 
+                              for eid in d]), perc) for metric in 
+                              ['granger', 'coherence']}
+
+    fig, axs = plt.subplots(ncols=2, sharex=True)
+    k = 0
+    for metric in ['granger', 'coherence']:
+
+        pks = []
+        sess_high = []
+        for eid in d:
+            ks = d[eid][f'{metric}_pks'][d[eid][f'p_{metric}'] == 0.0]
+            pks.append(ks)
+            ks2 = d[eid][f'{metric}_pks'][np.bitwise_and.reduce([
+                d[eid][f'p_{metric}'] == 0.0,
+                d[eid][f'{metric}'] > thr[metric],
+                d[eid][f'{metric}_pks'] > freqlow])]
+            
+            if np.all(ks2.size == 0):
+                continue
+            else:
+                sess_high.append(eid)        
+            
+     
+        pks = np.concatenate(pks) 
+        axs[k].hist(pks,bins=600)
+        axs[k].set_xlabel('peak frequency [Hz]')
+        axs[k].set_ylabel('# region pairs')
+        axs[k].set_title(metric)
+        print(metric)
+        print(sess_high) 
+        k+=1
+
+    fig.suptitle('only region-shuffle significant')
+    fig.tight_layout()
+    
+
+
+
+
+
+
  
   
   
