@@ -1,14 +1,18 @@
+#import os
+#os.environ["SPECTRAL_CONNECTIVITY_ENABLE_GPU"] = "true"
+
+
 import numpy as np
 from collections import Counter
 from pathlib import Path
 from spectral_connectivity import Multitaper, Connectivity
 import time
-from itertools import product
+from itertools import combinations
 from scipy.stats import norm
 import pandas as pd
 import umap
 from copy import copy
-from sklearn.manifold import MDS
+#from sklearn.manifold import MDS
 from scipy.stats import pearsonr, spearmanr
 
 from brainwidemap import load_good_units, bwm_query
@@ -259,7 +263,7 @@ def gc(r, segl=10, shuf=False, shuf_type = 'reg_shuffle'):
 
     '''
     chop up times series into segments of length segl [sec]
-    Independent of trial-structure
+    Independent of trial-structure, then compute metrics
     '''
     
     nchans, nobs = r.shape
@@ -273,7 +277,7 @@ def gc(r, segl=10, shuf=False, shuf_type = 'reg_shuffle'):
 
     if shuf:
         
-        
+
         if shuf_type == 'reg_shuffle':
             # shuffle region order per trial        
             indices = np.arange(r_segments.shape[0])
@@ -316,7 +320,7 @@ def gc(r, segl=10, shuf=False, shuf_type = 'reg_shuffle'):
 
 
 
-def get_all_granger(eids='all', nshufs = 50, segl=10):
+def get_all_granger(eids='all', nshufs = 3, segl=10, nmin=10):
 
     '''
     get spectral directed granger for all bwm sessions
@@ -335,9 +339,35 @@ def get_all_granger(eids='all', nshufs = 50, segl=10):
         try:
             time00 = time.perf_counter()
             
+            r, ts, regsd = bin_average_neural(eid, nmin=nmin)
+            if not bool(regsd):
+                print(f'no data for {eid}') 
+                continue
             
-            r, ts, regsd = bin_average_neural(eid)   
-            c = gc(r, segl=segl)
+            nchans, nobs = r.shape
+            segment_length = int(segl / T_BIN)
+            num_segments = nobs // segment_length
+            
+            # reshape into: n_signals x n_segments x n_time_samples
+            r_segments = r[:, :num_segments * segment_length
+                           ].reshape((nchans, num_segments, 
+                           segment_length))
+                                       
+            # reshape to n_time_samples x n_segments x n_signals               
+            r_segments_reshaped = r_segments.transpose((2, 1, 0))
+
+            m = Multitaper(
+                r_segments_reshaped,
+                sampling_frequency=1/T_BIN,
+                time_halfbandwidth_product=2,
+                start_time=0)
+
+            c = Connectivity(
+                fourier_coefficients=m.fft(), 
+                frequencies=m.frequencies, 
+                time=m.time)
+            
+
             psg = c.pairwise_spectral_granger_prediction()[0]
             coh = c.coherence_magnitude()[0]
             score_g = np.mean(psg,axis=0)
@@ -346,20 +376,61 @@ def get_all_granger(eids='all', nshufs = 50, segl=10):
             # get scores after shuffling segments
             shuf_g = []
             shuf_c = []
+            
+            # shuffle pairs of regions separately
+            pairs = np.array(list(combinations(range(nchans),2)))
+                        
             for i in range(nshufs):
-                c_shuf = gc(r, segl=segl,shuf=True)
-                shuf_g.append(np.mean(
-                    c_shuf.pairwise_spectral_granger_prediction()[0],axis=0))
-                shuf_c.append(np.mean(
-                    c_shuf.coherence_magnitude()[0],axis=0))                
+                if i%1000 == 0:
+                    print('shuf', i, f'({nshufs})')
+                
+                mg = np.zeros([nchans,nchans])
+                mc = np.zeros([nchans,nchans])
+                
+                for pair in pairs:                                      
+                    rs = np.zeros([2, r_segments.shape[1],
+                                      r_segments.shape[2]])
+                                      
+                    for trial in range(r_segments.shape[1]):
+                        np.random.shuffle(pair)    
+                        rs[:,trial,:] = r_segments[pair, trial, :]
+                        
+                    r_segments0 = np.array(rs)
+                    
+                    #into n_time_samples x n_segments x n_signals               
+                    r_segments_reshaped0 = r_segments0.transpose((2, 1, 0))
+
+                    m = Multitaper(
+                        r_segments_reshaped0,
+                        sampling_frequency=1/T_BIN,
+                        time_halfbandwidth_product=2,
+                        start_time=0)
+                    
+                    c0 = Connectivity(
+                        fourier_coefficients=m.fft(), 
+                        frequencies=m.frequencies, 
+                        time=m.time)
+                
+                    mmg = np.mean(
+                        c0.pairwise_spectral_granger_prediction()[0],
+                            axis=0)
+                    mmc = np.mean(
+                        c0.coherence_magnitude()[0],
+                            axis=0)        
+                            
+                    mg[pair[0], pair[1]] = mmg[0,1]
+                    mg[pair[1], pair[0]] = mmg[1,0]
+                    mc[pair[0], pair[1]] = mmc[0,1]
+                    mc[pair[1], pair[0]] = mmc[1,0]
+             
+                shuf_g.append(mg)
+                shuf_c.append(mc)                
                 
             shuf_g = np.array(shuf_g)
             shuf_c = np.array(shuf_c)
 
-
             p_g = np.mean(shuf_g >= score_g, axis=0)
             p_c = np.mean(shuf_c >= score_c, axis=0)    
-
             
             D = {'regsd': regsd,
                  'freqs': c.frequencies,
@@ -610,11 +681,12 @@ def plot_gc(eid, segl=10, shuf=False,
     cb = plt.colorbar(ims,fraction=0.046, pad=0.04)              
 
 
-    fig.suptitle(f'eid = {eid} {"shuffled" if shuf else ""}' 
+    fig.suptitle(f'eid = {eid} {"shuffled" if shuf else ""} ' 
                  f'vers={vers}, peak_freq_factor0 = {peak_freq_factor0}, '
                  f'peak_freq_factor1 = {peak_freq_factor1}, ' 
                  f'phase_lag_factor={phase_lag_factor},'
-                 if eid == 'sim' else '')   
+                 if eid == 'sim' else 
+                 f'eid = {eid} {"shuffled" if shuf else ""} ')   
     fig.tight_layout()
     time11 = time.perf_counter()
     print('runtime [sec]: ', time11 - time00)     
@@ -1052,7 +1124,69 @@ def freq_maxs_hists(perc = 95, freqlow=10):
     fig.tight_layout()
     
 
+def scatter_direction(only_sig=True):
 
+    '''
+    scatter plot for region pairs 
+    Granger A --> B on x, B --> A on y
+    source region colored
+    '''
+    
+    _, pa = get_allen_info()    
+    dg = np.load(Path(one.cache_dir, 'granger', 
+                        f"granger{'' if only_sig else '_all'}.npy"), 
+                        allow_pickle=True).flat[0]
+
+    sep = ' --> '
+    
+    pairs = []
+    for s in dg:
+        a,b = s.split(sep)
+        # check if both directions were significant
+        if ((sep.join([a,b]) in dg) and (sep.join([b,a]) in dg)):
+            if (([a,b] in pairs) or ([b,a] in pairs)):
+                continue
+            else:
+                pairs.append([a,b])    
+            
+    # for each region pair get mean granger 
+    dir0 = []
+    dir1 = []
+    pairs0 = []
+    for pair in pairs:
+        a,b = pair
+        dir0.append(np.mean(dg[sep.join([a,b])]))
+        dir1.append(np.mean(dg[sep.join([b,a])]))
+        pairs0.append(', '.join([a,b]))
+          
+            
+    fig, ax = plt.subplots()
+    ax.scatter(dir0, dir1, color='k', s=0.5)
+
+    for i in range(len(pairs)):
+        ax.annotate('  ' + pairs0[i], 
+            (dir0[i], dir1[i]),
+            fontsize=5,color='k')  
+
+            
+    ax.set_xlabel('A --> B')       
+    ax.set_ylabel('B --> A')
+
+    cors,ps = spearmanr(dir0, dir1)
+    corp,pp = pearsonr(dir0, dir1)
+
+    ax.set_title(f'pearson: (r,p)=({np.round(corp,2)},{np.round(pp,2)}) \n'
+                 f'spearman: (r,p)=({np.round(cors,2)},{np.round(ps,2)})')
+        
+    
+    
+    
+    
+    
+    
+    
+    
+    
 
 
 
