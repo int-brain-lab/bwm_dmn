@@ -14,13 +14,15 @@ import umap
 from copy import copy
 #from sklearn.manifold import MDS
 from scipy.stats import pearsonr, spearmanr
+from statsmodels.stats.multitest import multipletests
+import networkx as nx
 
 from brainwidemap import load_good_units, bwm_query
 from iblutil.numerical import bincount2D
 from one.api import ONE
 from iblatlas.regions import BrainRegions
 from iblatlas.atlas import AllenAtlas
-
+import ibllib
 
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -320,7 +322,7 @@ def gc(r, segl=10, shuf=False, shuf_type = 'reg_shuffle'):
 
 
 
-def get_all_granger(eids='all', nshufs = 3, segl=10, nmin=10):
+def get_all_granger(eids='all', nshufs = 2000, segl=10, nmin=10):
 
     '''
     get spectral directed granger for all bwm sessions
@@ -424,7 +426,10 @@ def get_all_granger(eids='all', nshufs = 3, segl=10, nmin=10):
                     mc[pair[1], pair[0]] = mmc[1,0]
              
                 shuf_g.append(mg)
-                shuf_c.append(mc)                
+                shuf_c.append(mc)
+                
+            shuf_g.append(score_g)
+            shuf_c.append(score_c)          
                 
             shuf_g = np.array(shuf_g)
             shuf_c = np.array(shuf_c)
@@ -464,7 +469,8 @@ def get_all_granger(eids='all', nshufs = 3, segl=10, nmin=10):
 
 
 
-def get_res(nmin=10, metric='coherence', sig_only=True, rerun=False):
+def get_res(nmin=10, metric='coherence', sig_only=True, 
+            rerun=False, sigl=0.05):
 
     '''
     Group results
@@ -474,8 +480,8 @@ def get_res(nmin=10, metric='coherence', sig_only=True, rerun=False):
     
     metric in ['coherence', 'granger']    
     '''
-
-    pth_ = Path(one.cache_dir, 'granger', f'{metric}.npy')
+    u = '_all' if not sig_only else ''
+    pth_ = Path(one.cache_dir, 'granger', f'{metric}{u}.npy')
     if (not pth_.is_file() or rerun):
 
         
@@ -483,10 +489,8 @@ def get_res(nmin=10, metric='coherence', sig_only=True, rerun=False):
         files = [x for x in p if x.is_file()]
         
         d = {}
-        nd = []
-        k = 0
-        
-        insign = []
+        ps = []
+
         
         for sess in files:    
             D = np.load(sess, allow_pickle=True).flat[0]
@@ -502,32 +506,54 @@ def get_res(nmin=10, metric='coherence', sig_only=True, rerun=False):
                     if i == j:
                         continue
                     
-                    if ((D['regsd'][regs[i]] < nmin) or
-                        (D['regsd'][regs[j]] < nmin)):
+                    if ((D['regsd'][regs[i]] <= nmin) or
+                        (D['regsd'][regs[j]] <= nmin)):
                         continue
-                    
-                    if sig_only:
-                        if p_c[i,j] > 0.0:
-                            insign.append(f'{regs[i]} --> {regs[j]}')
-                            continue
                         
                     if f'{regs[i]} --> {regs[j]}' in d:
-                        d[f'{regs[i]} --> {regs[j]}'].append(m[j, i])
+                        d[f'{regs[i]} --> {regs[j]}'].append(
+                            [m[j, i], (p_c[i,j]/1.0002) + 1/5001])
+                        
 
                     else:
                         d[f'{regs[i]} --> {regs[j]}'] = []
-                        d[f'{regs[i]} --> {regs[j]}'].append(m[j, i])
-                            
-                             
-            k+=1
+                        d[f'{regs[i]} --> {regs[j]}'].append(
+                            [m[j, i], (p_c[i,j]/1.0002) + 1/5001])
 
-        print(f'{len(nd)} failures')
-        print(f'{len(insign)} pairs insign. and {len(d)} significant')
+                    
+                    ps.append((p_c[i,j]/1.0002) + 1/5001)
+
+                            
+        _, corrected_ps, _, _ = multipletests(ps, sigl, 
+                                           method='fdr_bh')
+                                           
+        kp = 0                                           
+        d2 = {}
+        for pair in d:
+            scores = [] 
+            for score in d[pair]:
+                if sig_only:
+                    if corrected_ps[kp] < sigl:
+                        scores.append(score[0])
+                else:
+                    scores.append(score[0])
+                kp+=1
+            if scores == []:
+                continue
+            else:                                           
+                d2[pair] = scores
+                                
+        print(f'{len(ps)} {metric} measurements in total')
+        print(f'Uncorrected significant: {sum(np.array(ps)<0.05)}')
+        print(f'Corrected significant: {sum(corrected_ps<0.05)}')
+        
         u = '_all' if not sig_only else ''
+        
+        
         np.save(Path(one.cache_dir, 'granger', f'{metric}{u}.npy'), 
-                d, allow_pickle=True)    
+                d2, allow_pickle=True)    
     else:
-        d = np.load(pth_, allow_pickle=True).flat[0]        
+        d = np.load(pth_, allow_pickle=True).flat[0]         
         
     return d    
     
@@ -694,12 +720,12 @@ def plot_gc(eid, segl=10, shuf=False,
     
     
 def plot_strip_pairs(metric='coherence', sessmin = 2, 
-             ptype='strip', shuf=False, expo=1):
+             ptype='strip', shuf=False, expo=1, sig_only=True):
 
     '''
     for spectral Granger, metric in ['granger', coherence']
     '''
-    d0 = get_res(metric=metric)
+    d0 = get_res(metric=metric, sig_only=True)
 
                         
     regs = list(Counter(np.array([s.split(' --> ') for s in
@@ -772,7 +798,8 @@ def plot_strip_pairs(metric='coherence', sessmin = 2,
                    
 
         fig.tight_layout()
-        
+        print(f'sessmin={sessmin}; sig_only={sig_only};'
+              f'#reg pairs {len(dm)}')        
         
     else:
         # plot matrix of all regions       
@@ -838,18 +865,21 @@ def plot_strip_pairs(metric='coherence', sessmin = 2,
             fig.tight_layout()        
 
     
-def scatter_psg_coh():
+def scatter_psg_coh(sig_only=True):
 
     '''
     scatter region pairs, granger and coherence
     '''
     
+    h = '' if sig_only else '_all'
+    
+    
     dg = np.load(Path(one.cache_dir, 'granger', 
-                        f'granger_all.npy'), 
+                        f'granger{h}.npy'), 
                         allow_pickle=True).flat[0]    
     
     dc = np.load(Path(one.cache_dir, 'granger', 
-                        f'coherence_all.npy'), 
+                        f'coherence{h}.npy'), 
                         allow_pickle=True).flat[0]
                         
     pairs = list(set(dg.keys()).intersection(set(dc.keys())))
@@ -859,11 +889,16 @@ def scatter_psg_coh():
     cs = []
     
     for p in pairs:
-        for i in range(len(dg[p])):
-            
-            gs.append(dg[p][i])
-            cs.append(dc[p][i])
-            pts.append(p)
+        if sig_only:
+            gs.append(np.mean(dg[p]))
+            cs.append(np.mean(dc[p]))
+            pts.append(p)        
+        else:
+            for i in range(len(dg[p])):
+                
+                gs.append(dg[p][i])
+                cs.append(dc[p][i])
+                pts.append(p)
             
             
     fig, ax = plt.subplots()
@@ -874,15 +909,15 @@ def scatter_psg_coh():
             (gs[i], cs[i]),
             fontsize=5,color='k')                   
     
-            
-    ax.set_xlabel('Granger')       
+    ax.set_xlabel('granger')       
     ax.set_ylabel('coherence')
 
     cors,ps = spearmanr(gs, cs)
     corp,pp = pearsonr(gs, cs)
 
     ax.set_title(f'pearson: (r,p)=({np.round(corp,2)},{np.round(pp,2)}) \n'
-                 f'spearman: (r,p)=({np.round(cors,2)},{np.round(ps,2)})')
+                 f'spearman: (r,p)=({np.round(cors,2)},{np.round(ps,2)}) \n'
+                 f'both significant only = {sig_only}')
     
     
 def plot_dist_scat(dist_='centroids'):
@@ -1162,7 +1197,8 @@ def scatter_direction(only_sig=True):
             
     fig, ax = plt.subplots()
     ax.scatter(dir0, dir1, color='k', s=0.5)
-
+    ax.plot([0, 1], [0, 1], linestyle='--', color='grey')
+    
     for i in range(len(pairs)):
         ax.annotate('  ' + pairs0[i], 
             (dir0[i], dir1[i]),
@@ -1177,16 +1213,68 @@ def scatter_direction(only_sig=True):
 
     ax.set_title(f'pearson: (r,p)=({np.round(corp,2)},{np.round(pp,2)}) \n'
                  f'spearman: (r,p)=({np.round(cors,2)},{np.round(ps,2)})')
+                 
+    ax.set_xscale('log')
+    ax.set_yscale('log') 
+       
+    fig.tight_layout()    
+    
+    
+
+def plot_graph(metric='coherence', only_sig=True):
+
+    '''
+    circular graph 
+    '''
+
+    d0 = np.load(Path(one.cache_dir, 'granger', 
+                        f"{metric}{'' if only_sig else '_all'}.npy"), 
+                        allow_pickle=True).flat[0]
+    
+    d = {k: np.mean(d0[k]) for k in d0}
+    
+    _, pa = get_allen_info()
+    
         
+    G = nx.DiGraph()
+    for edge, weight in d.items():
+        source, target = edge.split(' --> ')
+        G.add_edge(source, target, weight=weight)
+
+
+    # order regions by canonical list 
+    p = (Path(ibllib.__file__).parent / 'atlas/beryl.npy')
+    regs = br.id2acronym(np.load(p), mapping='Beryl')
+
+    node_order = []
+    for reg in regs:
+        if reg in G.nodes:
+            node_order.append(reg)
+
+
+    edge_weights = [G.edges[edge]['weight'] for edge in G.edges]
+    pos0 = nx.circular_layout(G)
+    pos = dict(zip(node_order,pos0.values()))
     
+    nx.draw(G, pos, with_labels=True, node_size=50, 
+        node_color=[pa[node] for node in G.nodes], 
+        font_size=6, 
+        font_color='black', 
+        width=edge_weights, edge_color='gray', 
+        arrowsize=5, connectionstyle='arc3,rad=0.1')
+   
+    fig = plt.gcf()
+    fig.suptitle(f'{metric}; only_sig={only_sig}')    
     
-    
-    
-    
-    
-    
-    
-    
+#5 failures
+
+#['004d8fd5-41e7-4f1b-a45b-0d4ad76fe446',
+# '12dc8b34-b18e-4cdd-90a9-da134a9be79c',
+# '1425bd6f-c625-4f6a-b237-dc5bcfc42c87',
+# '1b61b7f2-a599-4e40-abd6-3e758d2c9e25',
+# '1d4a7bd6-296a-48b9-b20e-bd0ac80750a5',    
+# 'dfd8e7df-dc51-4589-b6ca-7baccfeb94b4']    
+#    
 
 
 
