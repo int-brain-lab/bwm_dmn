@@ -24,6 +24,7 @@ from iblatlas.regions import BrainRegions
 from iblatlas.atlas import AllenAtlas
 import ibllib
 
+
 import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -57,6 +58,8 @@ def get_structural(rerun=False):
 
     '''
     load structural connectivity matrix
+    https://www.nature.com/articles/nature13186
+    fig3
     https://static-content.springer.com
     /esm/art%3A10.1038%2Fnature13186/MediaObjects/
     41586_2014_BFnature13186_MOESM70_ESM.xlsx
@@ -108,7 +111,8 @@ def get_structural(rerun=False):
     return d                                
 
 
-def get_centroids(rerun=False):
+
+def get_centroids(rerun=False, dist_=False):
 
     '''
     Beryl region centroids xyz
@@ -136,6 +140,25 @@ def get_centroids(rerun=False):
                 
     else:
         d = np.load(pth_, allow_pickle=True).flat[0]        
+
+    if dist_:
+        print('note this is the inverse of the centroid euc dist')
+        regs = list(d.keys())
+        res = np.zeros((len(regs), len(regs)))
+        for i in range(len(regs)):
+            for j in range(len(regs)):
+                res[i,j] = np.sum((d[regs[i]] - d[regs[j]])**2)**0.5
+        
+        # invert and normalize, so that 1 is maximally similar
+        # and 0 is maximally distant 
+        max_val = np.max(res)
+        min_val = np.min(res)
+            
+        # Perform linear transformation
+        res = 1 - ((res - min_val) / (max_val - min_val))           
+                    
+        D = {'res': res, 'regs': regs}
+        return D
         
     return d
             
@@ -1252,17 +1275,37 @@ def plot_graph(metric='coherence', only_sig=True):
             node_order.append(reg)
 
 
-    edge_weights = [G.edges[edge]['weight'] for edge in G.edges]
+    edge_weights = np.array([G.edges[edge]['weight'] 
+                             for edge in G.edges])*10
     pos0 = nx.circular_layout(G)
     pos = dict(zip(node_order,pos0.values()))
     
-    nx.draw(G, pos, with_labels=True, node_size=50, 
+    fig, ax = plt.subplots(figsize=(9,9))
+    
+    nx.draw(G, pos, with_labels=False, node_size=70, 
         node_color=[pa[node] for node in G.nodes], 
         font_size=6, 
         font_color='black', 
         width=edge_weights, edge_color='gray', 
-        arrowsize=5, connectionstyle='arc3,rad=0.1')
-   
+        arrowsize=5, connectionstyle='arc3,rad=0.1', ax=ax)
+
+    for node, (x, y) in pos.items():
+        angle = np.arctan2(y, x)
+        angle = np.degrees(angle)
+        # Radial shift factor (adjust as needed)
+        r_shift = 1.1
+            
+        # Calculate new positions
+        x_new = r_shift * np.cos(np.radians(angle))
+        y_new = r_shift * np.sin(np.radians(angle))
+                      
+        plt.text(x_new, y_new, node, fontsize=11, ha='center', 
+        va='center', rotation=angle if x > 0 else angle + 180,
+        color=pa[node])
+    
+        
+    ax.set_aspect('equal')
+    fig.tight_layout()
     fig = plt.gcf()
     fig.suptitle(f'{metric}; only_sig={only_sig}')    
     
