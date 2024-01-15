@@ -13,11 +13,11 @@ import pandas as pd
 import umap
 from copy import copy
 #from sklearn.manifold import MDS
-from scipy.stats import pearsonr, spearmanr
+from scipy.stats import pearsonr, spearmanr, norm, chi2
 from statsmodels.stats.multitest import multipletests
 import networkx as nx
 
-from brainwidemap import load_good_units, bwm_query
+from brainwidemap import load_good_units, bwm_query, download_aggregate_tables
 from iblutil.numerical import bincount2D
 from one.api import ONE
 from iblatlas.regions import BrainRegions
@@ -492,7 +492,7 @@ def get_all_granger(eids='all', nshufs = 2000, segl=10, nmin=10):
 
 
 
-def get_res(nmin=10, metric='coherence', sig_only=True, 
+def get_res(nmin=10, metric='coherence', 
             rerun=False, sigl=0.05):
 
     '''
@@ -503,8 +503,8 @@ def get_res(nmin=10, metric='coherence', sig_only=True,
     
     metric in ['coherence', 'granger']    
     '''
-    u = '_all' if not sig_only else ''
-    pth_ = Path(one.cache_dir, 'granger', f'{metric}{u}.npy')
+   
+    pth_ = Path(one.cache_dir, 'granger', f'{metric}.npy')
     if (not pth_.is_file() or rerun):
 
         
@@ -555,25 +555,18 @@ def get_res(nmin=10, metric='coherence', sig_only=True,
         for pair in d:
             scores = [] 
             for score in d[pair]:
-                if sig_only:
-                    if corrected_ps[kp] < sigl:
-                        scores.append(score[0])
-                else:
-                    scores.append(score[0])
+                scores.append([score[0],corrected_ps[kp]])
                 kp+=1
             if scores == []:
                 continue
             else:                                           
                 d2[pair] = scores
                                 
-        print(f'{len(ps)} {metric} measurements in total')
-        print(f'Uncorrected significant: {sum(np.array(ps)<0.05)}')
-        print(f'Corrected significant: {sum(corrected_ps<0.05)}')
-        
-        u = '_all' if not sig_only else ''
-        
-        
-        np.save(Path(one.cache_dir, 'granger', f'{metric}{u}.npy'), 
+        print(f'{metric} measurements in total: {len(ps)} ')
+        print(f'Uncorrected significant: {np.sum(np.array(ps)<sigl)}')
+        print(f'Corrected significant: {np.sum(corrected_ps<sigl)}')
+
+        np.save(Path(one.cache_dir, 'granger', f'{metric}.npy'), 
                 d2, allow_pickle=True)    
     else:
         d = np.load(pth_, allow_pickle=True).flat[0]         
@@ -1244,26 +1237,58 @@ def scatter_direction(only_sig=True):
     
     
 
-def plot_graph(metric='coherence', only_sig=True):
+def plot_graph(metric='coherence', sigl=0.05, restrict='', ax=None):
 
     '''
-    circular graph 
+    circular graph
+    
+    highlight in cosmos regions, to only show those 
+    
+    if restrict in a certain cosmos region, only show these edges
+    ['CB', 'TH', 'HPF', 'Isocortex', 'OLF', 'CTXsp', 'CNU', 'HY', 'HB', 'MB']
+    
     '''
+
+    
+    # get a dict to translate Beryl acronym into Cosmos
+    file_ = download_aggregate_tables(one)
+    df = pd.read_parquet(file_)
+    dfa, palette = get_allen_info()
+    df['Beryl'] = br.id2acronym(df['atlas_id'], mapping='Beryl')
+    df['Cosmos'] = br.id2acronym(df['atlas_id'], mapping='Cosmos')  
+    cosregs = dict(list(Counter(zip(df['Beryl'],df['Cosmos']))))
+
 
     d0 = np.load(Path(one.cache_dir, 'granger', 
-                        f"{metric}{'' if only_sig else '_all'}.npy"), 
-                        allow_pickle=True).flat[0]
+                        f"{metric}.npy"), 
+                        allow_pickle=True).flat[0]    
     
-    d = {k: np.mean(d0[k]) for k in d0}
-    
+    def p_fisher(p_values):
+        # combine p-values via Fisher's method
+        if len(p_values) == 0:
+            raise ValueError("Input list of p-values is empty.")
+        if len(p_values) == 1:
+            return p_values[0]
+        
+        z_scores = norm.ppf(1 - np.array(p_values) / 2)
+        X_squared = np.sum(z_scores**2)
+        p_combined = chi2.sf(X_squared, 2 * len(p_values))
+        return p_combined
+
+       
+    # take mean score across measurements
+    d = {k: [np.mean(np.array(d0[k])[:,0]), 
+             p_fisher(np.array(d0[k])[:,1])] for k in d0} 
+                     
     _, pa = get_allen_info()
     
         
     G = nx.DiGraph()
     for edge, weight in d.items():
         source, target = edge.split(' --> ')
-        G.add_edge(source, target, weight=weight)
-
+        G.add_edge(source, target, weight=weight[0], 
+            color='cyan' if weight[1] > sigl else 'k')
+        
 
     # order regions by canonical list 
     p = (Path(ibllib.__file__).parent / 'atlas/beryl.npy')
@@ -1274,50 +1299,62 @@ def plot_graph(metric='coherence', only_sig=True):
         if reg in G.nodes:
             node_order.append(reg)
 
-
+    edge_width_scale = 30 if metric == 'granger' else 8
     edge_weights = np.array([G.edges[edge]['weight'] 
-                             for edge in G.edges])*10
+                             for edge in G.edges])*edge_width_scale
+                             
+    edge_colors = [G[u][v]['color'] for u, v in G.edges()]
+    
+                             
     pos0 = nx.circular_layout(G)
     pos = dict(zip(node_order,pos0.values()))
     
-    fig, ax = plt.subplots(figsize=(9,9))
-    
-    nx.draw(G, pos, with_labels=False, node_size=70, 
-        node_color=[pa[node] for node in G.nodes], 
-        font_size=6, 
-        font_color='black', 
-        width=edge_weights, edge_color='gray', 
-        arrowsize=5, connectionstyle='arc3,rad=0.1', ax=ax)
+    if ax == None:
+        alone = True
+        fig, ax = plt.subplots(figsize=(9,9))
 
+
+    nx.draw_networkx_nodes(G, pos, node_size=30,
+                           node_color=[pa[node] for node in G.nodes])
+
+    for edge in G.edges():
+    
+        # only plot edges for certain Cosmos region    
+        if restrict != '':
+            if (cosregs[edge[0]] != restrict and 
+               cosregs[edge[1]] != restrict):
+               continue 
+        
+        w = G.edges[edge]['weight']*edge_width_scale
+        nx.draw_networkx_edges(G, pos, edgelist=[(edge[0],edge[1])], 
+        arrowsize=w*10, width=w, 
+        edge_color=G[edge[0]][edge[1]]['color'],
+        connectionstyle='arc3,rad=0.3')
+        
     for node, (x, y) in pos.items():
         angle = np.arctan2(y, x)
         angle = np.degrees(angle)
         # Radial shift factor (adjust as needed)
-        r_shift = 1.1
+        r_shift = 1.12
             
         # Calculate new positions
         x_new = r_shift * np.cos(np.radians(angle))
         y_new = r_shift * np.sin(np.radians(angle))
-                      
-        plt.text(x_new, y_new, node, fontsize=11, ha='center', 
-        va='center', rotation=angle if x > 0 else angle + 180,
-        color=pa[node])
+
+        q = (' ---- ' if cosregs[node] == restrict 
+             and restrict != '' else '')              
+        ax.text(x_new, y_new, node + q if x < 0 else q + node,
+                fontsize=11, ha='center', 
+                va='center', rotation=angle if x > 0 else angle + 180,
+                color=pa[node])
     
         
     ax.set_aspect('equal')
-    fig.tight_layout()
-    fig = plt.gcf()
-    fig.suptitle(f'{metric}; only_sig={only_sig}')    
-    
-#5 failures
+    ax.set_axis_off()
+    ax.set_title(f'{metric}, black edges significant; restrict {restrict}')    
+    if alone:
+        fig.tight_layout()
 
-#['004d8fd5-41e7-4f1b-a45b-0d4ad76fe446',
-# '12dc8b34-b18e-4cdd-90a9-da134a9be79c',
-# '1425bd6f-c625-4f6a-b237-dc5bcfc42c87',
-# '1b61b7f2-a599-4e40-abd6-3e758d2c9e25',
-# '1d4a7bd6-296a-48b9-b20e-bd0ac80750a5',    
-# 'dfd8e7df-dc51-4589-b6ca-7baccfeb94b4']    
-#    
 
 
 
