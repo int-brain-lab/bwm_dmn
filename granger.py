@@ -548,7 +548,7 @@ def get_res(nmin=10, metric='coherence',
 
                             
         _, corrected_ps, _, _ = multipletests(ps, sigl, 
-                                           method='fdr_bh')
+                                           method='fdr_by')
                                            
         kp = 0                                           
         d2 = {}
@@ -620,7 +620,7 @@ plotting
 def plot_gc(eid, segl=10, shuf=False,
             metric0='coherence', vers='oscil', 
             peak_freq_factor0=0.55, peak_freq_factor1=0.6,
-            phase_lag_factor=0.2):
+            phase_lag_factor=0.2, single_pair=False, T=300000):
 
     '''
     For all regions, plot example segment time series, psg,
@@ -635,11 +635,17 @@ def plot_gc(eid, segl=10, shuf=False,
     if eid == 'sim':
         r = make_data(vers = vers, peak_freq_factor0=peak_freq_factor0,
                                    peak_freq_factor1=peak_freq_factor1,
-                      phase_lag_factor=0.2)
+                      phase_lag_factor=0.2, T=T)
         regsd = {'dep':1, 'indep':1}
         ts = np.linspace(0, (r.shape[1] - 1) * T_BIN, r.shape[1])
     else:
         r, ts, regsd = bin_average_neural(eid)   
+    
+    # single channel pair for shuffle test
+    if single_pair:
+        regA, regB = -1, -4
+        r = r[[regA, regB]]
+        regsd = dict(np.array(list(regsd.items()))[[regA, regB]])
     
     if metric0 == 'granger':
         metric = 'pairwise_spectral_granger_prediction'
@@ -1356,7 +1362,7 @@ def plot_graph(metric='coherence', sigl=0.05, restrict='', ax=None):
         fig.tight_layout()
 
 
-
+#def plot_multi_graph():
 
 
  
