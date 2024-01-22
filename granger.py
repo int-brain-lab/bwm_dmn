@@ -1313,7 +1313,7 @@ def scatter_direction(sig_only=True):
     
 
 def plot_graph(metric='granger', sigl=0.05, restrict='', ax=None,
-               direction='both', sa = 2):
+               direction='both', sa = 2, pqt = False):
 
     '''
     circular graph
@@ -1323,19 +1323,35 @@ def plot_graph(metric='granger', sigl=0.05, restrict='', ax=None,
     if restrict in a certain cosmos region, only show these edges
     ['CB', 'TH', 'HPF', 'Isocortex', 'OLF', 'CTXsp', 'CNU', 'HY', 'HB', 'MB']
     '''
-    
+
     alone = False
     if ax == None:
         alone = True
         fig, ax = plt.subplots(figsize=(6,6))
-        
-        
-    # scale symbols for multi-panel graphs
-    ews = 30 if metric == 'granger' else 8
-    node_size = 30 if alone else 3
-    fontsize = 11 if alone else 1
-    nsw = 0.02 if metric == 'coherence' else 0.005
+
+    if pqt:
+        metric = 'granger'
+        d0 = pd.read_parquet('/home/mic/WFI_granger.pqt')
+        # reshape into dict
+        d = {}
+        for index, row in d0.iterrows():
+            d[f"{row['origin']} --> {row['destination']}"] = [ 
+             row['corrected_score'], 1 - int(row['is_significant'])]
+
+        ews = 15
+        fontsize = 15 if alone else 1
+
+    else:
+        d = get_res(metric=metric,combine_=True)
+        ews = 30 if metric == 'granger' else 8
+        fontsize = 11 if alone else 1
     
+
+    # scale symbols for multi-panel graphs
+    
+    node_size = 30 if alone else 3
+    
+    nsw = 0.02 if metric == 'coherence' else 0.005
     ews = ews/sa
     node_size = node_size/sa
     fontsize = fontsize/sa
@@ -1348,8 +1364,7 @@ def plot_graph(metric='granger', sigl=0.05, restrict='', ax=None,
     df['Cosmos'] = br.id2acronym(df['atlas_id'], mapping='Cosmos')  
     cosregs = dict(list(Counter(zip(df['Beryl'],df['Cosmos']))))
    
-    
-    d = get_res(metric=metric,combine_=True)
+
                      
     _, pa = get_allen_info()
             
