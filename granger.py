@@ -13,7 +13,7 @@ import pandas as pd
 import umap
 from copy import copy
 #from sklearn.manifold import MDS
-from scipy.stats import pearsonr, spearmanr, norm, chi2
+from scipy.stats import pearsonr, spearmanr, norm, chi2, zscore
 from statsmodels.stats.multitest import multipletests
 import networkx as nx
 
@@ -52,6 +52,38 @@ def get_allen_info():
     r = np.load(Path(one.cache_dir, 'dmn', 'alleninfo.npy'),
                 allow_pickle=True).flat[0]
     return r['dfa'], r['palette']
+
+
+def p_fisher(p_values):
+    # combine p-values via Fisher's method
+    if len(p_values) == 0:
+        raise ValueError("Input list of p-values is empty.")
+    if len(p_values) == 1:
+        return p_values[0]
+    
+    z_scores = norm.ppf(1 - np.array(p_values) / 2)
+    X_squared = np.sum(z_scores**2)
+    p_combined = chi2.sf(X_squared, 2 * len(p_values))
+    return p_combined
+
+
+
+def get_nregs():
+
+    '''
+    get a dict with regs per eid
+    '''
+    p = pth_res.glob('**/*')
+    files = [x for x in p if x.is_file()]
+    
+    d = {}
+
+    for sess in files:    
+        D = np.load(sess, allow_pickle=True).flat[0]
+        eid = str(sess).split('/')[-1].split('.')[0]
+        d[eid] = D['regsd']
+
+    return d
 
 
 def get_structural(rerun=False):
@@ -192,7 +224,7 @@ def get_volume(rerun=False):
 
 
 def make_data(T=300000, vers='oscil', peak_freq_factor0=0.55,
-              peak_freq_factor1=0.6, phase_lag_factor=0.2):
+              peak_freq_factor1=0.2, phase_lag_factor=0.2):
     
     '''
     auto-regressive data creation
@@ -203,7 +235,10 @@ def make_data(T=300000, vers='oscil', peak_freq_factor0=0.55,
     x2 = np.random.normal(0, 1,T+3)
 
     if vers == 'dc': 
-        x2 = x1 + 0.7* np.random.normal(0,1,T+3)     
+        x1 = x2[3:]
+        x2 = x2[0:-3]
+        regsd = {'x2[3:]':1, 'x2[0:-3]':1} 
+        return np.array([x1,x2]), regsd  
     
     elif vers == 'oscil':
         for t in range(2,T+2):
@@ -219,7 +254,8 @@ def make_data(T=300000, vers='oscil', peak_freq_factor0=0.55,
             x1[t] = (peak_freq_factor0 * x1[t - 1] - 0.8 * x1[t - 2] 
                      + phase_lag_factor * x2[t - 1] + x1[t + 1])        
     
-    return np.array([x1[2:-1],x2[2:-1]])
+    regsd = {'dep':1, 'indep':1}
+    return np.array([x1[2:-1],x2[2:-1]]), regsd
     
 
     
@@ -492,8 +528,8 @@ def get_all_granger(eids='all', nshufs = 2000, segl=10, nmin=10):
 
 
 
-def get_res(nmin=10, metric='coherence', 
-            rerun=False, sigl=0.05):
+def get_res(nmin=10, metric='coherence', combine_=True,
+            rerun=False, sigl=0.05, sig_only=False):
 
     '''
     Group results
@@ -567,11 +603,41 @@ def get_res(nmin=10, metric='coherence',
         print(f'Corrected significant: {np.sum(corrected_ps<sigl)}')
 
         np.save(Path(one.cache_dir, 'granger', f'{metric}.npy'), 
-                d2, allow_pickle=True)    
+                d2, allow_pickle=True)
+                
+        d = d2        
+                   
     else:
         d = np.load(pth_, allow_pickle=True).flat[0]         
+
+
+    if combine_:
+        # take mean score across measurements
+        dd = {k: [np.mean(np.array(d[k])[:,0]), 
+                 p_fisher(np.array(d[k])[:,1])] for k in d}
         
-    return d    
+        if sig_only:
+            ddd = {}
+            for pair in dd:
+                if dd[pair][1] < sigl:
+                    ddd[pair] = dd[pair][0]  
+
+            dd = ddd
+
+    else:        
+        if sig_only:
+            dd = {}
+            for pair in d:
+                l = [x[0] for x in d[pair] if x[1] < sigl]    
+                if l == []:
+                    continue
+                else:
+                    dd[pair] = l    
+    
+        else:
+            dd = d
+        
+    return dd    
     
     
 def get_meta_info(rerun=False):
@@ -619,12 +685,12 @@ plotting
     
 def plot_gc(eid, segl=10, shuf=False,
             metric0='coherence', vers='oscil', 
-            peak_freq_factor0=0.55, peak_freq_factor1=0.6,
+            peak_freq_factor0=0.55, peak_freq_factor1=0.2,
             phase_lag_factor=0.2, single_pair=False, T=300000):
 
     '''
     For all regions, plot example segment time series, psg,
-    matrix for max gc across freqs
+    matrix for mean gc across freqs
     
     metric = 'pairwise_spectral_granger_prediction'
     or 'coherence_magnitude'
@@ -633,13 +699,14 @@ def plot_gc(eid, segl=10, shuf=False,
     time00 = time.perf_counter()
     
     if eid == 'sim':
-        r = make_data(vers = vers, peak_freq_factor0=peak_freq_factor0,
+        r, regsd = make_data(vers = vers, peak_freq_factor0=peak_freq_factor0,
                                    peak_freq_factor1=peak_freq_factor1,
                       phase_lag_factor=0.2, T=T)
-        regsd = {'dep':1, 'indep':1}
         ts = np.linspace(0, (r.shape[1] - 1) * T_BIN, r.shape[1])
     else:
         r, ts, regsd = bin_average_neural(eid)   
+
+    print(regsd)
     
     # single channel pair for shuffle test
     if single_pair:
@@ -660,7 +727,7 @@ def plot_gc(eid, segl=10, shuf=False,
     # mean score across frequencies
     m = np.mean(psg, axis=0)
     
-    fig, axs = plt.subplots(nrows=1, ncols=3, figsize=(14,6))
+    fig, axs = plt.subplots(nrows=1, ncols=3, figsize=(10,4))
     
     # plot example time series, first segment
     exdat = r[:,:int(segl/T_BIN)]/T_BIN
@@ -670,7 +737,10 @@ def plot_gc(eid, segl=10, shuf=False,
     if eid == 'sim':
         pal['dep'] = 'b'
         pal['indep'] = 'r'
-      
+        pal['x2[3:]'] = 'b'
+        pal['x2[0:-3]'] = 'r'
+        
+        
     regs = list(regsd)
      
     i = 0
@@ -707,16 +777,16 @@ def plot_gc(eid, segl=10, shuf=False,
     axs[1].set_title(f'top {j} tuples') 
     
     # plot directed granger matrix
-    ims = axs[2].imshow(m, interpolation=None, cmap='gray_r', 
-                  origin='lower')
+    ims = axs[2].imshow(m, interpolation=None, cmap='gray_r')#, 
+                  #origin='lower')
                   
-    # highlight max connections              
-    for i, j in exes:
-        rect = patches.Rectangle((j - 0.5, i - 0.5), 1, 1, 
-                                  linewidth=2, 
-                                  edgecolor='red', 
-                                  facecolor='none')
-        axs[2].add_patch(rect)              
+#    # highlight max connections              
+#    for i, j in exes:
+#        rect = patches.Rectangle((j - 0.5, i - 0.5), 1, 1, 
+#                                  linewidth=2, 
+#                                  edgecolor='red', 
+#                                  facecolor='none')
+#        axs[2].add_patch(rect)              
                   
     axs[2].set_xticks(np.arange(m.shape[0]))
     axs[2].set_xticklabels(regs, rotation=90)
@@ -741,13 +811,13 @@ def plot_gc(eid, segl=10, shuf=False,
     
     
     
-def plot_strip_pairs(metric='coherence', sessmin = 2, 
+def plot_strip_pairs(metric='granger', sessmin = 2, 
              ptype='strip', shuf=False, expo=1, sig_only=True):
 
     '''
     for spectral Granger, metric in ['granger', coherence']
     '''
-    d0 = get_res(metric=metric, sig_only=True)
+    d0 = get_res(metric=metric, sig_only=True, combine_=False)
 
                         
     regs = list(Counter(np.array([s.split(' --> ') for s in
@@ -779,13 +849,14 @@ def plot_strip_pairs(metric='coherence', sessmin = 2,
         dm_sorted = dict(sorted(dm.items(), key=lambda item: item[1]))
                       
         exs = list(dm_sorted.keys())
-        nrows = 3
+        nrows = 6
+        fs = 6
         per_row = len(exs)//nrows
            
         d_exs = {x:d[x] for x in exs}
     
         fig, axs = plt.subplots(nrows=nrows, 
-                                ncols=1, figsize=(10,20), sharey=True)
+                                ncols=1, figsize=(9,7), sharey=True)
 
         for row in range(nrows):
             
@@ -802,19 +873,19 @@ def plot_strip_pairs(metric='coherence', sessmin = 2,
             
             axs[row].set_xticklabels([x.split(sep)[0] for x in pairs], 
                                       rotation=90, 
-                                      fontsize=5 if 
-                                      (metric == 'psg') else 8)
+                                      fontsize=fs if 
+                                      (metric == 'granger') else 8)
             
             for label in axs[row].get_xticklabels():
                 label.set_color(palette[label.get_text()])
                 
             low_regs = [x.split(sep)[-1] for x in pairs]   
             for i, tick in enumerate(axs[row].get_xticklabels()):
-                axs[row].text(tick.get_position()[0], -0.3, low_regs[i],
+                axs[row].text(tick.get_position()[0], -0.6, low_regs[i],
                     ha='center', va='center', rotation=90,
                     color=palette[low_regs[i]],
                     transform=axs[row].get_xaxis_transform(), 
-                    fontsize=5 if (metric == 'psg') else 8)    
+                    fontsize=fs if (metric == 'granger') else 8)    
             
             axs[row].set_ylabel(metric)
                    
@@ -1181,7 +1252,7 @@ def freq_maxs_hists(perc = 95, freqlow=10):
     fig.tight_layout()
     
 
-def scatter_direction(only_sig=True):
+def scatter_direction(sig_only=True):
 
     '''
     scatter plot for region pairs 
@@ -1190,9 +1261,7 @@ def scatter_direction(only_sig=True):
     '''
     
     _, pa = get_allen_info()    
-    dg = np.load(Path(one.cache_dir, 'granger', 
-                        f"granger{'' if only_sig else '_all'}.npy"), 
-                        allow_pickle=True).flat[0]
+    dg = get_res(metric='granger',combine_=False, sig_only = sig_only)
 
     sep = ' --> '
     
@@ -1243,7 +1312,8 @@ def scatter_direction(only_sig=True):
     
     
 
-def plot_graph(metric='coherence', sigl=0.05, restrict='', ax=None):
+def plot_graph(metric='granger', sigl=0.05, restrict='', ax=None,
+               direction='both', sa = 2):
 
     '''
     circular graph
@@ -1252,10 +1322,24 @@ def plot_graph(metric='coherence', sigl=0.05, restrict='', ax=None):
     
     if restrict in a certain cosmos region, only show these edges
     ['CB', 'TH', 'HPF', 'Isocortex', 'OLF', 'CTXsp', 'CNU', 'HY', 'HB', 'MB']
-    
     '''
-
     
+    alone = False
+    if ax == None:
+        alone = True
+        fig, ax = plt.subplots(figsize=(6,6))
+        
+        
+    # scale symbols for multi-panel graphs
+    ews = 30 if metric == 'granger' else 8
+    node_size = 30 if alone else 3
+    fontsize = 11 if alone else 1
+    nsw = 0.02 if metric == 'coherence' else 0.005
+    
+    ews = ews/sa
+    node_size = node_size/sa
+    fontsize = fontsize/sa
+       
     # get a dict to translate Beryl acronym into Cosmos
     file_ = download_aggregate_tables(one)
     df = pd.read_parquet(file_)
@@ -1263,39 +1347,21 @@ def plot_graph(metric='coherence', sigl=0.05, restrict='', ax=None):
     df['Beryl'] = br.id2acronym(df['atlas_id'], mapping='Beryl')
     df['Cosmos'] = br.id2acronym(df['atlas_id'], mapping='Cosmos')  
     cosregs = dict(list(Counter(zip(df['Beryl'],df['Cosmos']))))
-
-
-    d0 = np.load(Path(one.cache_dir, 'granger', 
-                        f"{metric}.npy"), 
-                        allow_pickle=True).flat[0]    
+   
     
-    def p_fisher(p_values):
-        # combine p-values via Fisher's method
-        if len(p_values) == 0:
-            raise ValueError("Input list of p-values is empty.")
-        if len(p_values) == 1:
-            return p_values[0]
-        
-        z_scores = norm.ppf(1 - np.array(p_values) / 2)
-        X_squared = np.sum(z_scores**2)
-        p_combined = chi2.sf(X_squared, 2 * len(p_values))
-        return p_combined
-
-       
-    # take mean score across measurements
-    d = {k: [np.mean(np.array(d0[k])[:,0]), 
-             p_fisher(np.array(d0[k])[:,1])] for k in d0} 
+    d = get_res(metric=metric,combine_=True)
                      
     _, pa = get_allen_info()
-    
-        
+            
     G = nx.DiGraph()
     for edge, weight in d.items():
         source, target = edge.split(' --> ')
-        G.add_edge(source, target, weight=weight[0], 
-            color='cyan' if weight[1] > sigl else 'k')
+        w = weight[0] if (weight[1] < sigl) else nsw
+        w = w*ews
+        G.add_edge(source, target, 
+                   weight=w, 
+                   color='k' if weight[1] < sigl else 'cyan')
         
-
     # order regions by canonical list 
     p = (Path(ibllib.__file__).parent / 'atlas/beryl.npy')
     regs = br.id2acronym(np.load(p), mapping='Beryl')
@@ -1304,10 +1370,6 @@ def plot_graph(metric='coherence', sigl=0.05, restrict='', ax=None):
     for reg in regs:
         if reg in G.nodes:
             node_order.append(reg)
-
-    edge_width_scale = 30 if metric == 'granger' else 8
-    edge_weights = np.array([G.edges[edge]['weight'] 
-                             for edge in G.edges])*edge_width_scale
                              
     edge_colors = [G[u][v]['color'] for u, v in G.edges()]
     
@@ -1315,27 +1377,37 @@ def plot_graph(metric='coherence', sigl=0.05, restrict='', ax=None):
     pos0 = nx.circular_layout(G)
     pos = dict(zip(node_order,pos0.values()))
     
-    if ax == None:
-        alone = True
-        fig, ax = plt.subplots(figsize=(9,9))
 
-
-    nx.draw_networkx_nodes(G, pos, node_size=30,
+    nx.draw_networkx_nodes(G, pos, node_size=node_size, ax=ax,
                            node_color=[pa[node] for node in G.nodes])
 
     for edge in G.edges():
     
         # only plot edges for certain Cosmos region    
         if restrict != '':
-            if (cosregs[edge[0]] != restrict and 
-               cosregs[edge[1]] != restrict):
-               continue 
-        
-        w = G.edges[edge]['weight']*edge_width_scale
+            if direction == 'both':
+                if (cosregs[edge[0]] != restrict and 
+                   cosregs[edge[1]] != restrict):
+                    continue 
+            if direction == 'source':
+                if (cosregs[edge[0]] == restrict and 
+                   cosregs[edge[1]] != restrict):
+                    pass    
+                else:
+                    continue
+                    
+            if direction == 'target':
+                if (cosregs[edge[0]] != restrict and 
+                   cosregs[edge[1]] == restrict):
+                    pass    
+                else:
+                    continue            
+                
+        w = G.edges[edge]['weight']
         nx.draw_networkx_edges(G, pos, edgelist=[(edge[0],edge[1])], 
         arrowsize=w*10, width=w, 
         edge_color=G[edge[0]][edge[1]]['color'],
-        connectionstyle='arc3,rad=0.3')
+        connectionstyle='arc3,rad=0.3', ax=ax)
         
     for node, (x, y) in pos.items():
         angle = np.arctan2(y, x)
@@ -1350,21 +1422,38 @@ def plot_graph(metric='coherence', sigl=0.05, restrict='', ax=None):
         q = (' ---- ' if cosregs[node] == restrict 
              and restrict != '' else '')              
         ax.text(x_new, y_new, node + q if x < 0 else q + node,
-                fontsize=11, ha='center', 
+                fontsize=fontsize, ha='center', 
                 va='center', rotation=angle if x > 0 else angle + 180,
                 color=pa[node])
     
         
     ax.set_aspect('equal')
     ax.set_axis_off()
-    ax.set_title(f'{metric}, black edges significant; restrict {restrict}')    
+        
     if alone:
+        ax.set_title(f'{metric}, black edges significant; restrict {restrict}')
         fig.tight_layout()
 
 
-#def plot_multi_graph():
+def plot_multi_graph():
 
-
+    cregs = ['CB', 'TH', 'HPF', 'Isocortex', 
+             'OLF', 'CTXsp', 'CNU', 'HY', 'HB', 'MB']
  
+    directions = ['source', 'target']
+    fig, axs = plt.subplots(nrows=5, ncols=4, figsize=(8.5,14))
+    axs = axs.flatten()
+    
+    k = 0
+    for creg in cregs: 
+        for direction in directions:
+            plot_graph(metric='granger', restrict=creg, 
+                       ax=axs[k], sa = 1, direction=direction)     
+            axs[k].set_title(f'{creg} {direction}')
+            k += 1
+  
+    fig.tight_layout()  
+  
+  
   
   
