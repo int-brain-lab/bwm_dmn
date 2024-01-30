@@ -16,7 +16,9 @@ from copy import copy
 from scipy.stats import pearsonr, spearmanr, norm, chi2, zscore
 from statsmodels.stats.multitest import multipletests
 import networkx as nx
-
+from scipy.sparse.csgraph import shortest_path, csgraph_from_dense
+from scipy.sparse import csr_matrix 
+ 
 from brainwidemap import load_good_units, bwm_query, download_aggregate_tables
 from iblutil.numerical import bincount2D
 from one.api import ONE
@@ -86,7 +88,8 @@ def get_nregs():
     return d
 
 
-def get_structural(rerun=False):
+def get_structural(rerun=False, 
+                   shortestp=False, fign=4, sigl=0.05):
 
     '''
     load structural connectivity matrix
@@ -95,51 +98,136 @@ def get_structural(rerun=False):
     https://static-content.springer.com
     /esm/art%3A10.1038%2Fnature13186/MediaObjects/
     41586_2014_BFnature13186_MOESM70_ESM.xlsx
+    
+    fig4 '/home/mic/41586_2014_BFnature13186_MOESM72_ESM.xlsx'
     '''
     
-    pth_ = Path(one.cache_dir, 'granger', 'structural.npy')
+    pth_ = Path(one.cache_dir, 'granger', f'structural{fign}.npy')
     if (not pth_.is_file() or rerun):
-        s=pd.read_excel('/home/mic/fig3.xlsx')
-        cols = list(s.keys())[1:296]
-        rows = s['Unnamed: 0'].array
-        
-        M = np.zeros((len(cols), len(rows)))
-        for i in range(len(cols)):
-            M[i] = s[cols[i]].array
+    
+        if fign == 3:
+            s=pd.read_excel('/home/mic'
+                '/41586_2014_BFnature13186_MOESM70_ESM.xlsx')
+            cols = list(s.keys())[1:297]
+            rows = s['Unnamed: 0'].array
             
-        M = M.T
+            M = np.zeros((len(cols), len(rows)))
+            for i in range(len(cols)):
+                M[i] = s[cols[i]].array
+                
+            M = M.T
 
-        # thresholding as in the paper
-        M[M > 10**(-0.5)] = 1
-        M[M < 10**(-3.5)] = 0
+            cols1 = np.array([reg.strip().replace(",", "") for reg in cols])
+            rows1 = np.array([reg.strip().replace(",", "") for reg in rows])
+            
+            # average across injections
+            regsr = list(Counter(rows1))
+            M2 = []
+            for reg in regsr:
+                M2.append(np.mean(M[rows1 == reg], axis=0))       
 
-        cols1 = np.array([reg.strip().replace(",", "") for reg in cols])
-        rows1 = np.array([reg.strip().replace(",", "") for reg in rows])
+#            # thresholding as in the paper
+#            M[M > 10**(-0.5)] = 1
+#            M[M < 10**(-3.5)] = 0
+
+            M2 = np.array(M2)
+            regs_source = regsr
+            regs_target = cols1
+
+            # turn into dict
+            d = {}
+            for i in range(len(regs_source)):
+                for j in range(len(regs_target)):
+
+                    d[' --> '.join([regs_source[i], 
+                                     regs_target[j]])] = M2[i,j]
+
+            np.save(pth_, d,
+                    allow_pickle=True)
+                    
+        elif fign == 4:
         
-        # average across injections
-        regsr = list(Counter(rows1))
-        M2 = []
-        for reg in regsr:
-            M2.append(np.mean(M[rows1 == reg], axis=0))       
+            s=pd.read_excel(
+                '/home/mic/41586_2014_BFnature13186_MOESM71_ESM.xlsx',
+                sheet_name='W_ipsi')
+            cols = list(s.keys())[1:]
+            rows = s['Unnamed: 0'].array
+            
+            M = np.zeros((len(cols), len(rows)))
+            for i in range(len(cols)):
+                M[i] = s[cols[i]].array
+            M = M.T    
+                
+            # load p-values
+            s=pd.read_excel(
+                '/home/mic/41586_2014_BFnature13186_MOESM71_ESM.xlsx',
+                sheet_name='PValue_ipsi')
+            colsp = list(s.keys())[1:]
+            rowsp = s['Unnamed: 0'].array                
+            P = np.zeros((len(colsp), len(rowsp)))
+            for i in range(len(colsp)):
+                P[i] = s[colsp[i]].array                
+            P = P.T         
+                     
+            
+            # turn into dict
+            d = {}
+            for i in range(len(rows)):
+                for j in range(len(cols)): 
+                    if np.isnan(P[i,j]):
+                        continue
+                    if P[i,j] > 0.05:
+                        continue
+#                        d[' --> '.join([rows[i], 
+#                                         cols[j]])] = 0                
+                    else:      
+                        d[' --> '.join([rows[i], 
+                                         cols[j]])] = M[i,j]
 
-        M2 = np.array(M2)
-        regs_source = regsr
-        regs_target = cols1
-
-        # turn into dict
-        d0 = {}
-        for i in range(len(regs_source)):
-            for j in range(len(regs_target)):
-
-                d0[' --> '.join([regs_source[i], 
-                                 regs_target[j]])] = M2[i,j]
-
-        np.save(pth_, d0,
-                allow_pickle=True)
+            np.save(pth_, d,
+                    allow_pickle=True)        
+        
+        
                 
     else:
         d = np.load(pth_, allow_pickle=True).flat[0]        
         
+        
+    if shortestp:
+    
+        # create adjacency matrix, setting absent connections to zero
+        # Unnamed: 1 is injection volume; discard
+        regs = Counter(np.array([x.split(' --> ') 
+                    for x in list(d.keys()) 
+                    if 'Unnamed: 1' not in x]).flatten())    
+
+        regs = list(regs)
+    
+        A = np.zeros((len(regs), len(regs)))
+        for i in range(len(regs)):
+            for j in range(len(regs)):
+                if f'{regs[i]} --> {regs[j]}' in d:
+                    A[i,j] = d[f'{regs[i]} --> {regs[j]}']
+                                              
+        adjacency_matrix = A
+        # Convert the adjacency matrix to a sparse matrix (CSR format)
+        sparse_matrix = csr_matrix(adjacency_matrix)
+
+        # Find the shortest path lengths using the Floyd-Warshall algorithm
+        distances, predecessors = shortest_path(
+            csgraph=sparse_matrix, directed = False,
+            method='FW', return_predecessors=True,unweighted=True)
+            
+        d0 = {}
+        res = distances
+        for i in range(len(regs)):
+            for j in range(len(regs)):
+                if i == j:
+                    continue
+                d0[f'{regs[i]} --> {regs[j]}'] = res[i,j]
+                
+        return d0
+               
     return d                                
 
 
@@ -235,9 +323,9 @@ def make_data(T=300000, vers='oscil', peak_freq_factor0=0.55,
     x2 = np.random.normal(0, 1,T+3)
 
     if vers == 'dc': 
-        x1 = x2[3:]
-        x2 = x2[0:-3]
-        regsd = {'x2[3:]':1, 'x2[0:-3]':1} 
+        x1 = x2[30:]
+        x2 = x2[0:-30]
+        regsd = {'x2[30:]':1, 'x2[0:-30]':1} 
         return np.array([x1,x2]), regsd  
     
     elif vers == 'oscil':
@@ -267,9 +355,15 @@ def bin_average_neural(eid, mapping='Beryl', nmin=1):
     used to get session-wide time series, not cut into trials
     '''
     
-    pids, probes = one.eid2pid(eid)
+    pids0, probes = one.eid2pid(eid)
+    df = bwm_query(one)
+    pids = []
     
-    if len(probes) == 1:
+    for pid in pids0:
+        if pid in df['pid'].values:
+            pids.append(pid)
+
+    if len(pids) == 1:
         spikes, clusters = load_good_units(one, pids[0])
         R, times, _ = bincount2D(spikes['times'], 
                         spikes['clusters'], T_BIN)
@@ -529,7 +623,7 @@ def get_all_granger(eids='all', nshufs = 2000, segl=10, nmin=10):
 
 
 def get_res(nmin=10, metric='coherence', combine_=True,
-            rerun=False, sigl=0.05, sig_only=False):
+            rerun=False, sigl=0.05, sig_only=False, sessmin=1):
 
     '''
     Group results
@@ -551,7 +645,15 @@ def get_res(nmin=10, metric='coherence', combine_=True,
         ps = []
 
         
-        for sess in files:    
+        for sess in files:
+        
+            # remove lick artefact eid and late fire only
+            if (('a2ec6341-c55f-48a0-a23b-0ef2f5b1d71e' in str(sess)) or
+               ('0cc486c3-8c7b-494d-aa04-b70e2690bcba' in str(sess))):
+                print('exclude', sess)
+                continue
+        
+           
             D = np.load(sess, allow_pickle=True).flat[0]
             m = D[metric]
             regs = list(D['regsd'])
@@ -614,7 +716,8 @@ def get_res(nmin=10, metric='coherence', combine_=True,
     if combine_:
         # take mean score across measurements
         dd = {k: [np.mean(np.array(d[k])[:,0]), 
-                 p_fisher(np.array(d[k])[:,1])] for k in d}
+                 p_fisher(np.array(d[k])[:,1])] 
+                 for k in d if (len(d[k]) >= sessmin)}
         
         if sig_only:
             ddd = {}
@@ -684,7 +787,7 @@ plotting
 '''
     
 def plot_gc(eid, segl=10, shuf=False,
-            metric0='coherence', vers='oscil', 
+            metric0='granger', vers='oscil', 
             peak_freq_factor0=0.55, peak_freq_factor1=0.2,
             phase_lag_factor=0.2, single_pair=False, T=300000):
 
@@ -737,8 +840,8 @@ def plot_gc(eid, segl=10, shuf=False,
     if eid == 'sim':
         pal['dep'] = 'b'
         pal['indep'] = 'r'
-        pal['x2[3:]'] = 'b'
-        pal['x2[0:-3]'] = 'r'
+        pal['x2[30:]'] = 'b'
+        pal['x2[0:-30]'] = 'r'
         
         
     regs = list(regsd)
@@ -1087,79 +1190,7 @@ def plot_dist_scat(dist_='centroids'):
                      f'({np.round(cors,2)},{np.round(ps,2)})')    
     
     
-def plot_hub(metric='coherence_magnitude'):
 
-    '''
-    Plot a hub stripplot, where for single regions
-    their average scrore across all pairs it is part of is shown
-    
-    for spectral Granger, metric = 'psg'
-    '''
-
-
-    d0 = np.load(Path(one.cache_dir, 'granger', 
-                        f'{metric}.npy'), 
-                        allow_pickle=True).flat[0]
-    regs = list(Counter(np.array([s.split(' --> ') for s in
-                             d0]).flatten()))
-                             
-    _, palette = get_allen_info()
-    sep = ' --> '                              
-    d1 = {}
-    for reg in regs:    
-        for pair in d0:
-            a,b = pair.split(sep)     
-            if not reg in d1:
-                d1[reg] = []
-            if (a == reg or b == reg):
-                d1[reg].append(d0[pair])    
-
-    # get canonical region order
-    df = pd.read_csv('/home/mic/bwm/'    
-                 f'meta/region_info.csv')
-    regscan = [reg for reg in df['Beryl'].tolist()]             
-    d = {}
-    regs = []
-    for reg in regscan:
-        if reg in d1:
-            d[reg] = [it for sublist in d1[reg] for it in sublist]
-            regs.append(reg)    
-
-    nrows=4
-    regsprow = len(regs)//nrows
-    
-    fig, axs = plt.subplots(nrows=nrows, ncols=1, 
-                            figsize=(9,15), sharey=True)
-    
-    
-    for row in range(nrows):
-        
-        regsrow = regs[regsprow*row: regsprow*(row+1)]
-        cols = [palette[reg] for reg in regsrow]
-        
-        # plot also bar with means
-        ms = [np.mean(d[x]) for x in regsrow]            
-        axs[row].bar(np.arange(len(regsrow)), ms, 
-                     color=[palette[reg] for reg in regsrow])
-                     
-        sns.stripplot(data={x:d[x] for x in regsrow},
-                      ax=axs[row], color='k', size=1) 
-                                                   
-        axs[row].set_xticks(np.arange(len(regsrow)))
-        axs[row].set_xticklabels([x+' '+f'({str(len(d[x]))})'
-                                  for x in regsrow], 
-                                    rotation=90)
-        
-        k = 0
-        for label in axs[row].get_xticklabels():
-            label.set_color(cols[k])
-            k+=1           
-             
-        axs[row].set_ylabel(metric)
-
-        
-    fig.tight_layout()
-    
 
 def replot_struc():
 
@@ -1313,7 +1344,7 @@ def scatter_direction(sig_only=True):
     
 
 def plot_graph(metric='granger', sigl=0.05, restrict='', ax=None,
-               direction='both', sa = 2, pqt = False):
+               direction='both', sa = 2, pqt = False, sessmin=1):
 
     '''
     circular graph
@@ -1342,8 +1373,8 @@ def plot_graph(metric='granger', sigl=0.05, restrict='', ax=None,
         fontsize = 15 if alone else 1
 
     else:
-        d = get_res(metric=metric,combine_=True)
-        ews = 30 if metric == 'granger' else 8
+        d = get_res(metric=metric,combine_=True, sessmin=sessmin)
+        ews = 80 if metric == 'granger' else 8
         fontsize = 11 if alone else 1
     
 
@@ -1385,10 +1416,7 @@ def plot_graph(metric='granger', sigl=0.05, restrict='', ax=None,
     for reg in regs:
         if reg in G.nodes:
             node_order.append(reg)
-                             
-    edge_colors = [G[u][v]['color'] for u, v in G.edges()]
-    
-                             
+                   
     pos0 = nx.circular_layout(G)
     pos = dict(zip(node_order,pos0.values()))
     
@@ -1422,13 +1450,13 @@ def plot_graph(metric='granger', sigl=0.05, restrict='', ax=None,
         nx.draw_networkx_edges(G, pos, edgelist=[(edge[0],edge[1])], 
         arrowsize=w*10, width=w, 
         edge_color=G[edge[0]][edge[1]]['color'],
-        connectionstyle='arc3,rad=0.3', ax=ax)
+        connectionstyle='arc3,rad=0.6', ax=ax)
         
     for node, (x, y) in pos.items():
         angle = np.arctan2(y, x)
         angle = np.degrees(angle)
         # Radial shift factor (adjust as needed)
-        r_shift = 1.12
+        r_shift = 1.3 #1.12
             
         # Calculate new positions
         x_new = r_shift * np.cos(np.radians(angle))
@@ -1446,7 +1474,7 @@ def plot_graph(metric='granger', sigl=0.05, restrict='', ax=None,
     ax.set_axis_off()
         
     if alone:
-        ax.set_title(f'{metric}, black edges significant; restrict {restrict}')
+        #ax.set_title(f'{metric}, black edges significant; restrict {restrict}')
         fig.tight_layout()
 
 
@@ -1467,8 +1495,39 @@ def plot_multi_graph():
             axs[k].set_title(f'{creg} {direction}')
             k += 1
   
-    fig.tight_layout()  
-  
-  
-  
+    fig.tight_layout()
+
+
+def plot_series(eid):
+
+    '''
+    plot full time series
+    '''
+    plt.ioff()
+    r, ts, regsd = bin_average_neural(eid)
+    _, pa = get_allen_info()    
+    fig, axs = plt.subplots(nrows=len(regsd), 
+                            figsize=(15,10),
+                            sharex=True)
+    axs = axs.flatten()
+    regs = list(regsd)
+    for i in range(len(regsd)):
+        axs[i].plot(ts, r[i],c=pa[regs[i]])
+        axs[i].set_ylabel(f'{regs[i]} \n {regsd[regs[i]]}',
+                          c=pa[regs[i]])   
+
+    axs[i].set_xlabel('time [sec]')
+    fig.suptitle(f'eid = {eid} \n combining both probes,'
+                 f' firing rate per region')
+    fig.tight_layout()
+    fig.savefig(f'top_granger/{eid}.png')
+    fig.close()
+
+#eids_probs = ['0cc486c3-8c7b-494d-aa04-b70e2690bcba',
+# 'c4432264-e1ae-446f-8a07-6280abade813',
+# '5386aba9-9b97-4557-abcd-abc2da66b863',
+# '8c2f7f4d-7346-42a4-a715-4d37a5208535',
+# '1b61b7f2-a599-4e40-abd6-3e758d2c9e25',
+# 'd2f5a130-b981-4546-8858-c94ae1da75ff']
+
   
