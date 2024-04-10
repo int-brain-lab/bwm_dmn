@@ -8,10 +8,13 @@ import ibllib
 from iblatlas.plots import plot_swanson_vector 
 from brainbox.io.one import SessionLoader
 import ephys_atlas.data
+from reproducible_ephys_functions import figure_style, labs
 
 import sys
 sys.path.append('Dropbox/scripts/IBL/')
 from granger import get_volume, get_centroids, get_res, get_structural
+
+
 
 from scipy import signal
 import pandas as pd
@@ -23,8 +26,7 @@ from scipy.cluster.hierarchy import linkage, fcluster, dendrogram
 from statsmodels.stats.multitest import multipletests
 from sklearn.metrics import confusion_matrix
 from numpy.linalg import norm
-from scipy.stats import pearsonr, spearmanr
-
+from scipy.stats import gaussian_kde, f_oneway, pearsonr, spearmanr, kruskal
 from scipy.spatial import distance
 from scipy.cluster import hierarchy
 from scipy.spatial.distance import squareform
@@ -56,14 +58,18 @@ from matplotlib.lines import Line2D
 from matplotlib.colors import to_rgba
 from matplotlib.patches import Rectangle
 from matplotlib.ticker import ScalarFormatter
-
-
+from matplotlib.ticker import MaxNLocator
+from matplotlib.pyplot import cm
 from venny4py.venny4py import *
 
 import warnings
 warnings.filterwarnings("ignore")
 #mpl.use('QtAgg')
 
+# for vari plot
+_, b, lab_cols = labs()
+ 
+ 
 np.set_printoptions(threshold=sys.maxsize)
 
 plt.rcParams.update(plt.rcParamsDefault)
@@ -100,7 +106,7 @@ bad_eids = ['4e560423-5caf-4cda-8511-d1ab4cd2bf7d',
             '2d9bfc10-59fb-424a-b699-7c42f86c7871',
             '7cc74598-9c1b-436b-84fa-0bf89f31adf6',
             '642c97ea-fe89-4ec9-8629-5e492ea4019d',
-            'a2ec6341-c55f-48a0-a23b-0ef2f5b1d71e',
+            'a2ec6341-c55f-48a0-a23b-0ef2f5b1d71e', # clear artefact
             '195443eb-08e9-4a18-a7e1-d105b2ce1429',
             '549caacc-3bd7-40f1-913d-e94141816547',
             '90c61c38-b9fd-4cc3-9795-29160d2f8e55',
@@ -111,6 +117,39 @@ bad_eids = ['4e560423-5caf-4cda-8511-d1ab4cd2bf7d',
             '0cc486c3-8c7b-494d-aa04-b70e2690bcba']
 
 
+tts__ = ['inter_trial',
+     'blockL',
+     'blockR',
+     'stimLbLcL',
+     'stimLbRcL',
+     'stimLbRcR',
+     'stimLbLcR',
+     'stimRbLcL',
+     'stimRbRcL',
+     'stimRbRcR',
+     'stimRbLcR',
+     'sLbLchoiceL',
+     'sLbRchoiceL',
+     'sLbRchoiceR',
+     'sLbLchoiceR',
+     'sRbLchoiceL',
+     'sRbRchoiceL',
+     'sRbRchoiceR',
+     'sRbLchoiceR',
+     'choiceL',
+     'choiceR',
+     'fback1',
+     'fback0']
+     
+
+PETH_types_dict = {
+    'concat': [item for item in tts__],  # Construct the list without 'end'
+    'surprise': ['stimLbRcL', 'stimLbRcR', 'stimRbLcL', 'stimRbLcR', 'sLbRchoiceL', 'sLbRchoiceR', 'sRbLchoiceL', 'sRbLchoiceR'],
+    'reward': ['fback1', 'fback0'],
+    'resting': ['inter_trial'],
+    'quiescence': ['blockL', 'blockR']
+}    
+    
 
 def put_panel_label(ax, k):
     ax.annotate(string.ascii_lowercase[k], (-0.05, 1.15),
@@ -232,9 +271,6 @@ def concat_PETHs(pid, get_tts=False, vers='concat'):
             [0, 0.3]],
             'fback0': ['feedback_times', 
             np.bitwise_and.reduce([mask,trials['feedbackType'] == -1]), 
-            [0, 0.3]],
-            'end': ['intervals_1', 
-            np.full(len(trials['choice']), True), 
             [0, 0.3]]}
 
     else:
@@ -370,11 +406,7 @@ def concat_PETHs(pid, get_tts=False, vers='concat'):
             'fback0': ['feedback_times', 
                 np.bitwise_and.reduce([mask,
                     trials['feedbackType'] == -1]), 
-                       [0, 0.3]],
-            'end': ['intervals_1', 
-                np.bitwise_and.reduce([mask,
-                    np.full(len(trials['choice']), True)]), 
-                    [0, 0.3]]}
+                       [0, 0.3]]}
 
     if get_tts:
         return tts
@@ -911,27 +943,8 @@ def stack_concat(vers='concat', get_concat=False):
                  allow_pickle=True).flat[0]
 
     # concatenate subsets of PETHs
-    if vers == 'resting':
-        ttypes = ['blockL', 'blockR', 'end']
-        
-    elif vers == 'inter_trial':
-        ttypes = ['inter_trial']
     
-        
-    elif vers == 'surprise':
-        ttypes = ['stimLbRcL','stimLbRcR',
-                  'stimRbLcL','stimRbLcR',
-                  'sLbRchoiceL','sLbRchoiceR',
-                  'sRbLchoiceL','sRbLchoiceR'] 
-    elif vers == 'reward':
-        ttypes = ['fback1', 'fback0']
-        
-    elif vers == 'concat':
-        ttypes = D_['trial_names']    
-        
-    else:
-        print('which PETHs to concat?')
-        return    
+    ttypes = PETH_types_dict[vers]
 
     ws = []
     # group results across insertions
@@ -980,13 +993,6 @@ def stack_concat(vers='concat', get_concat=False):
     ncomp = 2
     r['umap'] = umap.UMAP(n_components=ncomp).fit_transform(cs)
     r['umap_z'] = umap.UMAP(n_components=ncomp).fit_transform(cs_z)
-#    r['tSNE'] = TSNE(n_components=ncomp).fit_transform(cs)
-#    r['tSNE_z'] = TSNE(n_components=ncomp).fit_transform(cs_z)
-#    r['PCA'] = PCA(n_components=ncomp).fit_transform(cs)
-#    r['PCA_z'] = PCA(n_components=ncomp).fit_transform(cs_z)
-#    r['ICA'] = FastICA(n_components=ncomp).fit_transform(cs) 
-#    r['trimap'] = trimap.TRIMAP(n_dims=ncomp).fit_transform(cs)
-
 
     print('loading and concatenating ephys features ...')
 
@@ -1041,24 +1047,9 @@ def stack_concat(vers='concat', get_concat=False):
     # dim reducing ephys features
     r['umap_e'] = umap.UMAP(
                     n_components=ncomp).fit_transform(r['ephysTF'])      
-#    r['tSNE_e'] = TSNE(n_components=ncomp).fit_transform(r['ephysTF'])
-#    r['PCA_e'] = PCA(n_components=ncomp).fit_transform(r['ephysTF'])
-
-
     
     r['len'] = dict(zip(D_['trial_names'],
                     [x.shape[1] for x in D_['ws']]))
-    
-
-#    # hierarchical clustering on PETHs
-#    r['linked'] = linkage(cs, 'ward')
-#    r['linked_z'] = linkage(cs_z, 'ward')  
-#    r['linked_e'] = linkage(r['ephysTF'], 'ward')
-#    
-#    # hierarchical clustering on xys dist in histology space
-#    r['linked_xyz'] = linkage(r['xyz'], 'ward')
-
-
 
     np.save(Path(pth_dmn, f'{vers}.npy'),
             r, allow_pickle=True)            
@@ -1089,7 +1080,7 @@ def get_umap_dist(rerun=False, algo='umap_z',
 
 def plot_dim_reduction(algo='umap_z', mapping='layers', 
                        means=False, exa=False, shuf=False,
-                       exa_squ=False, vers='concat'):
+                       exa_squ=False, vers='concat', ax=None, ds=0.5):
     '''
     2 dims being pca on concat PETH; 
     colored by region
@@ -1100,17 +1091,21 @@ def plot_dim_reduction(algo='umap_z', mapping='layers',
              make and extra plot for each with mean feature vector 
              and those of cells in square in color of mapping
     space: 'concat'  # can also be tSNE, PCA, umap, for distance space
+    ds: marker size in main scatter
     '''
     
     feat = 'concat_z' if algo[-1] == 'z'  else 'concat'
     
     r = regional_group(mapping, algo, vers=vers)
 
-    fig, ax = plt.subplots()
+    if not ax:
+        fig, ax = plt.subplots()
+        ax.set_title(vers) 
     if shuf:
         shuffle(r['cols'])
     
-    im = ax.scatter(r[algo][:,0], r[algo][:,1], marker='o', c=r['cols'], s=2)
+    im = ax.scatter(r[algo][:,0], r[algo][:,1], 
+                    marker='o', c=r['cols'], s=ds, rasterized=True)
     
     if means:
         # show means
@@ -1118,12 +1113,12 @@ def plot_dim_reduction(algo='umap_z', mapping='layers',
         emb2 = [r['av'][reg][0][1] for reg in r['av']]
         cs = [r['av'][reg][1] for reg in r['av']]
         ax.scatter(emb1, emb2, marker='o', facecolors='none', 
-                   edgecolors=cs, s=600, linewidths=4)
+                   edgecolors=cs, s=600, linewidths=4, rasterized=True)
     
     ax.set_xlabel(f'{algo} dim1')
     ax.set_ylabel(f'{algo} dim2')
     ss = 'shuf' if shuf else ''
-    ax.set_title(f'vers {vers}, colors {mapping} {ss}')    
+       
     
     if mapping == 'layers':
         ax.legend(handles=r['els'], ncols=1).set_draggable(True)
@@ -1333,7 +1328,8 @@ def smooth_dist(algo='umap_z', mapping='Beryl', show_imgs=False,
     if show_imgs:
 
         # tweak for other mapping than "layers"
-        fig, axs = plt.subplots(nrows=3, ncols=len(regs))        
+        fig, axs = plt.subplots(nrows=3, ncols=len(regs),
+                                figsize=(18.6, 5.8))        
         axs = axs.flatten()    
         #[ax.set_axis_off() for ax in axs]
 
@@ -1341,19 +1337,26 @@ def smooth_dist(algo='umap_z', mapping='Beryl', show_imgs=False,
         vmax = np.max([np.max(imgs[reg].flatten()) for reg in imgs])
         
         k = 0 
-        # row of panels showing smoothed point clouds
-        for reg in imgs:
-            axs[k].imshow(imgs[reg], origin='lower', vmin=vmin, vmax=vmax)
-            axs[k].set_title(f'{reg}, ({regs[reg]})')
-            axs[k].set_axis_off()
-            k+=1 
-            
+
         # row of images showing point clouds     
         for reg in imgs:
-            axs[k].scatter(xys[reg][0], xys[reg][1], color=regcol[reg], s=2)
+            axs[k].scatter(xys[reg][0], xys[reg][1], color=regcol[reg], s=0.1)
+            axs[k].set_title(f'{reg}, ({regs00[reg]})')
+            #axs[k].set_axis_off()
+            axs[k].set_aspect('equal')
+            axs[k].spines['right'].set_visible(False)
+            axs[k].spines['top'].set_visible(False)
+            axs[k].set_xlabel('umap dim 1')
+            axs[k].set_ylabel('umap dim 2')             
+            k+=1
+            
+        # row of panels showing smoothed point clouds
+        for reg in imgs:
+            axs[k].imshow(imgs[reg], origin='lower', vmin=vmin, vmax=vmax,
+                          interpolation=None)
             axs[k].set_title(f'{reg}, ({regs00[reg]})')
             axs[k].set_axis_off()
-            k+=1               
+            k+=1                            
             
         # row of images showing mean feature vector
         for reg in imgs:
@@ -1438,7 +1441,7 @@ def smooth_dist(algo='umap_z', mapping='Beryl', show_imgs=False,
         fig0, ax0 = plt.subplots(figsize=(4,4))
     
                    
-    ims = ax0.imshow(res, origin='lower')
+    ims = ax0.imshow(res, origin='lower', interpolation=None)
     ax0.set_xticks(np.arange(len(regs)), regs,
                    rotation=90)
     ax0.set_yticks(np.arange(len(regs)), regs)               
@@ -1550,7 +1553,6 @@ def plot_ave_PETHs(feat = 'concat', vers='concat', rerun=False):
          'choiceR': red_right,
          'fback1': 'g',
          'fback0': 'k',
-         'end': 'brown',
          'stimLbLcL': 'grey',
          'stimLbRcL': 'grey',
          'stimLbRcR': 'grey',
@@ -1576,11 +1578,7 @@ def plot_ave_PETHs(feat = 'concat', vers='concat', rerun=False):
         elif 'choice' in win:
             return 'firstMovement_times'
         elif 'fback' in win:
-            return 'feedback_times'    
-        elif 'end' in win:
-            return 'intervals_1'
-        
-
+            return 'feedback_times'
 
     def pre_post(win):
         '''
@@ -1624,7 +1622,7 @@ def plot_ave_PETHs(feat = 'concat', vers='concat', rerun=False):
 
     d = np.load(pth_dmnm, allow_pickle=True).flat[0]
     
-    fig, ax = plt.subplots(figsize=(8.57, 4.8))
+    fig, ax = plt.subplots(figsize=(8.57, 2.75))
     r = np.load(Path(pth_dmn, f'{vers}.npy'),allow_pickle=True).flat[0]
     r['mean'] = np.mean(r[feat],axis=0)
     
@@ -1643,6 +1641,7 @@ def plot_ave_PETHs(feat = 'concat', vers='concat', rerun=False):
 
         st += r['len'][tt]
 
+
         ax.plot(xx, yy, label=tt, color=win_cols[tt])
         ax.annotate(tt, (xx[-1], yy[-1]), color=win_cols[tt])
         
@@ -1658,18 +1657,31 @@ def plot_ave_PETHs(feat = 'concat', vers='concat', rerun=False):
     d['av_tr_times'] = [np.cumsum([0]+ list(x)) 
                         for x in d['diffs']]
 
-    for s in d['av_tr_times']:
-        k = 0
-        for t in s:
-            ax.axvline(x=t, color=evs[list(evs)[k]], 
-                       linestyle='-', linewidth=0.01)
-            k +=1            
-    
+#    for s in d['av_tr_times']:
+#        k = 0
+#        for t in s:
+#            ax.axvline(x=t, color=evs[list(evs)[k]], 
+#                       linestyle='-', linewidth=0.01)
+#            k +=1 
+    # Use KDE instead of vertical lines
+#    k=0
+#    for t in d['av_tr_times']:
+#        
+#        kde = gaussian_kde(t)
+#        ax.plot(t, kde(t), color=evs[list(evs)[k]], alpha=0.5)
+#        k += 1            
+            
+                       
+    ax.spines['right'].set_visible(False)
+    ax.spines['top'].set_visible(False)    
     ax.set_xlabel('time [sec]')
     ax.set_ylabel('trial averaged fr [Hz]')
     ax.set_title('PETHs averaged across all BWM cells')
     ax.set_xlim(-1.15,3)
     fig.tight_layout()
+    fig.savefig(Path(one.cache_dir,'dmn', 'figs',
+                'intro', 'avg_PETHs.svg'))
+
 
 
 def plot_xyz(mapping='Beryl', vers='concat', add_cents=True):
@@ -1721,6 +1733,9 @@ def plot_xyz(mapping='Beryl', vers='concat', add_cents=True):
     ax.set_zlabel('z')
     ax.set_title(f'Mapping: {mapping}')
     ax.grid(False)
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=3))
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=3))
+    ax.zaxis.set_major_locator(MaxNLocator(nbins=3))
     fig.tight_layout()
 
 
@@ -1784,7 +1799,9 @@ def plot_connectivity_matrix(metric='umap_z',
     alone = False
     if not ax0:
         alone=True
-        fig, ax0 = plt.subplots(figsize=(5, 5))
+        fig, (ax_dendro, ax0) = plt.subplots(1, 2, 
+            figsize=(5, 4), 
+            gridspec_kw={'width_ratios': [1, 5]})
     
 
     # Order the matrix using hierarchical clustering
@@ -1795,10 +1812,10 @@ def plot_connectivity_matrix(metric='umap_z',
     regs = np.array(regs)[ordered_indices]    
     res = res[:, ordered_indices][ordered_indices, :]
            
-    ims = ax0.imshow(res, origin='lower')
+    ims = ax0.imshow(res, origin='lower', interpolation=None)
     ax0.set_xticks(np.arange(len(regs)), regs,
-                   rotation=90)
-    ax0.set_yticks(np.arange(len(regs)), regs)               
+                   rotation=90, fontsize=5)
+    ax0.set_yticks(np.arange(len(regs)), regs, fontsize=5)               
                    
     [t.set_color(i) for (i,t) in
         zip([pal[reg] for reg in regs],
@@ -1813,7 +1830,28 @@ def plot_connectivity_matrix(metric='umap_z',
         
     ax0.set_title(f'{metric}, {vers}')
     #ax0.set_ylabel(mapping)
-    plt.colorbar(ims,fraction=0.046, pad=0.04)
+    cbar = plt.colorbar(ims,fraction=0.046, pad=0.04, 
+                        extend='neither', ticks=[0, 0.5, 1])
+    #cbar.ax.yaxis.set_major_locator(MaxNLocator(nbins=3))
+
+
+    # plot dendrogram
+    with plt.rc_context({'lines.linewidth': 0.5}):
+        hierarchy.dendrogram(linkage_matrix, ax=ax_dendro, 
+            orientation='left', labels=regs)
+
+        
+    ax_dendro.set_axis_off()
+    
+#    ax_dendro.set_yticklabels(regs)
+#    [ax_dendro.spines[s].set_visible(False) for s in
+#        ['left', 'right', 'top', 'bottom']]
+#    ax_dendro.get_xaxis().set_visible(False)
+#    [t.set_color(i) for (i,t) in    
+#        zip([pal[reg] for reg in regs],
+#        ax_dendro.yaxis.get_ticklabels())]    
+    
+    plt.subplots_adjust(wspace=0.05)
     
     if alone:
         fig.tight_layout()
@@ -1822,23 +1860,23 @@ def plot_connectivity_matrix(metric='umap_z',
     return ordered_indices
     
 
-def plot_multi_matrices(ticktype='rectangles'):
+def plot_multi_matrices(ticktype='rectangles', add_clus=True):
 
     '''
     for various subsets of the PETHs 
     plot adjacency all in one row
-    repeat rows, each ordered by the type of the row index   
+    repeat rows, each ordered by the type of the row index
+    
+    add_clus: add a row of cluster 2d scatter plots  
     '''
 
-    verss =['concat', 'surprise', 'reward', 'resting', 'inter_trial', 
-            'euc_centroid','30 ephysAtlas',]
-
+    verss = list(PETH_types_dict.keys()) + ['cartesian','ephysAtlas']
 
     D = {}
     for vers in verss:
-        if vers == 'euc_centroid':
+        if vers == 'cartesian':
             D[vers] = trans_(get_centroids(dist_=True))
-        elif vers == '30 ephysAtlas':
+        elif vers == 'ephysAtlas':
             D[vers] = trans_(get_umap_dist(algo='umap_e', vers='concat'))
         else:     
             D[vers] = trans_(get_umap_dist(algo='umap_z', vers=vers))
@@ -1861,15 +1899,17 @@ def plot_multi_matrices(ticktype='rectangles'):
         D2[vers] = res        
     
     _,pal = get_allen_info()
-    fig, axs = plt.subplots(nrows=len(verss), ncols=len(verss),
-                            figsize=(10,9.5))
+    nrows = len(verss)+1 if add_clus else len(verss)
+    fig, axs = plt.subplots(nrows=nrows, ncols=len(verss),
+                            figsize=(8.67,9.77))
     axs = axs.flatten()
     
     k = 0 
     for row in range(len(verss)):   
         # use dendro order of first version for all
-        res0 = D2[verss[row]]
-        linkage_matrix = hierarchy.linkage(1-res0)
+        res0 = np.amax(D2[verss[row]]) - D2[verss[row]] 
+        cres = squareform(res0)  # get input form for next line
+        linkage_matrix = hierarchy.linkage(cres)
         ordered_indices = hierarchy.leaves_list(linkage_matrix) 
         regso = np.array(regs)[ordered_indices]
             
@@ -1877,7 +1917,7 @@ def plot_multi_matrices(ticktype='rectangles'):
            
             res = D2[verss[col]][:, ordered_indices][ordered_indices, :]
                    
-            ims = axs[k].imshow(res, origin='lower')
+            ims = axs[k].imshow(res, origin='lower', interpolation=None)
             
             
             if ticktype == 'acronyms':
@@ -1922,9 +1962,110 @@ def plot_multi_matrices(ticktype='rectangles'):
                 axs[k].set_title(verss[col])
             k += 1
 
-    fig.suptitle('all matrices ordered by data of row number')
+
+    if add_clus:
+        # add cluster 2d plots as bottom row
+        plot_dist_clusters(anno=False, axs=axs[-len(verss):])
+        [ax.axis('off') for ax in axs]
+        
+    #fig.suptitle('all matrices ordered by data of row number')
     fig.tight_layout()
+    fig.savefig(Path(one.cache_dir,'dmn', 'figs','matrices.svg'))    
+    fig.savefig(Path(one.cache_dir,'dmn', 'figs','matrices.pdf'),
+                dpi=150)
+
+
+def plot_dendrograms():
+
+    """
+    Displays a dendrogram for each 'vers' in 'verss' with colored x-tick labels.
     
+    Parameters:
+    - verss: Versions to plot dendrograms for.
+    - D: Precomputed distances or similarities for each 'vers'.
+    - regs: List of brain regions.
+    - pal: Palette dictionary mapping regions to colors.
+    """
+    
+    
+    verss = list(PETH_types_dict.keys()) + ['cartesian','ephysAtlas']
+    D = {}
+    for vers in verss:
+        if vers == 'cartesian':
+            D[vers] = trans_(get_centroids(dist_=True))
+        elif vers == 'ephysAtlas':
+            D[vers] = trans_(get_umap_dist(algo='umap_e', vers='concat'))
+        else:     
+            D[vers] = trans_(get_umap_dist(algo='umap_z', vers=vers))
+
+    # get intersection of regions across versions
+    set_list = [set(list(D[vers].keys())) for vers in D]
+    pairs = list(set.intersection(*set_list))
+    regs = list(Counter(np.array([p.split(' --> ') 
+                for p in pairs]).flatten()))
+    
+    D2 = {}
+    for vers in D:
+        res = np.ones((len(regs), len(regs)))   
+        for i in range(len(regs)):
+            for j in range(len(regs)):
+                if i == j:
+                    continue
+                res[i,j] = D[vers][f'{regs[i]} --> {regs[j]}']
+        
+        D2[vers] = res
+        
+    _,pal = get_allen_info()         
+    nrows = len(verss)
+    fig, axs = plt.subplots(nrows=nrows, figsize=(10, 7.93))
+
+    cmap = cm.Greys(np.linspace(0.1, 1, 10))
+    hierarchy.set_link_color_palette([mpl.colors.rgb2hex(rgb[:3]) for rgb in cmap])
+
+
+    if nrows == 1:
+        axs = [axs]  # Ensure axs is iterable for a single row
+
+    for ax, vers in zip(axs, verss):
+        # Compute hierarchical clustering and order regions
+        
+        # turn similarity matrix into distance matrix
+        res = np.amax(D2[vers]) - D2[vers]
+        cres = squareform(res)
+        
+        linkage_matrix = hierarchy.linkage(cres)
+            
+        dendro = hierarchy.dendrogram(linkage_matrix, ax=ax,
+            above_threshold_color='k', orientation='top')
+            
+            
+        # Set x-tick labels with brain regions, ordered by dendrogram
+        ordered_regions = [regs[i] for i in dendro['leaves']]
+        ax.set_xticklabels(ordered_regions, rotation=90, fontsize=5.6)
+
+        # Color x-tick labels based on brain regions
+        for xtick, reg in zip(ax.get_xticklabels(), ordered_regions):
+            xtick.set_color(pal[reg])
+
+        # ax.set_title(f"{vers}")
+        ax.text(0.5, 0.9, f"{vers}", transform=ax.transAxes, 
+        ha='center', va='bottom', fontsize=12)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_visible(False)
+        ax.set_yticks([])
+        
+    fig.subplots_adjust(
+top=0.965,
+bottom=0.069,
+left=0.016,
+right=0.984,
+hspace=1.0,
+wspace=0.335)
+
+    fig.savefig(Path(one.cache_dir,'dmn', 'figs','dendros.svg'))    
+    fig.savefig(Path(one.cache_dir,'dmn', 'figs','dendros.pdf'),
+                dpi=150)
 
 
 def trans_(d):
@@ -1941,8 +2082,7 @@ def trans_(d):
             d0[f'{regs[i]} --> {regs[j]}'] = res[i,j]
                 
     return d0
-    
-
+   
 
 def scatter_Beryl_similarity(ranks=False, hexbin_=False, anno=False):
 
@@ -1953,35 +2093,35 @@ def scatter_Beryl_similarity(ranks=False, hexbin_=False, anno=False):
     '''
 
     D = {'cartesian': trans_(get_centroids(dist_=True)),
-         'umap_z_concat': trans_(get_umap_dist(algo='umap_z', 
+         'concat': trans_(get_umap_dist(algo='umap_z', 
                                                 vers='concat')),
-#         'umap_z_reward': trans_(get_umap_dist(algo='umap_z', 
-#                                                vers='reward')),
-#         'umap_z_surprise': trans_(get_umap_dist(algo='umap_z',
-#                                                vers='surprise')),
-#         'umap_z_resting': trans_(get_umap_dist(algo='umap_z',
-#                                                vers='resting')),
-#         'umap_z_inter_trial': trans_(get_umap_dist(algo='umap_z',
-#                                                vers='inter_trial')),
-         'umap_e': trans_(get_umap_dist(algo='umap_e')),
+         'surprise': trans_(get_umap_dist(algo='umap_z', 
+                                                vers='surprise')),
+         'reward': trans_(get_umap_dist(algo='umap_z',
+                                                vers='reward')),
+         'quiescence': trans_(get_umap_dist(algo='umap_z',
+                                                vers='quiescence')),
+         'resting': trans_(get_umap_dist(algo='umap_z',
+                                                vers='resting')),
+         '30ephys': trans_(get_umap_dist(algo='umap_e')),
          #'coherence': get_res(metric='coherence', 
                               #sig_only=True, combine_=True),
          'granger': get_res(metric='granger', 
                             sig_only=True, combine_=True),
-                
          #'structural3_sp': get_structural(fign=3, shortestp=True),
          'axonal': get_structural(fign=3)
          }
      
     tt = len(list(combinations(list(D.keys()),2)))
-    nrows = 1 if tt == 1 else 3
-    ncols = 1 if tt == 1 else tt//nrows +1
+    nrows = 1 if tt == 1 else 4
+    ncols = 1 if tt == 1 else tt//nrows 
         
 #    nrows = 3
 #    ncols = 1    
         
      
-    fig, ax = plt.subplots(ncols=ncols, nrows=nrows)     
+    fig, ax = plt.subplots(ncols=ncols, nrows=nrows,
+                           figsize=[10.34, 9.74])     
     ax = np.array(ax).flatten()
     
     metrics = list(D.keys())   
@@ -2005,9 +2145,10 @@ def scatter_Beryl_similarity(ranks=False, hexbin_=False, anno=False):
         gs = gs
         cs = cs
         pts = pts
-
-        cors,ps = spearmanr(gs, cs)
+        
         corp,pp = pearsonr(gs, cs)
+        cors,ps = spearmanr(gs, cs)
+        
 
         if ranks:
             gs = np.argsort(np.argsort(gs))
@@ -2015,32 +2156,42 @@ def scatter_Beryl_similarity(ranks=False, hexbin_=False, anno=False):
 
             
         if hexbin_:
-            ax[k].hexbin(gs, cs, cmap='Greys', gridsize=50)
+            ax[k].hexbin(gs, cs, cmap='Greys', gridsize=150)
         else:                
-            ax[k].scatter(gs, cs, color='b' if ranks else 'k', s=0.5, alpha=0.1)
+            ax[k].scatter(gs, cs, color='b' if ranks else 'k', 
+                          s=0.5, alpha=0.1, rasterized=True)
 
         if anno:
      
             for i in range(len(pts)):
                 ax[k].annotate('  ' + pts[i], 
                     (gs[i], cs[i]),
-                    fontsize=5,color='b' if ranks else 'k')                   
-        
+                    fontsize=5,color='b' if ranks else 'k')
+                       
         a = 'ranks' if ranks else ''
         ax[k].set_xlabel(f'{metrics[nf[k][0]]} ' + a)       
         ax[k].set_ylabel(f'{metrics[nf[k][1]]} ' + a)
-
-        ax[k].set_title(f'pe: {np.round(corp,2)}, sp: {np.round(cors,2)}')
-
-#        ax[k].set_title(f'pe: (r,p)=({np.round(corp,2)},{np.round(pp,2)}) \n'
-#                     f'sp: (r,p)=({np.round(cors,2)},{np.round(ps,2)})')
+        ax[k].spines['right'].set_visible(False)
+        ax[k].spines['top'].set_visible(False)
+        ss = (f"{np.round(corp,2) if pp<0.05 else '_'}, "
+              f"{np.round(cors,2) if ps<0.05 else '_'}")
+        ax[k].set_title(ss + f'\n {len(pts)}')
     
         print(metrics[nf[k][0]], metrics[nf[k][1]], len(pts))
         print(f'pe: (r,p)=({np.round(corp,2)},{np.round(pp,2)})')
         print(f'sp: (r,p)=({np.round(cors,2)},{np.round(ps,2)})')
-
+        
+    # Check if axes is taken, if not, switch axes off
+    [a.axis('off') for a in ax if not a.title.get_text()]
+            
+            
     fig.tight_layout()
-    
+    fig.savefig(Path(one.cache_dir,'dmn', 'figs',
+                    'scatters.svg'))
+    fig.savefig(Path(one.cache_dir,'dmn', 'figs',
+                    'scatters.pdf'), dpi=250,
+                     bbox_inches='tight', format='pdf')
+
     
 def plot_venn():
 
@@ -2070,15 +2221,15 @@ def plot_venn():
 
 
 
-def swansons(metric='latency', minreg=10, annotate=False,
-             vers='concat', mapping='Beryl'):
+def swansons_all(metric='latency', minreg=10, annotate=False,
+             vers='concat', mapping='Beryl', restrict=False):
 
     '''
     Per window of the BWM, average PETHS, get latecy or fr
     put on swanson, one per aligment event
     
     if metric == 'ephysTF', plot region average score
-    of each of the 30 features
+    of each of the 30 features (or just two if restric=True)
     '''
     r = regional_group(mapping, 'umap_z', vers='concat')    
     
@@ -2111,17 +2262,32 @@ def swansons(metric='latency', minreg=10, annotate=False,
             
             avs[reg] = dict(zip(list(r['len'].keys()),
                                 lats if metric == 'latency' else frs))
-
-
-    fig, axs = plt.subplots(nrows=3,ncols=len(avs[reg].keys())//3,
+     
+    nrows = 3
+    ncols = len(avs[reg].keys())//nrows
+                
+    if restrict:                           
+        # restrict to example features
+        features_to_keep = ['psd_alpha', 'trough_time_secs']
+                                
+        restricted_data = {region: {feature: avs[region][feature]
+            for feature in features_to_keep} for region in avs}
+            
+        avs = restricted_data    
+        ncols = len(features_to_keep)
+        nrows = 1
+        
+    fig, axs = plt.subplots(nrows=nrows, ncols=ncols,
                             sharex=True if metric!= 'ephysTF' else False, 
                             sharey=True if metric!= 'ephysTF' else False)
     axs = axs.flatten('F')
     
-    cmap_ = 'Greys_r' if metric == 'latency' else 'Greys'
+    cmap_ = 'viridis_r' if metric == 'latency' else 'viridis'
     
     if metric!= 'ephysTF':
         # assure all panels have same scale
+
+        
 
         lats_all = np.array([np.array([avs[x][s] for x in avs]) 
                     for s in avs[reg].keys()]).flatten()
@@ -2133,7 +2299,7 @@ def swansons(metric='latency', minreg=10, annotate=False,
     k = 0
     for s in avs[reg].keys():
         
-        # plot latencies (cmap reversed, dark is early)
+        
                
         lats = np.array([avs[x][s] for x in avs])
         
@@ -2162,7 +2328,7 @@ def swansons(metric='latency', minreg=10, annotate=False,
                                 location='bottom')
         cbar.formatter = ScalarFormatter(useMathText=True)
         
-        cbar.locator = plt.MaxNLocator(nbins=3)
+        cbar.locator = plt.MaxNLocator(nbins=2)
         cbar.update_ticks()
 
         axs[k].axis('off')
@@ -2172,6 +2338,133 @@ def swansons(metric='latency', minreg=10, annotate=False,
 
     fig.suptitle(metric)
     fig.tight_layout()    
+    fig.savefig(Path(one.cache_dir,'dmn', 'figs', 'intro', 
+                 'ephysTF_example_swansons.svg'))
+
+
+    #verss = ['concat', 'surprise', 'reward', 'resting']
+
+
+
+def illustrate_data(minreg=10, annotate=False, ds=0.1):
+
+    '''
+    Plot on swansons mean PETH for 5 types
+    put 5 scatter below for PETH types
+    ds: scatter dot size
+    '''
+    
+    r = regional_group('Beryl', 'umap_z', vers='concat')    
+    del r['len']['end']
+     
+    # get average z-scored PETHs per Beryl region 
+    regs = Counter(r['acs'])
+    regs2 = [reg for reg in regs if regs[reg]>minreg]
+
+    # average all PETHs per region, then z-score and get latency
+    # plot latency in swanson; put average peths on top
+    avs = {}
+
+    for reg in regs2:
+    
+        # average across neurons per region
+        orgl = np.mean(r['concat'][r['acs'] == reg],axis=0)   
+
+        rd = {}
+
+        # cumulative [start, end] indices of each segment
+        start_end = {}
+        start_idx = 0
+
+        # Calculate cumulative [start, end] indices for each segment
+        for key, length in r['len'].items():
+            end_idx = start_idx + length 
+            start_end[key] = [start_idx, end_idx]
+            # Update the start index for the next segment
+            start_idx += length
+
+        for subset, segments in PETH_types_dict.items():
+            # Calculate start and end indices for the current subset
+            ranges = []
+            for seg in segments:
+                ranges.append(np.arange(start_end[seg][0], 
+                                        start_end[seg][1]))
+                                        
+            # take mean of subset PETHs (average across time bins)
+            rd[subset] = np.mean(orgl[np.concatenate(ranges)])
+            
+        avs[reg] = rd
+     
+    nrows = 2
+    ncols = len(avs[reg].keys())
+        
+    fig, axs = plt.subplots(nrows=nrows, ncols=ncols, 
+                            figsize=[8.51, 6.07], 
+                            gridspec_kw={'height_ratios': [3, 1]})
+
+    cmap_ = 'viridis'
+    
+
+    lats_all = np.array([np.array([avs[x][s] for x in avs]) 
+                for s in avs[reg].keys()]).flatten()
+        
+    vmin, vmax = (np.nanmin(lats_all), np.nanmax(lats_all))
+   
+    
+    # loop through PETH subset types
+    k = 0  
+    for s in avs[reg].keys():
+
+        lats = np.array([avs[x][s] for x in avs])       
+        
+        plot_swanson_vector(np.array(list(avs.keys())),
+                            np.array(lats), 
+                            cmap=cmap_, 
+                            ax=axs[0,k], br=br, 
+                            orientation='portrait',
+                            vmin=vmin, 
+                            vmax=vmax,
+                            annotate= annotate,
+                            annotate_n=5,
+                            annotate_order='top')
+
+        norm = mpl.colors.Normalize(vmin=vmin, 
+                                    vmax=vmax)        
+
+        num_ticks = 3  # Adjust as needed
+
+        # Use MaxNLocator to select a suitable number of ticks
+        locator = MaxNLocator(nbins=num_ticks)
+                   
+        norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
+        cbar = fig.colorbar(
+                   mpl.cm.ScalarMappable(norm=norm,cmap=cmap_),
+                   ax=axs[0,k],shrink=0.8,aspect=12,pad=.025,
+                   orientation="horizontal", ticks=locator)
+                   
+        cbar.ax.tick_params(axis='both', which='major', size=6)
+        cbar.outline.set_visible(False)
+        cbar.ax.tick_params(size=2)
+        cbar.ax.xaxis.set_tick_params(pad=5)
+        cbar.set_label('firing rate (Hz)')
+
+        
+        axs[0,k].set_title(s)
+        axs[0,k].axis('off')
+        
+        
+        plot_dim_reduction(algo='umap_z', 
+            mapping='Beryl', vers=s, ax=axs[1,k], ds=ds)
+        axs[1,k].axis('off')
+        #put_panel_label(axs[k], k)
+        k+=1
+
+    
+    fig.tight_layout()    
+    fig.savefig(Path(one.cache_dir,'dmn', 'figs','swansons_umap.svg'))
+    fig.savefig(Path(one.cache_dir,'dmn', 'figs','swansons_umap.pdf'),
+                dpi=150, bbox_inches='tight')    
+    
 
 
 
@@ -2227,8 +2520,57 @@ def plot_peth(regs_=[], win='inter_trial', minreg=10):
 
     fig.tight_layout()    
     
-    
 
+def plot_dist_clusters(anno=True, axs=None):
+
+    '''
+    for the 5 subsets of PETHS, 
+    plot umap per region by using the
+    similarity scores obtained by smoothing over neurons
+    
+    also for cartesian and ephysAtlas
+    
+    '''
+    
+    verss = list(PETH_types_dict.keys()) + ['cartesian','ephysAtlas']
+    
+    alone = False
+    if 'axs' not in locals():
+        alone = True
+        fig, axs = plt.subplots(nrows=1, ncols=len(verss), 
+                                layout="constrained", figsize=(17,4))
+    _, pa =get_allen_info()
+    
+    k = 0
+    for vers in verss:
+
+        if vers == 'cartesian':
+            d = get_centroids(dist_=True)
+        elif vers == 'ephysAtlas':
+            d = get_umap_dist(algo='umap_e', vers='concat')
+        else:     
+            d = get_umap_dist(algo='umap_z', vers=vers)
+           
+        dist = np.max(d['res']) - d['res']  # invert similarity to distances
+        reducer = umap.UMAP(metric='precomputed')
+        emb = reducer.fit_transform(dist)
+
+        cols = [pa[reg] for reg in d['regs']]
+        
+        axs[k].scatter(emb[:,0], emb[:,1], 
+                 color=cols, s=5, rasterized=True)
+
+        if anno:
+            for i in range(len(emb)):
+                axs[k].annotate('  ' + d['regs'][i], 
+                (emb[:,0][i], emb[:,1][i]),
+                fontsize=5,color=cols[i])     
+
+            axs[k].set_title(vers)
+        axs[k].set_xlabel('umap dim 1')
+        axs[k].set_ylabel('umap dim 2')
+
+        k+=1
 
 
 
