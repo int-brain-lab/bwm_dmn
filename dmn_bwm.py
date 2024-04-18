@@ -13,8 +13,8 @@ from reproducible_ephys_functions import figure_style, labs
 import sys
 sys.path.append('Dropbox/scripts/IBL/')
 from granger import get_volume, get_centroids, get_res, get_structural
-
-
+from state_space_bwm import get_cmap_bwm, pre_post
+from bwm_figs import variverb
 
 from scipy import signal
 import pandas as pd
@@ -237,12 +237,21 @@ def concat_PETHs(pid, get_tts=False, vers='concat'):
 
     '''
     for each cell concat all possible PETHs
+    
+    vers: different PETH set
+        vers == 'contrast': extra analyiss for BWM reviewer;
+        check for zero contrast effects
+        have PETHs aligned to main events; irrespective of type
+    
     '''
     
     eid, probe = one.pid2eid(pid)
 
     # Load in trials data and mask bad trials (False if bad)
-    trials, mask = load_trials_and_mask(one, eid)     
+    trials, mask = load_trials_and_mask(one, eid,
+        saturation_intervals=['saturation_stim_plus04',
+                              'saturation_feedback_plus04',
+                              'saturation_move_minus02'])
 
     if vers == 'concat0':        
         # define align, trial type, window length   
@@ -273,7 +282,7 @@ def concat_PETHs(pid, get_tts=False, vers='concat'):
             np.bitwise_and.reduce([mask,trials['feedbackType'] == -1]), 
             [0, 0.3]]}
 
-    else:
+    elif vers == 'concat':
         # define align, trial type, window length
 
         # For the 'inter_trial' mask trials with too short iti        
@@ -408,6 +417,24 @@ def concat_PETHs(pid, get_tts=False, vers='concat'):
                     trials['feedbackType'] == -1]), 
                        [0, 0.3]]}
 
+    elif vers == 'contrast':
+        # for latency plot based on coarse PETHs
+        # and extra control for auditory signal
+        
+        tts = {'stim': ['stimOn_times', mask, [0, .15]],         
+               'choice': ['firstMovement_times', mask, [0, 0.15]],             
+               'fback': ['feedback_times', mask, [0, 0.15]],
+               'stim0': ['stimOn_times', np.bitwise_and(mask, 
+                            np.bitwise_or(trials[f'contrastRight'] == 0,
+                                          trials[f'contrastLeft'] == 0)),
+                                          [0, .15]]}       
+
+        
+    else:
+        print('what set of PETHs??')
+        return    
+        
+        
     if get_tts:
         return tts
 
@@ -672,6 +699,9 @@ def regional_group(mapping, algo, vers='concat'):
         av = {reg: [np.mean(r[algo][acs == reg], axis=0), pa[reg]] 
               for reg in regs}
               
+
+    if 'end' in r['len']:
+        del r['len']['end']
               
     r['acs'] = acs
     r['cols'] = cols
@@ -866,7 +896,7 @@ def decode(src='concat', mapping='Beryl', minreg=20, decoder='LDA',
 '''
 
 
-def get_all_PETHs(eids_plus=None):
+def get_all_PETHs(eids_plus=None, vers='concat'):
 
     '''
     for all BWM insertions, get the PSTHs and acronyms,
@@ -880,7 +910,7 @@ def get_all_PETHs(eids_plus=None):
         eids_plus = df[['eid', 'probe_name', 'pid']].values
 
     # save results per insertion (eid_probe) in FlatIron folder
-    pth = Path(one.cache_dir, 'dmn', 'concat')
+    pth = Path(one.cache_dir, 'dmn', vers)
     pth.mkdir(parents=True, exist_ok=True)
 
     Fs = []
@@ -897,7 +927,7 @@ def get_all_PETHs(eids_plus=None):
         time0 = time.perf_counter()
         try:
         
-            D = concat_PETHs(pid)
+            D = concat_PETHs(pid, vers=vers)
                             
             eid_probe = eid + '_' + probe
             np.save(Path(pth, f'{eid_probe}.npy'), D, 
@@ -925,7 +955,9 @@ def stack_concat(vers='concat', get_concat=False):
 
     '''
     stack concatenated PETHs; 
-    compute embedding for lower dim 
+    compute embedding for lower dim
+    
+    Careful: here 'vers' refers to PETH subsets of concat 
     '''
 
     pth = Path(one.cache_dir, 'dmn', 'concat')
@@ -1052,8 +1084,97 @@ def stack_concat(vers='concat', get_concat=False):
                     [x.shape[1] for x in D_['ws']]))
 
     np.save(Path(pth_dmn, f'{vers}.npy'),
-            r, allow_pickle=True)            
+            r, allow_pickle=True)
+            
+            
+def stack_simple(vers='contrast'):
 
+    '''
+    For the latency analysis based on most simple PETHs
+    (vers = 'contrast')
+    Output PETH per region, latency
+    '''
+    
+    # to fix latency time unit (seg length in sec)          
+    pre_post00 = {'stim': [0, 0.15],
+                 'choice': [0.15, 0],
+                 'fback': [0, 0.15],
+                 'stim0': [0, 0.15]}    
+    
+    pth = Path(one.cache_dir, 'dmn', vers)
+    ss = os.listdir(pth)  # get insertions
+    print(f'combining {len(ss)} insertions for version {vers}') 
+
+    # pool data into df
+    
+    # get PETH type names from first insertion
+    D_ = np.load(Path(pth, ss[0]),
+                 allow_pickle=True).flat[0]
+
+    col_keys = ['ids', 'xyz', 'uuids'] + D_['trial_names']
+    r = {ke: [] for ke in col_keys}
+
+    # group results across insertions
+    for s in ss:           
+                   
+        D_ = np.load(Path(pth, s),
+                     allow_pickle=True).flat[0]
+                     
+        for ke in ['ids', 'xyz', 'uuids']:
+            r[ke].append(D_[ke])
+            
+        i = 0    
+        for ke in D_['trial_names']:
+            r[ke].append(D_['ws'][i])
+            
+
+    for ke in r:  
+        r[ke] = np.concatenate(r[ke])
+                    
+    cs = np.concatenate([r[k] for k in , axis=0)
+    
+    # remove cells with nan entries
+    goodcells = np.bitwise_and.reduce(
+        [[~np.isnan(k).any() for k in r[ke]] for ke in D_['trial_names']])
+        
+    for ke in r:  
+        r[ke] = r[ke][goodcells]       
+                      
+
+    # get average PETH and latency per region
+    r['acs'] = np.array(br.id2acronym(r['ids'], 
+                                     mapping='Beryl'))    
+    
+    
+    lengths = [len(value) for key, value in r.items() 
+        if isinstance(value, (list, np.ndarray))]
+
+    # Check if all elements have the same length
+    assert len(set(lengths)) == 1, ("Not all data "
+        "elements have the same length.")                    
+    
+    # get average PETH and latency per region
+    rr = {}
+    
+    regs = np.unique(r['acs'])
+    for reg in regs:
+        d = {}
+        for ke in D_['trial_names']:
+            d[ke] = np.mean(r[ke][r['acs'] == reg], axis=0)    
+            seg = zscore(d[ke])
+            seg = seg - np.min(seg)
+            loc = np.where(seg > 0.7 * (np.max(seg)))[0][0]
+    
+            # convert time unit
+            pre,post = pre_post00[ke]
+            rrr = np.linspace(0,pre+post,len(seg))
+
+            d[ke+'_lat'] = rrr[loc]
+        rr[reg] = d                       
+                       
+    np.save(Path(one.cache_dir, 'dmn', 'stack_simple.npy'),
+            rr, allow_pickle=True)
+            
 
 def get_umap_dist(rerun=False, algo='umap_z', 
                   mapping='Beryl', vers='concat'):
@@ -2221,18 +2342,23 @@ def plot_venn():
 
 
 
-def swansons_all(metric='latency', minreg=10, annotate=False,
+def swansons_all(metric='latency', minreg=10, annotate=True,
              vers='concat', mapping='Beryl', restrict=False):
 
     '''
-    Per window of the BWM, average PETHS, get latecy or fr
+    Per window of the BWM, average PETHS, get latency (latency_all) or fr
     put on swanson, one per aligment event
     
     if metric == 'ephysTF', plot region average score
     of each of the 30 features (or just two if restric=True)
+
+
+    Can also be used as extra figure for BWM rebuttal on latency alternative
+    metric ='latency'
+    
     '''
     r = regional_group(mapping, 'umap_z', vers='concat')    
-    
+
     # get average z-scored PETHs per Beryl region 
     regs = Counter(r['acs'])
     regs2 = [reg for reg in regs if regs[reg]>minreg]
@@ -2248,23 +2374,60 @@ def swansons_all(metric='latency', minreg=10, annotate=False,
             avs[reg] = dict(zip(r['fts'],orgl))
         else:
             orgl = np.mean(r['concat'][r['acs'] == reg],axis=0)
-            frs = []           
             lats = []
 
-            for length in r['len'].values():
-                seg = orgl[:length]
-                frs.append(np.max(seg))
-                seg = zscore(seg)
-                seg = seg - np.min(seg)
-                loc = np.where(seg > 0.7 * (np.max(seg)))[0][0]
-                lats.append(loc * T_BIN)
-                orgl = orgl[length:]     
-            
-            avs[reg] = dict(zip(list(r['len'].keys()),
-                                lats if metric == 'latency' else frs))
-     
-    nrows = 3
-    ncols = len(avs[reg].keys())//nrows
+            if metric == 'latency':
+                # average PETHs by alignement event
+                av2 = {'stim': [], 'choice': [], 'fback': []}
+                
+                ii = 0
+                for s in r['len']:
+                    for al in av2:
+                        if al in s:
+                            av2[al].append(orgl[ii: ii+ r['len'][s]])
+                    ii += r['len'][s]
+                    
+                # delete the two choiceL, chocieR not to count twice
+                av2['choice'] = av2['choice'][:-2]
+                
+                for al in av2:
+                    seg = np.mean(av2[al],axis=0)
+                    if metric != 'latency':
+                        av2[al] = np.max(seg)
+                    else: 
+                    
+                       
+                        seg = zscore(seg)
+                        seg = seg - np.min(seg)
+                        loc = np.where(seg > 0.7 * (np.max(seg)))[0][0]
+                        
+                        # convert time unit
+                        pre,post = pre_post(al)
+                        rr = np.linspace(0,pre+post,len(seg))
+
+                        av2[al] = rr[loc]
+                
+                avs[reg] = av2
+                
+            else:                  
+                for length in r['len'].values():
+                    seg = orgl[:length]
+                    frs.append(np.max(seg))
+                    seg = zscore(seg)
+                    seg = seg - np.min(seg)
+                    loc = np.where(seg > 0.7 * (np.max(seg)))[0][0]
+                    lats.append(loc)
+                    orgl = orgl[length:]     
+                
+                avs[reg] = dict(zip(list(r['len'].keys()),
+                                    lats if metric == 'latency_all' else frs))
+    
+    if metric == 'latency':
+        nrows = 1
+        ncols = 3
+    else:
+        nrows = 3
+        ncols = len(avs[reg].keys())//nrows
                 
     if restrict:                           
         # restrict to example features
@@ -2277,12 +2440,12 @@ def swansons_all(metric='latency', minreg=10, annotate=False,
         ncols = len(features_to_keep)
         nrows = 1
         
-    fig, axs = plt.subplots(nrows=nrows, ncols=ncols,
+    fig, axs = plt.subplots(nrows=nrows, ncols=ncols, figsize=(9.72, 8.4),
                             sharex=True if metric!= 'ephysTF' else False, 
                             sharey=True if metric!= 'ephysTF' else False)
     axs = axs.flatten('F')
     
-    cmap_ = 'viridis_r' if metric == 'latency' else 'viridis'
+
     
     if metric!= 'ephysTF':
         # assure all panels have same scale
@@ -2299,10 +2462,21 @@ def swansons_all(metric='latency', minreg=10, annotate=False,
     k = 0
     for s in avs[reg].keys():
         
+        if metric == 'latency':
+            #cmap_ = get_cmap_bwm(s).reversed()
+            cmap_ = 'viridis_r'
+        else:
+            cmap_ = 'viridis'        
         
-               
+
         lats = np.array([avs[x][s] for x in avs])
         
+        print(s)
+        asort = np.argsort(lats)
+        print(lats[asort][:10])
+        print(np.array(list(avs.keys()))[asort][:10])
+        
+               
         vmin = vmin if metric != 'ephysTF' else np.min(lats)
         vmax = vmax if metric != 'ephysTF' else np.max(lats)
         norm = mpl.colors.Normalize(vmin=vmin, 
@@ -2316,31 +2490,53 @@ def swansons_all(metric='latency', minreg=10, annotate=False,
                             vmin=vmin, 
                             vmax=vmax,
                             annotate= annotate,
-                            annotate_n=500,
+                            annotate_n=5000,
                             annotate_order=('bottom' 
                             if metric == 'latency' else 'top'))
 
-                             
+        axs[k].axes.invert_xaxis()                     
         cbar = fig.colorbar(mpl.cm.ScalarMappable(
                                 norm=norm, 
                                 cmap=cmap_), 
                                 ax=axs[k],
-                                location='bottom')
+                                location='bottom', pad=0.04)
         cbar.formatter = ScalarFormatter(useMathText=True)
         
         cbar.locator = plt.MaxNLocator(nbins=2)
         cbar.update_ticks()
-
+        cbar.set_label('latency [sec]' 
+                       if metric == 'latency' 
+                       else 'fr [Hz]')
+                       
         axs[k].axis('off')
-        axs[k].set_title(s)
+        axs[k].set_title(variverb[s])
+        
+        # change annotation fontsize
+        text_objects = axs[k].texts
+        for text_obj in text_objects:
+            text_obj.set_fontsize(8)
+        
         #put_panel_label(axs[k], k)
         k+=1
 
-    fig.suptitle(metric)
-    fig.tight_layout()    
-    fig.savefig(Path(one.cache_dir,'dmn', 'figs', 'intro', 
-                 'ephysTF_example_swansons.svg'))
+    fig.subplots_adjust(top=.955,
+                        bottom=0.0,
+                        left=0.031,
+                        right=0.977,
+                        hspace=0.2,
+                        wspace=0.106)
+                        
+    print(metric, vers)
+    
+#    fig.savefig(Path(one.cache_dir,'dmn', 'figs', 'intro', 
+#                 'ephysTF_example_swansons.svg'))
 
+    if metric == 'latency':
+        fig.savefig(Path(one.cache_dir, 'bwm_res', 'bwm_figs_imgs',
+                         'si', 'n6_supp_figure_peth_latency_swanson.svg'))
+        fig.savefig(Path(one.cache_dir, 'bwm_res', 'bwm_figs_imgs',
+                         'si', 'n6_supp_figure_peth_latency_swanson.pdf'),
+                         dpi=150,bbox_inches='tight')                         
 
     #verss = ['concat', 'surprise', 'reward', 'resting']
 
@@ -2354,8 +2550,7 @@ def illustrate_data(minreg=10, annotate=False, ds=0.1):
     ds: scatter dot size
     '''
     
-    r = regional_group('Beryl', 'umap_z', vers='concat')    
-    del r['len']['end']
+    r = regional_group('Beryl', 'umap_z', vers='concat')
      
     # get average z-scored PETHs per Beryl region 
     regs = Counter(r['acs'])
@@ -2573,5 +2768,10 @@ def plot_dist_clusters(anno=True, axs=None):
         k+=1
 
 
-
-
+#'''
+#alternative correlation metric
+#'''
+#from xicor.xicor import Xi
+#xi_obj = Xi([1, 2, 3], [1, 2, 3])
+#correlation = xi_obj.correlation
+#pvals = xi_obj.pval_asymptotic(ties=False, nperm=1000)
