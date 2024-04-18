@@ -1087,93 +1087,93 @@ def stack_concat(vers='concat', get_concat=False):
             r, allow_pickle=True)
             
             
-def stack_simple(vers='contrast'):
+#def stack_simple(vers='contrast'):
 
-    '''
-    For the latency analysis based on most simple PETHs
-    (vers = 'contrast')
-    Output PETH per region, latency
-    '''
-    
-    # to fix latency time unit (seg length in sec)          
-    pre_post00 = {'stim': [0, 0.15],
-                 'choice': [0.15, 0],
-                 'fback': [0, 0.15],
-                 'stim0': [0, 0.15]}    
-    
-    pth = Path(one.cache_dir, 'dmn', vers)
-    ss = os.listdir(pth)  # get insertions
-    print(f'combining {len(ss)} insertions for version {vers}') 
+#    '''
+#    For the latency analysis based on most simple PETHs
+#    (vers = 'contrast')
+#    Output PETH per region, latency
+#    '''
+#    
+#    # to fix latency time unit (seg length in sec)          
+#    pre_post00 = {'stim': [0, 0.15],
+#                 'choice': [0.15, 0],
+#                 'fback': [0, 0.15],
+#                 'stim0': [0, 0.15]}    
+#    
+#    pth = Path(one.cache_dir, 'dmn', vers)
+#    ss = os.listdir(pth)  # get insertions
+#    print(f'combining {len(ss)} insertions for version {vers}') 
 
-    # pool data into df
-    
-    # get PETH type names from first insertion
-    D_ = np.load(Path(pth, ss[0]),
-                 allow_pickle=True).flat[0]
+#    # pool data into df
+#    
+#    # get PETH type names from first insertion
+#    D_ = np.load(Path(pth, ss[0]),
+#                 allow_pickle=True).flat[0]
 
-    col_keys = ['ids', 'xyz', 'uuids'] + D_['trial_names']
-    r = {ke: [] for ke in col_keys}
+#    col_keys = ['ids', 'xyz', 'uuids'] + D_['trial_names']
+#    r = {ke: [] for ke in col_keys}
 
-    # group results across insertions
-    for s in ss:           
-                   
-        D_ = np.load(Path(pth, s),
-                     allow_pickle=True).flat[0]
-                     
-        for ke in ['ids', 'xyz', 'uuids']:
-            r[ke].append(D_[ke])
-            
-        i = 0    
-        for ke in D_['trial_names']:
-            r[ke].append(D_['ws'][i])
-            
+#    # group results across insertions
+#    for s in ss:           
+#                   
+#        D_ = np.load(Path(pth, s),
+#                     allow_pickle=True).flat[0]
+#                     
+#        for ke in ['ids', 'xyz', 'uuids']:
+#            r[ke].append(D_[ke])
+#            
+#        i = 0    
+#        for ke in D_['trial_names']:
+#            r[ke].append(D_['ws'][i])
+#            
 
-    for ke in r:  
-        r[ke] = np.concatenate(r[ke])
-                    
-    cs = np.concatenate([r[k] for k in , axis=0)
-    
-    # remove cells with nan entries
-    goodcells = np.bitwise_and.reduce(
-        [[~np.isnan(k).any() for k in r[ke]] for ke in D_['trial_names']])
-        
-    for ke in r:  
-        r[ke] = r[ke][goodcells]       
-                      
+#    for ke in r:  
+#        r[ke] = np.concatenate(r[ke])
+#                    
+#    cs = np.concatenate([r[k] for k in , axis=0)
+#    
+#    # remove cells with nan entries
+#    goodcells = np.bitwise_and.reduce(
+#        [[~np.isnan(k).any() for k in r[ke]] for ke in D_['trial_names']])
+#        
+#    for ke in r:  
+#        r[ke] = r[ke][goodcells]       
+#                      
 
-    # get average PETH and latency per region
-    r['acs'] = np.array(br.id2acronym(r['ids'], 
-                                     mapping='Beryl'))    
-    
-    
-    lengths = [len(value) for key, value in r.items() 
-        if isinstance(value, (list, np.ndarray))]
+#    # get average PETH and latency per region
+#    r['acs'] = np.array(br.id2acronym(r['ids'], 
+#                                     mapping='Beryl'))    
+#    
+#    
+#    lengths = [len(value) for key, value in r.items() 
+#        if isinstance(value, (list, np.ndarray))]
 
-    # Check if all elements have the same length
-    assert len(set(lengths)) == 1, ("Not all data "
-        "elements have the same length.")                    
-    
-    # get average PETH and latency per region
-    rr = {}
-    
-    regs = np.unique(r['acs'])
-    for reg in regs:
-        d = {}
-        for ke in D_['trial_names']:
-            d[ke] = np.mean(r[ke][r['acs'] == reg], axis=0)    
-            seg = zscore(d[ke])
-            seg = seg - np.min(seg)
-            loc = np.where(seg > 0.7 * (np.max(seg)))[0][0]
-    
-            # convert time unit
-            pre,post = pre_post00[ke]
-            rrr = np.linspace(0,pre+post,len(seg))
+#    # Check if all elements have the same length
+#    assert len(set(lengths)) == 1, ("Not all data "
+#        "elements have the same length.")                    
+#    
+#    # get average PETH and latency per region
+#    rr = {}
+#    
+#    regs = np.unique(r['acs'])
+#    for reg in regs:
+#        d = {}
+#        for ke in D_['trial_names']:
+#            d[ke] = np.mean(r[ke][r['acs'] == reg], axis=0)    
+#            seg = zscore(d[ke])
+#            seg = seg - np.min(seg)
+#            loc = np.where(seg > 0.7 * (np.max(seg)))[0][0]
+#    
+#            # convert time unit
+#            pre,post = pre_post00[ke]
+#            rrr = np.linspace(0,pre+post,len(seg))
 
-            d[ke+'_lat'] = rrr[loc]
-        rr[reg] = d                       
-                       
-    np.save(Path(one.cache_dir, 'dmn', 'stack_simple.npy'),
-            rr, allow_pickle=True)
+#            d[ke+'_lat'] = rrr[loc]
+#        rr[reg] = d                       
+#                       
+#    np.save(Path(one.cache_dir, 'dmn', 'stack_simple.npy'),
+#            rr, allow_pickle=True)
             
 
 def get_umap_dist(rerun=False, algo='umap_z', 
@@ -1981,7 +1981,8 @@ def plot_connectivity_matrix(metric='umap_z',
     return ordered_indices
     
 
-def plot_multi_matrices(ticktype='rectangles', add_clus=True):
+def plot_multi_matrices(ticktype='rectangles', add_clus=True, 
+                        get_matrices=False):
 
     '''
     for various subsets of the PETHs 
@@ -2018,6 +2019,11 @@ def plot_multi_matrices(ticktype='rectangles', add_clus=True):
                 res[i,j] = D[vers][f'{regs[i]} --> {regs[j]}']
         
         D2[vers] = res        
+
+    if get_matrices:
+        D2['regs'] = regs
+        return D2    
+
     
     _,pal = get_allen_info()
     nrows = len(verss)+1 if add_clus else len(verss)
