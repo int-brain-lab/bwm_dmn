@@ -21,6 +21,7 @@ import pandas as pd
 import numpy as np
 from collections import Counter
 from sklearn.decomposition import PCA, FastICA
+from sklearn.cluster import KMeans, SpectralClustering
 from sklearn.manifold import TSNE
 from scipy.cluster.hierarchy import linkage, fcluster, dendrogram
 from statsmodels.stats.multitest import multipletests
@@ -45,6 +46,7 @@ import umap
 from itertools import combinations, chain
 from datetime import datetime
 import scipy.ndimage as ndi
+import hdbscan
 
 from matplotlib.axis import Axis
 import matplotlib.pyplot as plt
@@ -594,26 +596,50 @@ def regional_group(mapping, algo, vers='concat'):
     r['nums'] = range(len(r[algo][:,0]))
                    
 
-    if 'clusters' in mapping:
-        # use clusters from hierarchical clustering to color
-        
+    if mapping == 'kmeans':
+        # use kmeans to cluster 2d points
          
-        if mapping[-1] =='z':
-            linked_ = 'linked_z'
-        elif mapping[-1] =='e':       
-            linked_ = 'linked_e'
-        else:
-            linked_ = 'linked'   
-            
-        nclus = 10
-        clusters = fcluster(r[linked_], t=nclus, criterion='maxclust')
+        nclus = 7
+        kmeans = KMeans(n_clusters=nclus, random_state=0)
+        kmeans.fit(r[algo])
+        clusters = kmeans.labels_
+        
         cmap = mpl.cm.get_cmap('Spectral')
         cols = cmap(clusters/nclus)
         acs = clusters
+        
+        
+        r['els'] = [Line2D([0], [0], color=pa[reg], 
+                    lw=4, label=f'{reg} {regs[reg]}')
+                    for reg in regs]
+        
+        
         # get average point and color per region
         av = {clus: [np.mean(r[algo][clusters == clus], axis=0), 
                     cmap(clus/nclus)] 
               for clus in range(1,nclus+1)} 
+
+
+    elif mapping == 'hdbscan':
+        mcs = 10
+        clusterer = hdbscan.HDBSCAN(min_cluster_size=mcs)    
+        clusterer.fit(r[algo])
+        labels = clusterer.labels_
+        unique_labels = np.unique(labels)
+        mapping = {old_label: new_label 
+                      for new_label, old_label in 
+                      enumerate(unique_labels)}
+        clusters = np.array([mapping[label] for label in labels])
+
+        cmap = mpl.cm.get_cmap('Spectral')
+        cols = cmap(clusters/len(unique_labels))
+        acs = clusters
+        # get average point and color per region
+        av = {clus: [np.mean(r[algo][clusters == clus], axis=0), 
+                    cols] 
+              for clus in range(1,len(unique_labels)+1)} 
+        
+
 
     elif mapping == 'layers':       
     
@@ -1087,93 +1113,109 @@ def stack_concat(vers='concat', get_concat=False):
             r, allow_pickle=True)
             
             
-#def stack_simple(vers='contrast'):
+def stack_simple(nmin=10):
 
-#    '''
-#    For the latency analysis based on most simple PETHs
-#    (vers = 'contrast')
-#    Output PETH per region, latency
-#    '''
-#    
-#    # to fix latency time unit (seg length in sec)          
-#    pre_post00 = {'stim': [0, 0.15],
-#                 'choice': [0.15, 0],
-#                 'fback': [0, 0.15],
-#                 'stim0': [0, 0.15]}    
-#    
-#    pth = Path(one.cache_dir, 'dmn', vers)
-#    ss = os.listdir(pth)  # get insertions
-#    print(f'combining {len(ss)} insertions for version {vers}') 
+    '''
+    For the latency analysis based on most simple PETHs
+    Output PETH per region, latency
+    '''
+    
+    # to fix latency time unit (seg length in sec)          
+    pre_post00 = {'stim': [0, 0.15],
+                 'choice': [0.15, 0],
+                 'fback': [0, 0.15],
+                 'stim0': [0, 0.15]}    
+    
+    pth = Path(one.cache_dir, 'dmn', 'contrast')
+    ss = os.listdir(pth)  # get insertions
+    print(f'combining {len(ss)} insertions for version contrast') 
 
-#    # pool data into df
-#    
-#    # get PETH type names from first insertion
-#    D_ = np.load(Path(pth, ss[0]),
-#                 allow_pickle=True).flat[0]
+    # pool data into df
+    
+    # get PETH type names from first insertion
+    D_ = np.load(Path(pth, ss[0]),
+                 allow_pickle=True).flat[0]
 
-#    col_keys = ['ids', 'xyz', 'uuids'] + D_['trial_names']
-#    r = {ke: [] for ke in col_keys}
+    col_keys = ['ids', 'xyz', 'uuids'] + D_['trial_names']
+    r = {ke: [] for ke in col_keys}
 
-#    # group results across insertions
-#    for s in ss:           
-#                   
-#        D_ = np.load(Path(pth, s),
-#                     allow_pickle=True).flat[0]
-#                     
-#        for ke in ['ids', 'xyz', 'uuids']:
-#            r[ke].append(D_[ke])
-#            
-#        i = 0    
-#        for ke in D_['trial_names']:
-#            r[ke].append(D_['ws'][i])
-#            
+    # group results across insertions
+    for s in ss:           
+                   
+        D_ = np.load(Path(pth, s),
+                     allow_pickle=True).flat[0]
+                     
+        for ke in ['ids', 'xyz', 'uuids']:
+            r[ke].append(D_[ke])
+            
+        i = 0    
+        for ke in D_['trial_names']:
+            r[ke].append(D_['ws'][i])
+            i += 1
 
-#    for ke in r:  
-#        r[ke] = np.concatenate(r[ke])
-#                    
-#    cs = np.concatenate([r[k] for k in , axis=0)
-#    
-#    # remove cells with nan entries
-#    goodcells = np.bitwise_and.reduce(
-#        [[~np.isnan(k).any() for k in r[ke]] for ke in D_['trial_names']])
-#        
-#    for ke in r:  
-#        r[ke] = r[ke][goodcells]       
-#                      
+    for ke in r:  
+        r[ke] = np.concatenate(r[ke])
+                    
 
-#    # get average PETH and latency per region
-#    r['acs'] = np.array(br.id2acronym(r['ids'], 
-#                                     mapping='Beryl'))    
-#    
-#    
-#    lengths = [len(value) for key, value in r.items() 
-#        if isinstance(value, (list, np.ndarray))]
+    # remove cells with nan entries
+    goodcells = np.bitwise_and.reduce(
+        [[~np.isnan(k).any() for k in r[ke]] for ke in D_['trial_names']])
+        
+    for ke in r:  
+        r[ke] = r[ke][goodcells]       
+                      
 
-#    # Check if all elements have the same length
-#    assert len(set(lengths)) == 1, ("Not all data "
-#        "elements have the same length.")                    
-#    
-#    # get average PETH and latency per region
-#    rr = {}
-#    
-#    regs = np.unique(r['acs'])
-#    for reg in regs:
-#        d = {}
-#        for ke in D_['trial_names']:
-#            d[ke] = np.mean(r[ke][r['acs'] == reg], axis=0)    
-#            seg = zscore(d[ke])
-#            seg = seg - np.min(seg)
-#            loc = np.where(seg > 0.7 * (np.max(seg)))[0][0]
-#    
-#            # convert time unit
-#            pre,post = pre_post00[ke]
-#            rrr = np.linspace(0,pre+post,len(seg))
+    # get average PETH and latency per region
+    r['acs'] = np.array(br.id2acronym(r['ids'], 
+                                     mapping='Beryl'))    
+    
+    
+    lengths = [len(value) for key, value in r.items() 
+        if isinstance(value, (list, np.ndarray))]
 
-#            d[ke+'_lat'] = rrr[loc]
-#        rr[reg] = d                       
-#                       
-#    np.save(Path(one.cache_dir, 'dmn', 'stack_simple.npy'),
-#            rr, allow_pickle=True)
+    # Check if all elements have the same length
+    assert len(set(lengths)) == 1, ("Not all data "
+        "elements have the same length.")                    
+    
+    # get average PETH and latency per region
+    rr = {}
+    
+    regs = np.unique(r['acs'])
+    for reg in regs:
+        d = {}
+        if sum(r['acs'] == reg) < nmin:
+            continue
+            
+        for ke in D_['trial_names']:
+            d[ke] = np.mean(r[ke][r['acs'] == reg], axis=0)    
+            seg = zscore(d[ke])
+            seg = seg - np.min(seg)
+            loc = np.where(seg > 0.7 * (np.max(seg)))[0][0]
+    
+            # convert time unit
+            pre,post = pre_post00[ke]
+            rrr = np.linspace(0, pre+post,len(seg))
+
+            d[ke+'_lat'] = rrr[loc]
+            
+        # extra diff
+        ke = 'stimdiff'
+        d[ke] = np.mean(r['stim'][r['acs'] == reg]
+                       -r['stim0'][r['acs'] == reg], axis=0)    
+        seg = zscore(d[ke])
+        seg = seg - np.min(seg)
+        loc = np.where(seg > 0.7 * (np.max(seg)))[0][0]
+
+        # convert time unit
+        pre,post = pre_post00['stim']
+        rrr = np.linspace(0, pre+post,len(seg))
+
+        d[ke+'_lat'] = rrr[loc]            
+
+        rr[reg] = d                       
+                       
+    np.save(Path(one.cache_dir, 'dmn', 'stack_simple.npy'),
+            rr, allow_pickle=True)
             
 
 def get_umap_dist(rerun=False, algo='umap_z', 
@@ -1201,7 +1243,9 @@ def get_umap_dist(rerun=False, algo='umap_z',
 
 def plot_dim_reduction(algo='umap_z', mapping='layers', 
                        means=False, exa=False, shuf=False,
-                       exa_squ=False, vers='concat', ax=None, ds=0.5):
+                       exa_squ=False, vers='concat', ax=None, ds=0.5,
+                       axx=None, exa_kmeans=False, leg=False):
+                       
     '''
     2 dims being pca on concat PETH; 
     colored by region
@@ -1242,7 +1286,9 @@ def plot_dim_reduction(algo='umap_z', mapping='layers',
        
     
     if mapping == 'layers':
-        ax.legend(handles=r['els'], ncols=1).set_draggable(True)
+        if leg:
+            ax.legend(handles=r['els'], ncols=1,
+                      frameon=False).set_draggable(True)
 
     elif 'clusters' in mapping:
         nclus = len(Counter(r['acs']))
@@ -1256,14 +1302,13 @@ def plot_dim_reduction(algo='umap_z', mapping='layers',
                                 cax=cax, orientation='horizontal')
 
     if exa:
-        # plot a cells' feature vector in extra panel when hovering over point
+        # plot a cells' feature vector
+        # in extra panel when hovering over point
         fig_extra, ax_extra = plt.subplots()
         
         line, = ax_extra.plot(r[feat][0], 
                               label='Extra Line Plot')
-        
-       
-        
+
         # Define a function to update the extra line plot 
         # based on the selected point
         
@@ -1296,6 +1341,58 @@ def plot_dim_reduction(algo='umap_z', mapping='layers',
         fig.canvas.mpl_connect('pick_event', update_line)
         im.set_picker(5)  # Set the picker radius for hover detection
 
+    if exa_kmeans:
+        # show for each kmeans cluter the mean PETH
+        if mapping != 'kmeans':
+            print('mapping must be kmeans')
+            return
+            
+        if axx is None:
+            fg, axx = plt.subplots(nrows=len(np.unique(r['acs'])),
+                                   sharex=True, sharey=True,
+                                   figsize=(6,6))
+                
+        maxys = [np.max(np.mean(r[feat][
+                 np.where(r['acs'] == clu)], axis=0)) 
+                 for clu in np.unique(r['acs'])]
+        
+        kk = 0             
+        for clu in np.unique(r['acs']):
+                    
+            #cluster mean
+            xx = np.arange(len(r[feat][0])) /480
+            yy = np.mean(r[feat][np.where(r['acs'] == clu)], axis=0)
+
+            axx[kk].plot(xx, yy,
+                     color=r['cols'][np.where(r['acs'] == clu)][0],
+                     linewidth=2)
+                     
+            axx[kk].spines['top'].set_visible(False)
+            axx[kk].spines['right'].set_visible(False)
+            
+            d2 = {}
+            for sec in PETH_types_dict[vers]:
+                d2[sec] = r['len'][sec]
+                                
+            # plot vertical boundaries for windows
+            h = 0
+            for i in d2:
+            
+                xv = d2[i] + h
+                axx[kk].axvline(xv/480, linestyle='--', linewidth=0.5,
+                            color='grey')
+                
+                if  kk == 0:            
+                    axx[kk].text(xv/480, 1.5* max(yy),
+                             i, rotation=90, color='k', 
+                             fontsize=6, ha='center')
+            
+                h += d2[i] 
+            kk += 1                
+
+#        #axx.set_title(f'{s} \n {len(pts)} points in square')
+        axx[kk - 1].set_xlabel('time [sec]')
+#        axx.set_ylabel(feat)
 
     if exa_squ:
     
@@ -1982,7 +2079,7 @@ def plot_connectivity_matrix(metric='umap_z',
     
 
 def plot_multi_matrices(ticktype='rectangles', add_clus=True, 
-                        get_matrices=False):
+                        get_matrices=False, rerun=False):
 
     '''
     for various subsets of the PETHs 
@@ -1992,38 +2089,51 @@ def plot_multi_matrices(ticktype='rectangles', add_clus=True,
     add_clus: add a row of cluster 2d scatter plots  
     '''
 
-    verss = list(PETH_types_dict.keys()) + ['cartesian','ephysAtlas']
 
-    D = {}
-    for vers in verss:
-        if vers == 'cartesian':
-            D[vers] = trans_(get_centroids(dist_=True))
-        elif vers == 'ephysAtlas':
-            D[vers] = trans_(get_umap_dist(algo='umap_e', vers='concat'))
-        else:     
-            D[vers] = trans_(get_umap_dist(algo='umap_z', vers=vers))
-
-    # get intersection of regions across versions
-    set_list = [set(list(D[vers].keys())) for vers in D]
-    pairs = list(set.intersection(*set_list))
-    regs = list(Counter(np.array([p.split(' --> ') 
-                for p in pairs]).flatten()))
+    pth_matrices = Path(one.cache_dir, 'dmn', 'd.npy')
     
-    D2 = {}
-    for vers in D:
-        res = np.ones((len(regs), len(regs)))   
-        for i in range(len(regs)):
-            for j in range(len(regs)):
-                if i == j:
-                    continue
-                res[i,j] = D[vers][f'{regs[i]} --> {regs[j]}']
+    if (not pth_matrices.is_file() or rerun):        
+        verss = list(PETH_types_dict.keys()) + ['cartesian','ephysAtlas']
+
+        D = {}
+        for vers in verss:
+            if vers == 'cartesian':
+                D[vers] = trans_(get_centroids(dist_=True))
+            elif vers == 'ephysAtlas':
+                D[vers] = trans_(get_umap_dist(algo='umap_e', vers='concat'))
+            else:     
+                D[vers] = trans_(get_umap_dist(algo='umap_z', vers=vers))
+
+        # get intersection of regions across versions
+        set_list = [set(list(D[vers].keys())) for vers in D]
+        pairs = list(set.intersection(*set_list))
+        regs = list(Counter(np.array([p.split(' --> ') 
+                    for p in pairs]).flatten()))
         
-        D2[vers] = res        
+          
+        D2 = {}
+        for vers in D:
+            res = np.ones((len(regs), len(regs)))   
+            for i in range(len(regs)):
+                for j in range(len(regs)):
+                    if i == j:
+                        continue
+                    res[i,j] = D[vers][f'{regs[i]} --> {regs[j]}']
+            
+            D2[vers] = res
+            
+        D2['regs'] = regs         
+        np.save(pth_matrices, D2, allow_pickle=True)   
+
+    D2 = np.load(pth_matrices, allow_pickle=True).flat[0]
 
     if get_matrices:
-        D2['regs'] = regs
         return D2    
 
+    verss = list(D2.keys())
+    verss.remove('regs')
+    regs = D2['regs']
+    
     
     _,pal = get_allen_info()
     nrows = len(verss)+1 if add_clus else len(verss)
@@ -2349,7 +2459,7 @@ def plot_venn():
 
 
 def swansons_all(metric='latency', minreg=10, annotate=True,
-             vers='concat', mapping='Beryl', restrict=False):
+             vers='contrast', restrict=False):
 
     '''
     Per window of the BWM, average PETHS, get latency (latency_all) or fr
@@ -2360,62 +2470,45 @@ def swansons_all(metric='latency', minreg=10, annotate=True,
 
 
     Can also be used as extra figure for BWM rebuttal on latency alternative
-    metric ='latency'
+    metric ='latency' with vers = 'contrast'
     
     '''
-    r = regional_group(mapping, 'umap_z', vers='concat')    
+    if metric == 'latency':
 
-    # get average z-scored PETHs per Beryl region 
-    regs = Counter(r['acs'])
-    regs2 = [reg for reg in regs if regs[reg]>minreg]
+        r = np.load(Path(one.cache_dir, 'dmn', 'stack_simple.npy'),
+                    allow_pickle=True).flat[0]
+
+        xs = {'stim': np.linspace(0,0.15,len(d['MRN']['stim'])),
+              'choice': np.linspace(-0.15,0,len(d['MRN']['choice'])),
+              'fback': np.linspace(0,0.15,len(d['MRN']['fback'])),
+              'stim0': np.linspace(0,0.15,len(d['MRN']['stim0']))}
+        
+        del r['root']
+        del r['void']
+        regs2 = list(r.keys())
+        avs = r
+        
+        
+    else:
+        r = regional_group('Beryl', 'umap_z', vers=vers)    
+
+        # get average z-scored PETHs per Beryl region 
+        regs = Counter(r['acs'])
+        regs2 = [reg for reg in regs if regs[reg]>minreg]
 
     # average all PETHs per region, then z-score and get latency
     # plot latency in swanson; put average peths on top
-    avs = {}
 
-    for reg in regs2:
-    
-        if metric == 'ephysTF':
-            orgl = np.mean(r['ephysTF'][r['acs'] == reg],axis=0)
-            avs[reg] = dict(zip(r['fts'],orgl))
-        else:
-            orgl = np.mean(r['concat'][r['acs'] == reg],axis=0)
-            lats = []
-
-            if metric == 'latency':
-                # average PETHs by alignement event
-                av2 = {'stim': [], 'choice': [], 'fback': []}
-                
-                ii = 0
-                for s in r['len']:
-                    for al in av2:
-                        if al in s:
-                            av2[al].append(orgl[ii: ii+ r['len'][s]])
-                    ii += r['len'][s]
-                    
-                # delete the two choiceL, chocieR not to count twice
-                av2['choice'] = av2['choice'][:-2]
-                
-                for al in av2:
-                    seg = np.mean(av2[al],axis=0)
-                    if metric != 'latency':
-                        av2[al] = np.max(seg)
-                    else: 
-                    
-                       
-                        seg = zscore(seg)
-                        seg = seg - np.min(seg)
-                        loc = np.where(seg > 0.7 * (np.max(seg)))[0][0]
-                        
-                        # convert time unit
-                        pre,post = pre_post(al)
-                        rr = np.linspace(0,pre+post,len(seg))
-
-                        av2[al] = rr[loc]
-                
-                avs[reg] = av2
-                
-            else:                  
+        avs = {}
+        for reg in regs2:
+        
+            if metric == 'ephysTF':
+                orgl = np.mean(r['ephysTF'][r['acs'] == reg],axis=0)
+                avs[reg] = dict(zip(r['fts'],orgl))
+       
+            else:
+                orgl = np.mean(r['concat'][r['acs'] == reg],axis=0)
+                lats = []              
                 for length in r['len'].values():
                     seg = orgl[:length]
                     frs.append(np.max(seg))
@@ -2542,18 +2635,17 @@ def swansons_all(metric='latency', minreg=10, annotate=True,
                          'si', 'n6_supp_figure_peth_latency_swanson.svg'))
         fig.savefig(Path(one.cache_dir, 'bwm_res', 'bwm_figs_imgs',
                          'si', 'n6_supp_figure_peth_latency_swanson.pdf'),
-                         dpi=150,bbox_inches='tight')                         
+                        dpi=150,bbox_inches='tight')                         
 
     #verss = ['concat', 'surprise', 'reward', 'resting']
 
 
 
-def illustrate_data(minreg=10, annotate=False, ds=0.1):
+def swansons_means(minreg=10, annotate=True, nanno=5):
 
     '''
     Plot on swansons mean PETH for 5 types
-    put 5 scatter below for PETH types
-    ds: scatter dot size
+    and differences from concat
     '''
     
     r = regional_group('Beryl', 'umap_z', vers='concat')
@@ -2595,40 +2687,54 @@ def illustrate_data(minreg=10, annotate=False, ds=0.1):
             rd[subset] = np.mean(orgl[np.concatenate(ranges)])
             
         avs[reg] = rd
+
+    # add for each condition the difference to "concat"
+    conds = list(avs[reg].keys())
+    avs_d = {}
+    for reg in avs:
+        dd = {}
+        for c in conds:
+            dd[f'concat-{c}'] = abs(avs[reg]['concat'] - avs[reg][c])
+        avs_d[reg] = dd
      
     nrows = 2
     ncols = len(avs[reg].keys())
         
     fig, axs = plt.subplots(nrows=nrows, ncols=ncols, 
-                            figsize=[8.51, 6.07], 
-                            gridspec_kw={'height_ratios': [3, 1]})
+                            figsize=[8.33, 8.61])
 
-    cmap_ = 'viridis'
+    cmap_ = 'viridis_r'
     
 
     lats_all = np.array([np.array([avs[x][s] for x in avs]) 
                 for s in avs[reg].keys()]).flatten()
-        
+    lats_all_d = np.array([np.array([avs_d[x][s] for x in avs_d]) 
+                for s in avs_d[reg].keys()]).flatten()
+                
     vmin, vmax = (np.nanmin(lats_all), np.nanmax(lats_all))
-   
+    vmin_d, vmax_d = (np.nanmin(lats_all_d), np.nanmax(lats_all_d))
     
     # loop through PETH subset types
     k = 0  
-    for s in avs[reg].keys():
-
-        lats = np.array([avs[x][s] for x in avs])       
+    for s in avs[reg].keys():     
+        
+        print('means')
+        
+        aord = np.argsort(np.array([avs[x][s] for x in avs]))
+        print(s, list(reversed(
+                    np.array(list(avs.keys()))[aord][-nanno:])))
         
         plot_swanson_vector(np.array(list(avs.keys())),
-                            np.array(lats), 
+                            np.array([avs[x][s] for x in avs]), 
                             cmap=cmap_, 
                             ax=axs[0,k], br=br, 
                             orientation='portrait',
                             vmin=vmin, 
                             vmax=vmax,
                             annotate= annotate,
-                            annotate_n=5,
+                            annotate_n=nanno,
                             annotate_order='top')
-
+                            
         norm = mpl.colors.Normalize(vmin=vmin, 
                                     vmax=vmax)        
 
@@ -2647,80 +2753,199 @@ def illustrate_data(minreg=10, annotate=False, ds=0.1):
         cbar.outline.set_visible(False)
         cbar.ax.tick_params(size=2)
         cbar.ax.xaxis.set_tick_params(pad=5)
+        #cbar.set_label('firing rate (Hz)') 
+
+
+        print('diffs')
+        aord_d = np.argsort(np.array([avs_d[x][f'concat-{s}'] 
+                                for x in avs_d]))
+        print(s, list(reversed(
+                    np.array(list(avs_d.keys()))[aord_d][-nanno:])))
+        
+        # same for differences                           
+        plot_swanson_vector(np.array(list(avs_d.keys())),
+                            np.array([avs_d[x][f'concat-{s}'] 
+                                for x in avs_d]), 
+                            cmap=cmap_, 
+                            ax=axs[1,k], br=br, 
+                            orientation='portrait',
+                            vmin=vmin_d, 
+                            vmax=vmax_d,
+                            annotate= annotate,
+                            annotate_n=nanno,
+                            annotate_order='top')                            
+                            
+                            
+
+        norm = mpl.colors.Normalize(vmin=vmin_d, 
+                                    vmax=vmax_d)        
+
+        num_ticks = 3  # Adjust as needed
+
+        # Use MaxNLocator to select a suitable number of ticks
+        locator = MaxNLocator(nbins=num_ticks)
+                   
+        norm = mpl.colors.Normalize(vmin=vmin_d, vmax=vmax_d)
+        cbar = fig.colorbar(
+                   mpl.cm.ScalarMappable(norm=norm,cmap=cmap_),
+                   ax=axs[1,k],shrink=0.8,aspect=12,pad=.025,
+                   orientation="horizontal", ticks=locator)
+                   
+        cbar.ax.tick_params(axis='both', which='major', size=6)
+        cbar.outline.set_visible(False)
+        cbar.ax.tick_params(size=2)
+        cbar.ax.xaxis.set_tick_params(pad=5)
         cbar.set_label('firing rate (Hz)')
 
         
         axs[0,k].set_title(s)
-        axs[0,k].axis('off')
-        
-        
-        plot_dim_reduction(algo='umap_z', 
-            mapping='Beryl', vers=s, ax=axs[1,k], ds=ds)
-        axs[1,k].axis('off')
+ 
+           
+ 
+        [axs[row,k].axis('off') for row in range(nrows)]    
+
+
         #put_panel_label(axs[k], k)
         k+=1
-
     
-    fig.tight_layout()    
-    fig.savefig(Path(one.cache_dir,'dmn', 'figs','swansons_umap.svg'))
-    fig.savefig(Path(one.cache_dir,'dmn', 'figs','swansons_umap.pdf'),
-                dpi=150, bbox_inches='tight')    
+    fig.subplots_adjust(top=0.963,
+                        bottom=0.001,
+                        left=0.018,
+                        right=0.982,
+                        hspace=0.0,
+                        wspace=0.035)
     
+    
+    fig.savefig(Path(one.cache_dir,'dmn', 'figs','swansons.svg'))
+    fig.savefig(Path(one.cache_dir,'dmn', 'figs','swansons.pdf'),
+                dpi=150, bbox_inches='tight')
 
 
-
-def plot_peth(regs_=[], win='inter_trial', minreg=10):
+def plot_multi_umap_cell(ds=0.1):
 
     '''
-    plot the PETHs:
-    win: PETH type
-    regs: regions to show. If [] all regions are shown
+    5 columns for the 5 network types;
+    for each a cell-level umap embedding
+    colored by Beryl, layers, kmeans
+    Below k-means average cluster PETHs
+    
+    ds: scatter dot size
     '''
-    
-    r = regional_group('Beryl', 'umap_z', vers='concat')        
-    
-    regs = Counter(r['acs'])    
-    regs2 = [reg for reg in regs if regs[reg]>minreg]
-    
-    
-    avs = {}
-
-    for reg in regs2:
-  
-    
-        orgl = np.mean(r['concat'][r['acs'] == reg],axis=0)
-        frs = []           
-        lats = []
-
-        for length in r['len'].values():
-            seg = orgl[:length]
-            frs.append(seg)
-            seg = zscore(seg)
-            seg = seg - np.min(seg)
-            loc = np.where(seg > 0.7 * (np.max(seg)))[0][0]
-            lats.append(loc * T_BIN)
-            orgl = orgl[length:]     
+      
+    nrows = 3 + 2 + 7  # 3 scatters, 7 lineplots, 2 filler
+    ncols = len(PETH_types_dict)
         
-        avs[reg] = dict(zip(list(r['len'].keys()),zip(lats, frs)))    
+    fig, axs = plt.subplots(nrows=nrows, ncols=ncols, 
+                            figsize=[8.33, 8.61],
+                            gridspec_kw={'height_ratios': 
+                            [6,6,6,1,1,1,1,1,1,1,1,1]})
     
-    fig, ax = plt.subplots(figsize=(3,3))
-    _, pal = get_allen_info()
-    
-    for reg in regs_:
-        x = np.arange(len(avs[reg][win][1]))*T_BIN
-        y = avs[reg][win][1]
-        ax.plot(x, y, c=pal[reg])
-        ax.text(x[-1], y[-1], reg, 
-                c=pal[reg])
-#        ax.axhline(y=np.mean(y), c=pal[reg], 
-#                   linestyle='--', linewidth=0.5)
-    
-    ax.set_title(win)
-    ax.set_xlabel('time [ sec]')
-    ax.set_ylabel('firing rate')
+    mappings = ['Beryl', 'layers', 'kmeans']
 
-    fig.tight_layout()    
+    c = 0
+    for s in PETH_types_dict:    
+        r = 0
+        leg = True if c == 4 else False
+        axs[0,c].set_title(s)
+        for mapping in mappings:
+            exa_kmeans = True if mapping == 'kmeans' else False
+            plot_dim_reduction(algo='umap_z', 
+                mapping=mapping, vers=s, ax=axs[r,c], ds=ds,
+                leg=leg, exa_kmeans = exa_kmeans,
+                axx = axs[-7:,c] if mapping == 'kmeans' else None)  
+            r+=1    
+        c +=1
     
+    # multi panel arrangement    
+    [[axs[r,c].axis('off') for c in range(len(PETH_types_dict))] 
+        for r in range(nrows)[:-1]]
+    
+    [[axs[-1,c].tick_params(axis='y', left=False, labelleft=False),
+      axs[-1,c].spines['left'].set_visible(False)]
+        for c in range(len(PETH_types_dict))]
+        
+    fig.subplots_adjust(top=0.96,
+bottom=0.055,
+left=0.01,
+right=0.98,
+hspace=0.05,
+wspace=0.05)
+
+    fig.savefig(Path(one.cache_dir,'dmn', 'figs','umap_cell.svg'))
+    fig.savefig(Path(one.cache_dir,'dmn', 'figs','umap_cell.pdf'),
+                dpi=150, bbox_inches='tight')    
+
+
+
+def plot_peth():
+
+    '''
+    for 4 simple trial types, plot PETH for all regions;
+    indicate latency also
+    '''
+    _,pal = get_allen_info()   
+    d = np.load(Path(one.cache_dir, 'dmn', 'stack_simple.npy'),
+                allow_pickle=True).flat[0]
+    
+    # order regions by beryl, called regs1
+    regs0 = list(d.keys()) 
+    p = (Path(ibllib.__file__).parent / 'atlas/beryl.npy')
+    regs = br.id2acronym(np.load(p), mapping='Beryl')
+    regs1 = []
+    for reg in regs:
+        if reg in regs0:
+            regs1.append(reg)
+
+    xs = {'stim': np.linspace(0,0.15,len(d['MRN']['stim'])),
+          'choice': np.linspace(-0.15,0,len(d['MRN']['choice'])),
+          'fback': np.linspace(0,0.15,len(d['MRN']['fback'])),
+          'stim0': np.linspace(0,0.15,len(d['MRN']['stim0'])),
+          'stimdiff': np.linspace(0,0.15,len(d['MRN']['stim0']))}
+
+    # scale lines
+    yoffset = np.max([np.max([np.max(d[reg][trial_type]) 
+                              for reg in regs1])
+                              for trial_type in xs])/20
+
+    
+    # split regions into q columns
+    q = 3
+    regions_sorted = regs1
+    num_regions = len(regs1)
+    regs_per_col = num_regions // q + (num_regions % q > 0)  
+    yticks = np.arange(regs_per_col)
+    
+    # Split regions into three groups
+    reg_groups = [regions_sorted[regs_per_col*k:regs_per_col*(k+1)] 
+                  for k in range(q)]
+
+    # Initialize the figure and axes
+    fig, axs = plt.subplots(1, len(xs)*q, figsize=(18, 10))
+
+    ii = 0
+    for trial_type in xs:
+
+        for k in range(q):  # per column
+            for i, reg in enumerate(reg_groups[k]):
+                x = xs[trial_type]  # converted to sec
+                y = ((d[reg][trial_type] - np.min(d[reg][trial_type])) / yoffset 
+                      + yticks[i])
+                                  
+                axs[ii].plot(x, y, color=pal[reg])
+                
+            axs[ii].set_title(trial_type)   
+            axs[ii].set_yticks(yticks[:len(reg_groups[k])])
+            axs[ii].set_yticklabels(reg_groups[k])
+            axs[ii].set_xlabel('time [sec]')
+            colors = [pal[reg] for reg in reg_groups[k]]
+            for ticklabel, color in zip(axs[ii].get_yticklabels(), colors):
+                ticklabel.set_color(color) 
+
+            ii+=1             
+   
+    fig.tight_layout()
+    
+        
 
 def plot_dist_clusters(anno=True, axs=None):
 
@@ -2729,12 +2954,9 @@ def plot_dist_clusters(anno=True, axs=None):
     plot umap per region by using the
     similarity scores obtained by smoothing over neurons
     
-    also for cartesian and ephysAtlas
-    
+    also for cartesian and ephysAtlas 
     '''
-    
-    verss = list(PETH_types_dict.keys()) + ['cartesian','ephysAtlas']
-    
+
     alone = False
     if 'axs' not in locals():
         alone = True
@@ -2742,28 +2964,29 @@ def plot_dist_clusters(anno=True, axs=None):
                                 layout="constrained", figsize=(17,4))
     _, pa =get_allen_info()
     
+    D = plot_multi_matrices(get_matrices=True)
+    
     k = 0
-    for vers in verss:
+    for vers in D:
+    
+        if vers == 'regs':
+            continue
 
-        if vers == 'cartesian':
-            d = get_centroids(dist_=True)
-        elif vers == 'ephysAtlas':
-            d = get_umap_dist(algo='umap_e', vers='concat')
-        else:     
-            d = get_umap_dist(algo='umap_z', vers=vers)
-           
-        dist = np.max(d['res']) - d['res']  # invert similarity to distances
+        
+        d = D[vers]        
+                  
+        dist = np.max(d) - d  # invert similarity to distances
         reducer = umap.UMAP(metric='precomputed')
         emb = reducer.fit_transform(dist)
 
-        cols = [pa[reg] for reg in d['regs']]
+        cols = [pa[reg] for reg in D['regs']]
         
         axs[k].scatter(emb[:,0], emb[:,1], 
                  color=cols, s=5, rasterized=True)
 
         if anno:
             for i in range(len(emb)):
-                axs[k].annotate('  ' + d['regs'][i], 
+                axs[k].annotate('  ' + D['regs'][i], 
                 (emb[:,0][i], emb[:,1][i]),
                 fontsize=5,color=cols[i])     
 
