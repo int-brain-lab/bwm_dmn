@@ -607,10 +607,11 @@ def regional_group(mapping, algo, vers='concat'):
         cmap = mpl.cm.get_cmap('Spectral')
         cols = cmap(clusters/nclus)
         acs = clusters
+        regs = np.unique(clusters)
         
-        
-        r['els'] = [Line2D([0], [0], color=pa[reg], 
-                    lw=4, label=f'{reg} {regs[reg]}')
+        color_map = dict(zip(list(acs), list(cols)))
+        r['els'] = [Line2D([0], [0], color=color_map[reg], 
+                    lw=4, label=f'{reg + 1}')
                     for reg in regs]
         
         
@@ -1241,7 +1242,7 @@ def get_umap_dist(rerun=False, algo='umap_z',
 '''
         
 
-def plot_dim_reduction(algo='umap_z', mapping='layers', 
+def plot_dim_reduction(algo='umap_z', mapping='Beryl', 
                        means=False, exa=False, shuf=False,
                        exa_squ=False, vers='concat', ax=None, ds=0.5,
                        axx=None, exa_kmeans=False, leg=False):
@@ -1264,8 +1265,8 @@ def plot_dim_reduction(algo='umap_z', mapping='layers',
     r = regional_group(mapping, algo, vers=vers)
 
     if not ax:
-        fig, ax = plt.subplots()
-        ax.set_title(vers) 
+        fig, ax = plt.subplots(label=f'{vers}_{mapping}')
+        #ax.set_title(vers) 
     if shuf:
         shuffle(r['cols'])
     
@@ -1280,12 +1281,13 @@ def plot_dim_reduction(algo='umap_z', mapping='layers',
         ax.scatter(emb1, emb2, marker='o', facecolors='none', 
                    edgecolors=cs, s=600, linewidths=4, rasterized=True)
     
-    ax.set_xlabel(f'{algo} dim1')
-    ax.set_ylabel(f'{algo} dim2')
+#    ax.set_xlabel(f'{algo} dim1')
+#    ax.set_ylabel(f'{algo} dim2')
+    ax.axis('off')
     ss = 'shuf' if shuf else ''
        
     
-    if mapping == 'layers':
+    if mapping in ['layers', 'kmeans']:
         if leg:
             ax.legend(handles=r['els'], ncols=1,
                       frameon=False).set_draggable(True)
@@ -1300,6 +1302,12 @@ def plot_dim_reduction(algo='umap_z', mapping='layers',
                                 norm=norm, 
                                 cmap=cmap), 
                                 cax=cax, orientation='horizontal')
+
+
+    fig.tight_layout()
+    fig.savefig(Path(one.cache_dir,'dmn', 'figs',
+        f'{algo}_{vers}_{mapping}.png'), dpi=150, bbox_inches='tight')
+
 
     if exa:
         # plot a cells' feature vector
@@ -1367,9 +1375,17 @@ def plot_dim_reduction(algo='umap_z', mapping='layers',
                      color=r['cols'][np.where(r['acs'] == clu)][0],
                      linewidth=2)
                      
-            axx[kk].spines['top'].set_visible(False)
-            axx[kk].spines['right'].set_visible(False)
+
             
+            if kk != (len(np.unique(r['acs'])) - 1):
+                axx[kk].axis('off')
+            else:
+
+                axx[kk].spines['top'].set_visible(False)
+                axx[kk].spines['right'].set_visible(False)
+                axx[kk].spines['left'].set_visible(False)      
+                axx[kk].tick_params(left=False, labelleft=False)
+                
             d2 = {}
             for sec in PETH_types_dict[vers]:
                 d2[sec] = r['len'][sec]
@@ -1379,13 +1395,13 @@ def plot_dim_reduction(algo='umap_z', mapping='layers',
             for i in d2:
             
                 xv = d2[i] + h
-                axx[kk].axvline(xv/480, linestyle='--', linewidth=0.5,
+                axx[kk].axvline(xv/480, linestyle='--', linewidth=1,
                             color='grey')
                 
                 if  kk == 0:            
-                    axx[kk].text(xv/480, 1.5* max(yy),
-                             i, rotation=90, color='k', 
-                             fontsize=6, ha='center')
+                    axx[kk].text(xv/480 - d2[i]/(2*480), max(yy),
+                             '   '+i, rotation=90, color='k', 
+                             fontsize=10, ha='center')
             
                 h += d2[i] 
             kk += 1                
@@ -1393,6 +1409,10 @@ def plot_dim_reduction(algo='umap_z', mapping='layers',
 #        #axx.set_title(f'{s} \n {len(pts)} points in square')
         axx[kk - 1].set_xlabel('time [sec]')
 #        axx.set_ylabel(feat)
+        fg.tight_layout()
+        fg.savefig(Path(one.cache_dir,'dmn', 'figs',
+            f'{vers}_kmeans_clusters.png'), dpi=150, bbox_inches='tight')
+
 
     if exa_squ:
     
@@ -1493,7 +1513,7 @@ def smooth_dist(algo='umap_z', mapping='Beryl', show_imgs=False,
 
     r = regional_group(mapping, algo, vers=vers)
     feat = 'concat_z' if algo[-1] == 'z' else 'concat'
-    
+    fontsize = 12
     
     # Define grid size and density kernel size
     x_min = np.floor(np.min(r[algo][:,0]))
@@ -1634,10 +1654,14 @@ def smooth_dist(algo='umap_z', mapping='Beryl', show_imgs=False,
         i+=1            
 
     if dendro:
-        fig0, axs = plt.subplots(ncols=2, figsize=(10,8))
+        fig0, axs = plt.subplots(ncols=2, figsize=(10,8), 
+            gridspec_kw={'width_ratios': [1, 11]})
+        res = np.round(res, decimals=8)
         
+        cres = squareform(1 - res)
+        linkage_matrix = hierarchy.linkage(cres)
         
-        linkage_matrix = hierarchy.linkage(1-res)    
+
         # Order the matrix using the hierarchical clustering
         ordered_indices = hierarchy.leaves_list(linkage_matrix)
         res = res[:, ordered_indices][ordered_indices, :]
@@ -1649,11 +1673,18 @@ def smooth_dist(algo='umap_z', mapping='Beryl', show_imgs=False,
         [t.set_color(i) for (i,t) in    
             zip([regcol[reg] for reg in regs],
                  axs[0].yaxis.get_ticklabels())]
-#                              
+                                     
                      
         ax0 = axs[1]
-
-            
+        
+        axs[0].axis('off')
+#        axs[0].tick_params(axis='both', labelsize=fontsize)
+#        axs[0].spines['top'].set_visible(False)
+#        axs[0].spines['bottom'].set_visible(False)    
+#        axs[0].spines['right'].set_visible(False)
+#        axs[0].spines['left'].set_visible(False)
+#        axs[0].set_xticks([])
+        
         
     else:
         fig0, ax0 = plt.subplots(figsize=(4,4))
@@ -1661,8 +1692,8 @@ def smooth_dist(algo='umap_z', mapping='Beryl', show_imgs=False,
                    
     ims = ax0.imshow(res, origin='lower', interpolation=None)
     ax0.set_xticks(np.arange(len(regs)), regs,
-                   rotation=90)
-    ax0.set_yticks(np.arange(len(regs)), regs)               
+                   rotation=90, fontsize=fontsize)
+    ax0.set_yticks(np.arange(len(regs)), regs, fontsize=fontsize)               
                    
     [t.set_color(i) for (i,t) in
         zip([regcol[reg] for reg in regs],
@@ -1672,11 +1703,12 @@ def smooth_dist(algo='umap_z', mapping='Beryl', show_imgs=False,
         zip([regcol[reg] for reg in regs],
         ax0.yaxis.get_ticklabels())]
     
-    ax0.set_title(f'cosine similarity of smooth images, norm:{norm_}')
-    ax0.set_ylabel(mapping)
-    plt.colorbar(ims,fraction=0.046, pad=0.04)
+    #ax0.set_title(f'cosine similarity of smooth images, norm:{norm_}')
+    #ax0.set_ylabel(mapping)
+    cb = plt.colorbar(ims,fraction=0.046, pad=0.04)
+    cb.set_label('regional similarity')
     fig0.tight_layout()
-    fig0.suptitle(f'{algo}, {mapping}')
+    #fig0.suptitle(f'{algo}, {mapping}')
     
     return res, regs
 
@@ -1897,20 +1929,21 @@ def plot_ave_PETHs(feat = 'concat', vers='concat', rerun=False):
     ax.set_title('PETHs averaged across all BWM cells')
     ax.set_xlim(-1.15,3)
     fig.tight_layout()
-    fig.savefig(Path(one.cache_dir,'dmn', 'figs',
-                'intro', 'avg_PETHs.svg'))
+#    fig.savefig(Path(one.cache_dir,'dmn', 'figs',
+#                'intro', 'avg_PETHs.svg'))
 
 
 
-def plot_xyz(mapping='Beryl', vers='concat', add_cents=True):
+def plot_xyz(mapping='Beryl', vers='concat', add_cents=False):
 
     '''
     3d plot of feature per cell
+    add_cents: superimpose stars for region volumes and centroids
     '''
     
     r = regional_group(mapping, 'umap_z', vers=vers)
-    xyz = r['xyz']
-    fig = plt.figure(figsize=(8,8))
+    xyz = r['xyz']*1000  #convert to mm
+    fig = plt.figure(figsize=(8.43,7.26), label=mapping)
     ax = fig.add_subplot(111,projection='3d')
         
 
@@ -1937,25 +1970,31 @@ def plot_xyz(mapping='Beryl', vers='concat', add_cents=True):
             ax.scatter(cents[:,0], cents[:,1], cents[:,2], 
                        marker='*', s = vols, color=cols)
                        
-                       
-
-    ax.set_xlim(min(xyz[:,0]), max(xyz[:,0]))
-    ax.set_ylim(min(xyz[:,1]), max(xyz[:,1]))
-    ax.set_zlim(min(xyz[:,2]), max(xyz[:,2]))
+    scalef = 1.2                  
+    ax.view_init(elev=45.78, azim=-33.4)
+    ax.set_xlim(min(xyz[:,0])/scalef, max(xyz[:,0])/scalef)
+    ax.set_ylim(min(xyz[:,1])/scalef, max(xyz[:,1])/scalef)
+    ax.set_zlim(min(xyz[:,2])/scalef, max(xyz[:,2])/scalef)
     ax.xaxis.pane.fill = False
     ax.yaxis.pane.fill = False
     ax.zaxis.pane.fill = False
 
-    ax.set_xlabel('x')
-    ax.set_ylabel('y')
-    ax.set_zlabel('z')
-    ax.set_title(f'Mapping: {mapping}')
+    fontsize = 14
+    ax.set_xlabel('x [mm]', fontsize = fontsize)
+    ax.set_ylabel('y [mm]', fontsize = fontsize)
+    ax.set_zlabel('z [mm]', fontsize = fontsize)
+    ax.tick_params(axis='both', labelsize=12)
+    #ax.set_title(f'Mapping: {mapping}')
     ax.grid(False)
-    ax.xaxis.set_major_locator(MaxNLocator(nbins=3))
-    ax.yaxis.set_major_locator(MaxNLocator(nbins=3))
-    ax.zaxis.set_major_locator(MaxNLocator(nbins=3))
+    nbins = 3
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=nbins))
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=nbins))
+    ax.zaxis.set_major_locator(MaxNLocator(nbins=nbins))
+    
+    
     fig.tight_layout()
-
+    fig.savefig(Path(one.cache_dir,'dmn', 'figs',
+        f'cells_3d_{mapping}.png'),dpi=150)
 
 
 def plot_sim():
@@ -2093,8 +2132,8 @@ def plot_multi_matrices(ticktype='rectangles', add_clus=True,
     pth_matrices = Path(one.cache_dir, 'dmn', 'd.npy')
     
     if (not pth_matrices.is_file() or rerun):        
-        verss = list(PETH_types_dict.keys()) + ['cartesian','ephysAtlas']
-
+        #verss = list(PETH_types_dict.keys()) + ['cartesian','ephysAtlas']
+        verss = ['concat', 'resting', 'quiescence']
         D = {}
         for vers in verss:
             if vers == 'cartesian':
@@ -2135,6 +2174,8 @@ def plot_multi_matrices(ticktype='rectangles', add_clus=True,
     regs = D2['regs']
     
     
+    
+    
     _,pal = get_allen_info()
     nrows = len(verss)+1 if add_clus else len(verss)
     fig, axs = plt.subplots(nrows=nrows, ncols=len(verss),
@@ -2143,9 +2184,9 @@ def plot_multi_matrices(ticktype='rectangles', add_clus=True,
     
     k = 0 
     for row in range(len(verss)):   
-        # use dendro order of first version for all
-        res0 = np.amax(D2[verss[row]]) - D2[verss[row]] 
-        cres = squareform(res0)  # get input form for next line
+        # use dendro order of first version for all 
+        res0 = np.round(D2[verss[row]], decimals=10)
+        cres = squareform(1 - res0)
         linkage_matrix = hierarchy.linkage(cres)
         ordered_indices = hierarchy.leaves_list(linkage_matrix) 
         regso = np.array(regs)[ordered_indices]
@@ -2205,11 +2246,11 @@ def plot_multi_matrices(ticktype='rectangles', add_clus=True,
         plot_dist_clusters(anno=False, axs=axs[-len(verss):])
         [ax.axis('off') for ax in axs]
         
-    #fig.suptitle('all matrices ordered by data of row number')
-    fig.tight_layout()
-    fig.savefig(Path(one.cache_dir,'dmn', 'figs','matrices.svg'))    
-    fig.savefig(Path(one.cache_dir,'dmn', 'figs','matrices.pdf'),
-                dpi=150)
+#    #fig.suptitle('all matrices ordered by data of row number')
+#    fig.tight_layout()
+#    fig.savefig(Path(one.cache_dir,'dmn', 'figs','matrices.svg'))    
+#    fig.savefig(Path(one.cache_dir,'dmn', 'figs','matrices.pdf'),
+#                dpi=150)
 
 
 def plot_dendrograms():
@@ -2995,6 +3036,72 @@ def plot_dist_clusters(anno=True, axs=None):
         axs[k].set_ylabel('umap dim 2')
 
         k+=1
+
+
+def plot_single_feature(algo='umap_z', vers='concat', mapping='Beryl',
+                        reg = 'MRN'):
+
+    '''
+    For a single cell, plot feature vector with PETH labels
+    '''
+    
+    feat = 'concat_z' if algo[-1] == 'z'  else 'concat'
+    
+    r = regional_group(mapping, algo, vers=vers)    
+    
+    fig, ax = plt.subplots(figsize=(6.97, 3.01))
+    
+    xx = np.arange(len(r[feat][0])) /480  # convert to sec
+    
+    # pick random cell from region
+    samp = random.choices(np.where(r['acs'] == reg)[0],k=1)[0]
+    print(reg, samp)
+    yy = r[feat][samp]
+
+    ax.plot(xx, yy,
+             color=r['cols'][samp],
+             linewidth=2)
+
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+    
+    d2 = {}
+    for sec in PETH_types_dict[vers]:
+        d2[sec] = r['len'][sec]
+                        
+    # plot vertical boundaries for windows
+    h = 0
+    for i in d2:
+    
+        xv = d2[i] + h
+        ax.axvline(xv/480, linestyle='--', linewidth=1,
+                    color='grey')
+        
+        # place text in middle of interval
+        ax.text(xv/480 - d2[i]/(2*480), max(yy),
+                 '   '+i, rotation=90, color='k', 
+                 fontsize=10, ha='center')
+    
+        h += d2[i] 
+
+
+    ax.set_ylabel('z-scored firing rate')    
+    ax.set_xlabel('time [sec]')    
+    fig.tight_layout()    
+   
+    fig.savefig(Path(one.cache_dir,'dmn', 'figs','ex_cells',
+        f'{reg}_{samp}.png'),
+        dpi=150, bbox_inches='tight')   
+    
+    
+    
+    
+    
+    
+
+
+
 
 
 #'''
