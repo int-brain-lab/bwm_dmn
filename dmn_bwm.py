@@ -3095,14 +3095,51 @@ def plot_single_feature(algo='umap_z', vers='concat', mapping='Beryl',
         dpi=150, bbox_inches='tight')   
     
     
-    
-    
-    
-    
+def var_expl(minreg=20):
 
+    '''
+    For a single region, plot variance explained 
+    '''
+    
+    r = regional_group('Beryl', 'umap_z', vers='concat')
+    regs = Counter(r['acs'])
 
+    # restrict to regions with minreg cells
+    regs2 = [reg for reg in regs if regs[reg]>minreg]
 
+    d = {}
+    
+    for reg in regs2:
+        scaler = StandardScaler()
+        data_standardized = scaler.fit_transform(
+            r['concat'][r['acs']==reg])        
+        pca = PCA()
+        pca.fit(data_standardized)        
+        explained_variance_ratio = pca.explained_variance_ratio_
+        cumulative_explained_variance = np.cumsum(explained_variance_ratio)
+        d[reg] = np.argmax(cumulative_explained_variance >= 0.90) + 1
+    
+    sorted_brain_regions = dict(sorted(d.items(), 
+        key=lambda item: item[1]))
+        
+    _,pal = get_allen_info()   
+        
+    # Extracting keys, values, and colors
+    regions = list(sorted_brain_regions.keys())
+    values = list(sorted_brain_regions.values())
+    colors = [pal[region] for region in regions]
 
+    # Creating the bar plot
+    fig, ax = plt.subplots(figsize=(10, 6))
+    plt.bar(regions, values, color=colors)
+    ax.set_xlabel('Brain Regions')
+    ax.set_ylabel('PCA dims to explain at least 90% of variance')
+    # Rotate x-tick labels and set their colors
+    ax.set_xticks(range(len(regions)))
+    ax.set_xticklabels(regions, rotation=90)
+    [t.set_color(pal[reg]) for reg, t in zip(regions, ax.get_xticklabels())]
+  
+    
 
 #'''
 #alternative correlation metric
