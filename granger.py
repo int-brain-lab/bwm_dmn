@@ -7,10 +7,11 @@ from collections import Counter
 from pathlib import Path
 from spectral_connectivity import Multitaper, Connectivity
 import time
+import timeit
 from itertools import combinations
 from scipy.stats import norm
 import pandas as pd
-import umap
+import umap, os
 from copy import copy
 #from sklearn.manifold import MDS
 from scipy.stats import pearsonr, spearmanr, norm, chi2, zscore
@@ -19,13 +20,14 @@ import networkx as nx
 from scipy.sparse.csgraph import shortest_path, csgraph_from_dense
 from scipy.sparse import csr_matrix 
  
-from brainwidemap import load_good_units, bwm_query, download_aggregate_tables
+from brainwidemap import (load_good_units, bwm_query, 
+    download_aggregate_tables, load_trials_and_mask)
 from iblutil.numerical import bincount2D
 from one.api import ONE
 from iblatlas.regions import BrainRegions
 from iblatlas.atlas import AllenAtlas
-import ibllib
-
+import iblatlas
+import logging
 
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -37,13 +39,38 @@ import matplotlib
 sns.reset_defaults()
 plt.ion()
 
-one = ONE(base_url='https://openalyx.internationalbrainlab.org',
-          password='international', silent=True)
+one = ONE()
+#base_url='https://openalyx.internationalbrainlab.org',
+#          password='international', silent=True
+
+bad_eids = ['4e560423-5caf-4cda-8511-d1ab4cd2bf7d',
+            '3a3ea015-b5f4-4e8b-b189-9364d1fc7435',
+            'd85c454e-8737-4cba-b6ad-b2339429d99b',
+            'de905562-31c6-4c31-9ece-3ee87b97eab4',
+            '2d9bfc10-59fb-424a-b699-7c42f86c7871',
+            '7cc74598-9c1b-436b-84fa-0bf89f31adf6',
+            '642c97ea-fe89-4ec9-8629-5e492ea4019d',
+            'a2ec6341-c55f-48a0-a23b-0ef2f5b1d71e', # clear saturation
+            '195443eb-08e9-4a18-a7e1-d105b2ce1429',
+            '549caacc-3bd7-40f1-913d-e94141816547',
+            '90c61c38-b9fd-4cc3-9795-29160d2f8e55',
+            'ebe090af-5922-4fcd-8fc6-17b8ba7bad6d',
+            'a9138924-4395-4981-83d1-530f6ff7c8fc',
+            '8c025071-c4f3-426c-9aed-f149e8f75b7b',
+            '29a6def1-fc5c-4eea-ac48-47e9b053dcb5',
+            '0cc486c3-8c7b-494d-aa04-b70e2690bcba']
+
           
 ba = AllenAtlas()          
 br = BrainRegions()
 
 T_BIN = 0.0125  # 0.005
+sigl=0.05  # alpha throughout
+
+
+#align = {'stim': 'stim on',
+#         'choice': 'motion on',
+#         'fback': 'feedback'}
 
 # save results here
 pth_res = Path(one.cache_dir, 'granger', 'res')
@@ -69,7 +96,6 @@ def p_fisher(p_values):
     return p_combined
 
 
-
 def get_nregs():
 
     '''
@@ -88,8 +114,7 @@ def get_nregs():
     return d
 
 
-def get_structural(rerun=False, 
-                   shortestp=False, fign=4, sigl=0.05):
+def get_structural(rerun=False, shortestp=False, fign=4):
 
     '''
     load structural connectivity matrix
@@ -138,7 +163,8 @@ def get_structural(rerun=False,
             d = {}
             for i in range(len(regs_source)):
                 for j in range(len(regs_target)):
-
+                    if M2[i,j] < 0:
+                        continue
                     d[' --> '.join([regs_source[i], 
                                      regs_target[j]])] = M2[i,j]
 
@@ -216,7 +242,7 @@ def get_structural(rerun=False,
         # Find the shortest path lengths using the Floyd-Warshall algorithm
         distances, predecessors = shortest_path(
             csgraph=sparse_matrix, directed = False,
-            method='FW', return_predecessors=True,unweighted=True)
+            method='FW', return_predecessors=True,unweighted=False)
             
         d0 = {}
         res = distances
@@ -353,6 +379,11 @@ def bin_average_neural(eid, mapping='Beryl', nmin=1):
     from both probes if available
     
     used to get session-wide time series, not cut into trials
+    
+    returns: 
+        R2: binned firing rate per region per time bin
+        times: time stamps for all time bins
+        redg: dict of neurons per region acronym
     '''
     
     pids0, probes = one.eid2pid(eid)
@@ -473,9 +504,81 @@ def gc(r, segl=10, shuf=False, shuf_type = 'reg_shuffle'):
  
     return c    
 
+  
+def fr_performance(eid, nmin=1, nts = 20):
+
+    '''
+    for a given session get fr per region in inter trial interval
+    (-0.4 t0 -0.1 relative to stim onset)
+    and return with performance average
+    
+    return:
+        ftp: performance per trial (0 incorrect, 1 correct)
+        frs: firing rate per inter trial interval per region
+    '''
+    
+    # combine probes, bin fr per region     
+    r, ts, regd = bin_average_neural(eid, nmin=nmin)
+    
+    # cut out inter-trial fr
+    trials, mask = load_trials_and_mask(one, eid)
+
+    iti = np.array([trials['stimOn_times'][mask] - 0.4, 
+                    trials['stimOn_times'][mask] - 0.1])
+    ftp = trials['feedbackType'][mask]
+    ftp.replace(-1, 0, inplace=True)
+    fp = np.array(ftp)
+    
+    cis = []
+    for i in range(2):
+        indices = np.searchsorted(ts, iti[i])
+        adjusted_indices = np.clip(indices - 1, 0, len(ts) - 1)
+        closest_indices = np.where(np.abs(iti[i] - ts[adjusted_indices]) < 
+                                   np.abs(iti[i] - ts[adjusted_indices + 1]), 
+                                   adjusted_indices, adjusted_indices + 1)
+        cis.append(closest_indices) 
+ 
+    cis = np.array(cis).T 
+
+    frs = []
+    for tr in cis:
+        frs.append(r[:,tr[0] : tr[1] +1])
+    
+    fr = np.mean(np.array(frs),axis=-1).T      
+
+    fp_m = []
+    fr_m = []
+    
+    for chunk in range(len(fp)//nts):
+        fp_m.append(np.mean(fp[chunk * nts: (chunk+1) * nts]))
+        fr_m.append(np.mean(fr[:, chunk * nts: (chunk+1) * nts], axis=-1))   
+    
+    fp_m = np.array(fp_m)
+    fr_m = np.array(fr_m).T
+        
+    corrd = {}
+    for i in range(len(fr_m)):
+        reg = list(regd)[i] 
+        corrd[reg] = [list(pearsonr(fr_m[i], fp_m)),
+                      list(spearmanr(fr_m[i], fp_m))]         
+    
+    D = {}    
+    D['fp_m'] = fp_m        
+    D['fr_m'] = fr_m         
+    D['regd'] = regd
+    D['corrd'] = corrd
+
+    return D
+    
+    
+'''  
+####################
+bulk processing
+####################
+'''
 
 
-def get_all_granger(eids='all', nshufs = 2000, segl=10, nmin=10):
+def get_all_granger(eids='all', nshufs = 100, segl=10, nmin=10):
 
     '''
     get spectral directed granger for all bwm sessions
@@ -488,9 +591,16 @@ def get_all_granger(eids='all', nshufs = 2000, segl=10, nmin=10):
     Fs = []
     k = 0
     print(f'Processing {len(eids)} sessions')
+
     time0 = time.perf_counter()
     for eid in eids:
-        print('eid:', eid)           
+        print('eid:', eid)
+        
+        # remove lick artefact eid and late fire only
+        if eid in bad_eids:
+            print('exclude', eid)
+            continue
+     
         try:
             time00 = time.perf_counter()
             
@@ -498,6 +608,7 @@ def get_all_granger(eids='all', nshufs = 2000, segl=10, nmin=10):
             if not bool(regsd):
                 print(f'no data for {eid}') 
                 continue
+            
             
             nchans, nobs = r.shape
             segment_length = int(segl / T_BIN)
@@ -534,9 +645,11 @@ def get_all_granger(eids='all', nshufs = 2000, segl=10, nmin=10):
             
             # shuffle pairs of regions separately
             pairs = np.array(list(combinations(range(nchans),2)))
+            
+            print('data binned', regsd, f'{len(pairs)} pairs')
                         
             for i in range(nshufs):
-                if i%1000 == 0:
+                if i%10 == 0:
                     print('shuf', i, f'({nshufs})')
                 
                 mg = np.zeros([nchans,nchans])
@@ -623,7 +736,7 @@ def get_all_granger(eids='all', nshufs = 2000, segl=10, nmin=10):
 
 
 def get_res(nmin=10, metric='coherence', combine_=True,
-            rerun=False, sigl=0.05, sig_only=False, sessmin=1):
+            rerun=False, sig_only=False, sessmin=1):
 
     '''
     Group results
@@ -648,12 +761,14 @@ def get_res(nmin=10, metric='coherence', combine_=True,
         for sess in files:
         
             # remove lick artefact eid and late fire only
-            if (('a2ec6341-c55f-48a0-a23b-0ef2f5b1d71e' in str(sess)) or
-               ('0cc486c3-8c7b-494d-aa04-b70e2690bcba' in str(sess))):
+
+                        
+            eid = str(sess).split('/')[-1].split('.')[0]
+            
+            if eid in bad_eids:
                 print('exclude', sess)
                 continue
-        
-           
+                    
             D = np.load(sess, allow_pickle=True).flat[0]
             m = D[metric]
             regs = list(D['regsd'])
@@ -673,27 +788,30 @@ def get_res(nmin=10, metric='coherence', combine_=True,
                         
                     if f'{regs[i]} --> {regs[j]}' in d:
                         d[f'{regs[i]} --> {regs[j]}'].append(
-                            [m[j, i], (p_c[i,j]/1.0002) + 1/5001])
+                            [m[j, i], (p_c[i,j]/1.0002) + 1/5001, 
+                            D['regsd'][regs[i]], D['regsd'][regs[j]], eid])
                         
 
                     else:
                         d[f'{regs[i]} --> {regs[j]}'] = []
                         d[f'{regs[i]} --> {regs[j]}'].append(
-                            [m[j, i], (p_c[i,j]/1.0002) + 1/5001])
+                            [m[j, i], (p_c[i,j]/1.0002) + 1/5001,
+                            D['regsd'][regs[i]], D['regsd'][regs[j]], eid])
 
                     
                     ps.append((p_c[i,j]/1.0002) + 1/5001)
 
                             
         _, corrected_ps, _, _ = multipletests(ps, sigl, 
-                                           method='fdr_by')
+                                           method='fdr_bh')
                                            
         kp = 0                                           
         d2 = {}
         for pair in d:
             scores = [] 
             for score in d[pair]:
-                scores.append([score[0],corrected_ps[kp]])
+                scores.append([score[0],corrected_ps[kp], 
+                               score[2], score[3], score[4]])
                 kp+=1
             if scores == []:
                 continue
@@ -715,8 +833,8 @@ def get_res(nmin=10, metric='coherence', combine_=True,
 
     if combine_:
         # take mean score across measurements
-        dd = {k: [np.mean(np.array(d[k])[:,0]), 
-                 p_fisher(np.array(d[k])[:,1])] 
+        dd = {k: [np.mean(np.array(d[k])[:,0], dtype=float), 
+                 p_fisher(np.array(np.array(d[k])[:,1], dtype=float))] 
                  for k in d if (len(d[k]) >= sessmin)}
         
         if sig_only:
@@ -777,15 +895,260 @@ def get_meta_info(rerun=False):
         d = np.load(pth_, allow_pickle=True).flat[0]        
         
     return d
-    
 
-    
+
+def get_all_fr_performance(eids='all', nmin=10, nts=20):
+    '''
+    For each session, bin firing rate per region,
+    compute also performance for chunks of consecutive trials.
+
+    Parameters:
+    - eids: Session IDs or 'all' to process all sessions
+    - nmin: Minimum number of neurons to include a region
+    - nts: Chunk length
+    '''
+    if isinstance(eids, str) and eids == 'all':
+        df = bwm_query(one)
+        eids = np.unique(df[['eid']].values)
+
+    logging.info(f'Processing {len(eids)} sessions')
+    for k, eid in enumerate(eids):
+        logging.info(f'Processing eid: {eid} ({k + 1}/{len(eids)})')
+        
+        # Remove lick artifact eid and late fire only
+        if eid in bad_eids:
+            logging.info(f'Skipping {eid} due to known issues')
+            continue
+            
+        try:    
+            D = fr_performance(eid, nmin=nmin, nts=nts)
+        except Exception as e:
+            logging.error(f'Error processing {eid}: {e}')
+            continue    
+        
+        logging.info(f'{eid} done')
+        
+        # Use timeit module for accurate timing
+        execution_time = timeit.timeit(lambda: np.save(Path(one.cache_dir, 'fr_performance', f'{eid}.npy'), D, allow_pickle=True), number=1)
+        logging.info(f'Saved {eid} in {execution_time:.2f} seconds')
+        print(f'Runtime for {eid}: {execution_time:.2f} seconds')
+
+
 '''
 #####################
 plotting
 #####################    
 '''
+
+def plot_fr_performance(eid, nmin=10):
+
+    '''
+    scatter time chunks of size nts trials
+    x axis is performance for chunk
+    y axis is firing rate in inter trial interval for chunk
+    '''
     
+    pthr = Path(one.cache_dir, 'fr_performance')
+    D = np.load(Path(pthr, f'{eid}.npy'), allow_pickle=True).flat[0]
+
+    fig, axs = plt.subplots(nrows =1, ncols = len(D['regd']), 
+                   figsize=(4,4))
+                   
+    if not isinstance(axs, np.ndarray):
+        axs = [axs]               
+                   
+    _, pal = get_allen_info()
+    
+    for i in range(len(D['fr_m'])):
+        reg = list(D['regd'])[i] 
+        axs[i].scatter(D['fr_m'][i], D['fp_m'], 
+                       color = pal[reg], label = reg)
+
+                      
+        #axs[i].legend()
+        
+        axs[i].set_title(f'{reg} '
+                        f'\n Pear. r,p: {D["corrd"][reg][0][0]:.2f},'
+                        f' {D["corrd"][reg][0][1]:.2f} \n'
+                        f' Spear. r,p: {D["corrd"][reg][1][0]:.2f},'
+                        f' {D["corrd"][reg][1][1]:.2f}')   
+        axs[i].set_xlabel('firing rate [Hz]')  
+        axs[i].set_ylabel('performance')
+
+    fig.suptitle(f'{eid} \n trial chunk size = 20')
+    fig.tight_layout()
+        
+
+def plot_all_fr_performance(per_reg=True, kind='scatter'):
+
+    '''
+    big scatter, one point per trial chunk, colored by region
+    '''
+    
+    pthr = Path(one.cache_dir, 'fr_performance')
+    eids = [x.split('.')[0] for x in os.listdir(pthr)]
+    
+    frs = []  # firing rate per trial chunk
+    pers = []  # performance per trial chunk
+    cols = []  # region colors
+    regs = []
+
+    
+    _, pal = get_allen_info()
+    
+    for eid in eids:
+        
+        D = np.load(Path(pthr, f'{eid}.npy'), allow_pickle=True).flat[0]
+        
+        if np.array_equal(D.get('fp_m', np.array([])), np.array([])):
+            print(eid, 'empty data??')
+            continue 
+        
+        
+        k = 0     
+        for reg in D['regd']:
+            frs.append(D['fr_m'][k])   
+            pers.append(D['fp_m'])
+            cols.append([pal[reg]]*len(D['fp_m']))
+            regs.append([reg]*len(D['fp_m']))
+            k+=1
+
+    frs_concat = [item for sublist in frs for item in sublist]    
+    pers_concat = [item for sublist in pers for item in sublist] 
+    cols_concat = [item for sublist in cols for item in sublist]
+    regs_concat = [item for sublist in regs for item in sublist]
+
+    df = pd.DataFrame({'firing_rate': frs_concat,
+                       'performance': pers_concat,
+                       'color': cols_concat,
+                       'region': regs_concat})
+                       
+    if not per_reg:                    
+        sns.pairplot(data=df, x_vars='firing_rate', y_vars='performance', 
+                      hue='color', height=5, 
+                      plot_kws={'alpha': 0.3, 'legend': False},       
+                      #plot_kws={'scatter_kws': {'label': None}},
+                      kind=kind)
+
+    else:
+        # plot s panel per region
+        fig, axs = plt.subplots(ncols=17, nrows=10, 
+                                sharex=True, sharey=True,
+                                figsize=(15,10))
+
+        axs = axs.flatten()
+        i = 0
+        for reg in np.unique(df['region']):
+            
+            df_ = df[df['region'] == reg]
+            r,p = pearsonr(df_['firing_rate'], df_['performance'])
+            
+            
+            axs[i].scatter(df_['firing_rate'], df_['performance'], 
+                           color = pal[reg], label = reg, s=0.1)
+            
+            axs[i].set_title(f'{reg} {r:.2f}' if p<0.05 else reg,
+                             fontsize=10)   
+            #axs[i].set_xlabel('firing rate [Hz]')  
+            #axs[i].set_ylabel('performance')
+            axs[i].spines['top'].set_visible(False)
+            axs[i].spines['right'].set_visible(False)    
+
+            
+            i+=1
+            
+            
+        fig.text(0.5, 0.02, 'firing_rate', ha='center')
+    
+        fig.text(0.04, 0.5, 'performance', 
+                 va='center', rotation='vertical')
+        fig.tight_layout()                
+                 
+
+
+def plot_strip_fr_perf(corrtype='pears'):
+
+    '''
+    stripplot of firing rate/performance correlation
+    per area, dot being a measurement
+    '''
+    
+    pthr = Path(one.cache_dir, 'fr_performance')
+    eids = [x.split('.')[0] for x in os.listdir(pthr)]
+    
+    pears_r = []
+    pears_p = []
+    spear_r = []
+    spear_p = []
+    regs = []
+    
+    _, pal = get_allen_info()
+    
+    for eid in eids:
+        
+        D = np.load(Path(pthr, f'{eid}.npy'), allow_pickle=True).flat[0]
+        
+        if np.array_equal(D.get('fp_m', np.array([])), np.array([])):
+            print(eid, 'empty data??')
+            continue 
+        
+        for reg in D['regd']:
+            regs.append(reg)
+            pears_r.append(D['corrd'][reg][0][0])
+            pears_p.append(D['corrd'][reg][0][1])
+            spear_r.append(D['corrd'][reg][1][0])
+            spear_p.append(D['corrd'][reg][1][1])            
+                
+    
+    df = pd.DataFrame({'pears_r': pears_r,
+                       'pears_p': pears_p,
+                       'spear_r': spear_r,
+                       'spear_p': spear_p,
+                       'reg': regs}) 
+    
+    for key in ['pears_p', 'spear_p']:
+        df[key] = df[key] < sigl
+    
+    
+    # order by canonical order
+    p = (Path(iblatlas.__file__).parent / 'beryl.npy')
+    regs_ = br.id2acronym(np.load(p), mapping='Beryl')
+    
+    
+    regs = np.unique(df['reg'])
+    regsC = [reg for reg in regs_ if reg in regs]
+    
+    df_ordered = df[df['reg'].isin(regsC)].sort_values(by=['reg'], 
+                    key=lambda x: x.map({region: i for i, region in 
+                    enumerate(regsC)}))
+                    
+    colors = {False: '#DDDDDD', True: 'black'}
+    
+    # make ncols columns
+    ncols = 5                 
+    fig, axs = plt.subplots(ncols=ncols, figsize=(10,15))                  
+    _, pal = get_allen_info()
+    for k in range(ncols):
+    
+        colsreg = regsC[ k * len(regsC)//ncols : (k+1) * len(regsC)//ncols]
+                                                              
+        df_fil1 = df[df['reg'].isin(colsreg)]
+        df_fil1.sort_values(by='reg', 
+            key=lambda x: x.map(colsreg.index), inplace=True)
+
+        sns.stripplot(x=f'{corrtype}_r', y='reg', hue = f'{corrtype}_p', 
+                      marker='o', size=3, palette=colors,  
+                      data=df_fil1, ax=axs[k], legend=False)
+
+        for label in axs[k].get_yticklabels():
+            label.set_color(pal[label.get_text()])
+            
+        axs[k].spines['top'].set_visible(False)
+        axs[k].spines['right'].set_visible(False)
+
+    fig.tight_layout()
+
+  
 def plot_gc(eid, segl=10, shuf=False,
             metric0='granger', vers='oscil', 
             peak_freq_factor0=0.55, peak_freq_factor1=0.2,
@@ -813,7 +1176,7 @@ def plot_gc(eid, segl=10, shuf=False,
     
     # single channel pair for shuffle test
     if single_pair:
-        regA, regB = -1, -4
+        regA, regB = -1, -2
         r = r[[regA, regB]]
         regsd = dict(np.array(list(regsd.items()))[[regA, regB]])
     
@@ -823,12 +1186,37 @@ def plot_gc(eid, segl=10, shuf=False,
     if metric0 == 'coherence':
         metric = 'coherence_magnitude'
 
-    c = gc(r, segl=segl, shuf=shuf)
-    # freqs x chans x chans
-    psg = getattr(c, metric)()[0]
-    
-    # mean score across frequencies
-    m = np.mean(psg, axis=0)
+
+    if metric0 == 'cross_corr':
+        # compute mean cross correlation
+        nchans, nobs = r.shape
+        segment_length = int(segl / T_BIN)
+        num_segments = nobs // segment_length
+        
+        # reshape into: n_signals x n_segments x n_time_samples
+        r_segments = r[:, :num_segments * segment_length
+                       ].reshape((nchans, num_segments, 
+                       segment_length))
+                       
+        m = np.zeros((nchans,nchans))               
+        for i in range(nchans):
+            for j in range(i, nchans):
+                for seg in range(r_segments.shape[1]):
+                    ss = []
+                    ss.append(np.mean(np.abs(np.correlate(
+                                                r_segments[i,seg], 
+                                                r_segments[j,seg], mode='full'))))
+                                           
+                m[i, j] = np.mean(ss)               
+                m[j, i] = m[i, j]              
+        
+    else:
+        c = gc(r, segl=segl, shuf=shuf)
+        # freqs x chans x chans
+        psg = getattr(c, metric)()[0]
+        
+        # mean score across frequencies
+        m = np.mean(psg, axis=0)
     
     fig, axs = plt.subplots(nrows=1, ncols=3, figsize=(10,4))
     
@@ -861,23 +1249,24 @@ def plot_gc(eid, segl=10, shuf=False,
     axs[0].spines['right'].set_visible(False)
     axs[0].set_title('example segment')
 
-    # plot top five granger line plots with text next to it
-    si = np.unravel_index(np.argsort(np.abs(m),axis=None), m.shape)
-    # top j connections
-    j = 10  
-    exes = [tup for tup in reversed(list(zip(*si))) 
-            if (~np.isnan(m[tup]) and tup[0] != tup[1])][:j]
-    
-    for tup in exes: 
-        yy = psg[:,tup[0],tup[1]]
-        # Order is inversed! Result is:   
-        axs[1].plot(c.frequencies, yy, 
-                    label =f'{regs[tup[1]]} --> {regs[tup[0]]}') 
+    if metric0 != 'cross_corr':
+        # plot top five granger line plots with text next to it
+        si = np.unravel_index(np.argsort(np.abs(m),axis=None), m.shape)
+        # top j connections
+        j = 10  
+        exes = [tup for tup in reversed(list(zip(*si))) 
+                if (~np.isnan(m[tup]) and tup[0] != tup[1])][:j]
+        
+        for tup in exes: 
+            yy = psg[:,tup[0],tup[1]]
+            # Order is inversed! Result is:   
+            axs[1].plot(c.frequencies, yy, 
+                        label =f'{regs[tup[1]]} --> {regs[tup[0]]}') 
 
-    axs[1].legend()
-    axs[1].set_xlabel('frequency [Hz]')
-    axs[1].set_ylabel(metric)   
-    axs[1].set_title(f'top {j} tuples') 
+        axs[1].legend()
+        axs[1].set_xlabel('frequency [Hz]')
+        axs[1].set_ylabel(metric)   
+        axs[1].set_title(f'top {j} tuples') 
     
     # plot directed granger matrix
     ims = axs[2].imshow(m, interpolation=None, cmap='gray_r')#, 
@@ -897,7 +1286,9 @@ def plot_gc(eid, segl=10, shuf=False,
     axs[2].set_yticks(np.arange(m.shape[1]))
     axs[2].set_yticklabels(regs)
     axs[2].set_ylabel('target')     
-    axs[2].set_title('mean across freqs')
+    axs[2].set_title('mean abs corr across lags' 
+                     if metric0 == 'cross_corr' 
+                     else 'mean across freqs')
                   
     cb = plt.colorbar(ims,fraction=0.046, pad=0.04)              
 
@@ -914,7 +1305,7 @@ def plot_gc(eid, segl=10, shuf=False,
     
     
     
-def plot_strip_pairs(metric='granger', sessmin = 2, 
+def plot_strip_pairs(metric='granger', sessmin = 3, 
              ptype='strip', shuf=False, expo=1, sig_only=True):
 
     '''
@@ -952,14 +1343,14 @@ def plot_strip_pairs(metric='granger', sessmin = 2,
         dm_sorted = dict(sorted(dm.items(), key=lambda item: item[1]))
                       
         exs = list(dm_sorted.keys())
-        nrows = 6
-        fs = 6
+        nrows = 5
+        fs = 5
         per_row = len(exs)//nrows
            
         d_exs = {x:d[x] for x in exs}
     
         fig, axs = plt.subplots(nrows=nrows, 
-                                ncols=1, figsize=(9,7), sharey=True)
+                                ncols=1, figsize=(9,6), sharey=True)
 
         for row in range(nrows):
             
@@ -969,9 +1360,11 @@ def plot_strip_pairs(metric='granger', sessmin = 2,
             ms = [np.mean(d[x]) for x in pairs]            
             axs[row].bar(np.arange(len(pairs)), ms, 
                          color='grey', alpha=0.5)
-                         
-            sns.stripplot(data={x:d[x] for x in pairs},
-                          ax=axs[row], color='k', size=1)
+            
+            
+            data = pd.DataFrame.from_dict({x:d[x] for x in pairs},
+                orient='index').transpose()             
+            sns.stripplot(data=data, ax=axs[row], color='k', size=2)
 
             
             axs[row].set_xticklabels([x.split(sep)[0] for x in pairs], 
@@ -984,7 +1377,7 @@ def plot_strip_pairs(metric='granger', sessmin = 2,
                 
             low_regs = [x.split(sep)[-1] for x in pairs]   
             for i, tick in enumerate(axs[row].get_xticklabels()):
-                axs[row].text(tick.get_position()[0], -0.6, low_regs[i],
+                axs[row].text(tick.get_position()[0], -0.7, low_regs[i],
                     ha='center', va='center', rotation=90,
                     color=palette[low_regs[i]],
                     transform=axs[row].get_xaxis_transform(), 
@@ -998,7 +1391,21 @@ def plot_strip_pairs(metric='granger', sessmin = 2,
               f'#reg pairs {len(dm)}')        
         
     else:
-        # plot matrix of all regions       
+        # plot matrix of all regions 
+        
+        # canonical region order
+        # order regions by canonical list 
+        p = (Path(iblatlas.__file__).parent / 'beryl.npy')
+        regs_c = br.id2acronym(np.load(p), mapping='Beryl')
+
+
+        regs_ = []
+        for reg in regs_c:
+            if reg in regs:
+                regs_.append(reg)
+                
+        regs = regs_        
+              
         M = np.zeros((len(regs),len(regs)))
         for i in range(len(regs)):
             for j in range(len(regs)):
@@ -1036,9 +1443,7 @@ def plot_strip_pairs(metric='granger', sessmin = 2,
             ax.set_title(f'Dissimilarity: 1 - M^{expo}')                   
 
         else:            
-
-               
-                        
+       
             fig, ax = plt.subplots(figsize=(10,10))
             
             
@@ -1176,8 +1581,7 @@ def plot_dist_scat(dist_='centroids'):
         for i in range(len(pts)):
             axs[k].annotate('  ' + pts[i], 
                 (dists[i], vals[k][i]),
-                fontsize=5,color='k')                   
-        
+                fontsize=5,color='k')
                 
         axs[k].set_xlabel('structural connectivity' if 
                           dist_ == 'structural' else 'centroid distance')       
@@ -1188,8 +1592,6 @@ def plot_dist_scat(dist_='centroids'):
 
         axs[k].set_title(f'({np.round(corp,2)},{np.round(pp,2)}), '
                      f'({np.round(cors,2)},{np.round(ps,2)})')    
-    
-    
 
 
 def replot_struc():
@@ -1340,11 +1742,54 @@ def scatter_direction(sig_only=True):
     ax.set_yscale('log') 
        
     fig.tight_layout()    
-    
-    
 
-def plot_graph(metric='granger', sigl=0.05, restrict='', ax=None,
-               direction='both', sa = 2, pqt = False, sessmin=1):
+
+def get_ari():
+
+    visual_sensory = ["VISp", "SSs", "BST", "PRM", "ANcr1", "LSr", "CA1", "SUB", "VISam", "VISpm", "AON"]
+   
+    stim_integrator = set([
+    "CENT3", "GPe", "PRNr", "IRN", "PL", "MOs", "ORBvl", "MRN",
+    "IP", "PRM", "BST", "CP", "PRNr", "GRN", "MV", "DG", "CA3", "ProS", "SUB", "ZI", "SSp-l", "MOp", "MOs", "ACAd",
+    "RSPagl", "SSs", "ORBl", "VISp", "SCm", "APN", "Eth", "RT", "VAL", "PO", "LP", "LGd", "SSp-bfd", "SSp-m", "VPM", "VPL"])
+    
+    choice_action = set([
+    "CUL45", "SIM", "IP", "CENT2", "CENT3", "PRNr", "GRN", "MV", "ILA", "ORBm", "AId", "AIv", "MOp", "VISa", "SSp-ul",
+    "RSPagl", "PL", "ACAd", "PAG", "SCm", "RT", "VPL",
+    "ANcr1", "BST", "MEA", "SI", "LSv", "CA1", "DG", "CA3", "SSp-l", "SSp-tr", "SSp-ul", "PL", "ILA", "ACAv", "RSPv",
+    "IC", "MG", "PoT", "MD", "LD", "Eth"])
+    
+    block_prior = set([
+    "SIM", "CENT3", "IP", "ANcr1", "CENT2", "CP", "GRN", "IRN", "ENTl", "SUB", "ZI", "MOp", "ACAd", "AUDp", "RSPagl",
+    "PL", "AIv", "MOs", "PAG", "APN", "MRN", "PoT", "VAL", "LD", "LGd",
+    "NOD", "ANcr1", "LSr", "ACB", "CP", "PB", "MPO", "SSp-n", "AIp", "ECT", "VISli", "AId", "RSPd", "PL", "SSs", "TEa",
+    "VISa", "MOs", "AUDp", "RN", "PIR", "DP", "SMT", "Eth"])
+
+    unique_visual_sensory = set(visual_sensory)
+
+    # Remove duplicates from the subsequent lists
+    unique_stim_integrator = [x for x in stim_integrator 
+        if x not in unique_visual_sensory]
+    unique_choice_action = [x for x in choice_action 
+        if x not in unique_visual_sensory and x not in unique_stim_integrator]
+    unique_block_prior = [x for x in block_prior 
+        if x not in unique_visual_sensory and x not in unique_stim_integrator
+        and x not in unique_choice_action]
+
+
+    print(list(unique_visual_sensory))    
+    print(list(unique_stim_integrator))    
+    print(list(unique_choice_action))    
+    print(list(unique_block_prior))     
+
+    return np.concatenate([list(unique_visual_sensory),    
+                           unique_stim_integrator,    
+                           unique_choice_action,     
+                           unique_block_prior])     
+
+
+def plot_graph(metric='granger', restrict='', ax=None,
+               direction='both', sa = 1.5, sessmin=2, ari=False):
 
     '''
     circular graph
@@ -1353,6 +1798,9 @@ def plot_graph(metric='granger', sigl=0.05, restrict='', ax=None,
     
     if restrict in a certain cosmos region, only show these edges
     ['CB', 'TH', 'HPF', 'Isocortex', 'OLF', 'CTXsp', 'CNU', 'HY', 'HB', 'MB']
+    
+    If ari: order regions by Ari's lists
+    
     '''
 
     alone = False
@@ -1360,26 +1808,13 @@ def plot_graph(metric='granger', sigl=0.05, restrict='', ax=None,
         alone = True
         fig, ax = plt.subplots(figsize=(6,6))
 
-    if pqt:
-        metric = 'granger'
-        d0 = pd.read_parquet('/home/mic/WFI_granger.pqt')
-        # reshape into dict
-        d = {}
-        for index, row in d0.iterrows():
-            d[f"{row['origin']} --> {row['destination']}"] = [ 
-             row['corrected_score'], 1 - int(row['is_significant'])]
 
-        ews = 15
-        fontsize = 15 if alone else 1
-
-    else:
-        d = get_res(metric=metric,combine_=True, sessmin=sessmin)
-        ews = 80 if metric == 'granger' else 8
-        fontsize = 11 if alone else 1
+    d = get_res(metric=metric,combine_=True, sessmin=sessmin)
+    ews = 80 if metric == 'granger' else 8
+    fontsize = 11 if alone else 1
     
 
     # scale symbols for multi-panel graphs
-    
     node_size = 30 if alone else 3
     
     nsw = 0.02 if metric == 'coherence' else 0.005
@@ -1394,8 +1829,6 @@ def plot_graph(metric='granger', sigl=0.05, restrict='', ax=None,
     df['Beryl'] = br.id2acronym(df['atlas_id'], mapping='Beryl')
     df['Cosmos'] = br.id2acronym(df['atlas_id'], mapping='Cosmos')  
     cosregs = dict(list(Counter(zip(df['Beryl'],df['Cosmos']))))
-   
-
                      
     _, pa = get_allen_info()
             
@@ -1407,15 +1840,30 @@ def plot_graph(metric='granger', sigl=0.05, restrict='', ax=None,
         G.add_edge(source, target, 
                    weight=w, 
                    color='k' if weight[1] < sigl else 'cyan')
-        
-    # order regions by canonical list 
-    p = (Path(ibllib.__file__).parent / 'atlas/beryl.npy')
-    regs = br.id2acronym(np.load(p), mapping='Beryl')
 
-    node_order = []
-    for reg in regs:
-        if reg in G.nodes:
-            node_order.append(reg)
+
+    if ari:
+        rs = get_ari()
+    
+        ints = []
+        for reg in rs:
+            if reg in G.nodes:
+                ints.append(reg)
+        
+        rems = [reg for reg in G.nodes if reg not in ints] 
+        print(list(ints)[0], rems[0])
+        node_order = list(ints) + rems    
+    
+    else:        
+        # order regions by canonical list 
+        p = (Path(iblatlas.__file__).parent / 'beryl.npy')
+        regs = br.id2acronym(np.load(p), mapping='Beryl')
+
+
+        node_order = []
+        for reg in regs:
+            if reg in G.nodes:
+                node_order.append(reg)
                    
     pos0 = nx.circular_layout(G)
     pos = dict(zip(node_order,pos0.values()))
@@ -1476,9 +1924,12 @@ def plot_graph(metric='granger', sigl=0.05, restrict='', ax=None,
     if alone:
         #ax.set_title(f'{metric}, black edges significant; restrict {restrict}')
         fig.tight_layout()
+        fig.savefig(Path(one.cache_dir,
+                        'bwm_res/bwm_figs_imgs/si/granger/',
+                        'granger_single_graph.svg'))
 
 
-def plot_multi_graph():
+def plot_multi_graph(sessmin=2):
 
     cregs = ['CB', 'TH', 'HPF', 'Isocortex', 
              'OLF', 'CTXsp', 'CNU', 'HY', 'HB', 'MB']
@@ -1490,26 +1941,28 @@ def plot_multi_graph():
     k = 0
     for creg in cregs: 
         for direction in directions:
-            plot_graph(metric='granger', restrict=creg, 
-                       ax=axs[k], sa = 1, direction=direction)     
+            plot_graph(metric='granger', restrict=creg, sessmin = sessmin, 
+                       ax=axs[k], sa = 1.5, direction=direction)     
             axs[k].set_title(f'{creg} {direction}')
             k += 1
   
     fig.tight_layout()
-
+    fig.savefig(Path(one.cache_dir,
+                    'bwm_res/bwm_figs_imgs/si/granger/',
+                    'granger_multi_graph.svg'))
 
 def plot_series(eid):
 
     '''
     plot full time series
     '''
-    plt.ioff()
+    #plt.ioff()
     r, ts, regsd = bin_average_neural(eid)
     _, pa = get_allen_info()    
     fig, axs = plt.subplots(nrows=len(regsd), 
                             figsize=(15,10),
                             sharex=True)
-    axs = axs.flatten()
+    axs = np.array(axs).flatten()
     regs = list(regsd)
     for i in range(len(regsd)):
         axs[i].plot(ts, r[i],c=pa[regs[i]])
@@ -1521,13 +1974,30 @@ def plot_series(eid):
                  f' firing rate per region')
     fig.tight_layout()
     fig.savefig(f'top_granger/{eid}.png')
-    fig.close()
+    #fig.close()
 
-#eids_probs = ['0cc486c3-8c7b-494d-aa04-b70e2690bcba',
-# 'c4432264-e1ae-446f-8a07-6280abade813',
-# '5386aba9-9b97-4557-abcd-abc2da66b863',
-# '8c2f7f4d-7346-42a4-a715-4d37a5208535',
-# '1b61b7f2-a599-4e40-abd6-3e758d2c9e25',
-# 'd2f5a130-b981-4546-8858-c94ae1da75ff']
 
+def make_table():
+
+    '''
+    table to accompany granger results
+    '''
+    
+    cols = ['source name', 'source #neur', 'target name', 'target #neur', 
+           'Granger score', 'corrected p', 'eid']
+    
+    d = get_res(metric='granger', combine_=False, rerun=True)
+
+    r = []
+    for pair in d:
+        for m in d[pair]:
+            r.append([pair.split(' --> ')[0], m[2],
+                     pair.split(' --> ')[1], m[3], m[0], m[1], m[-1]])
+                 
+    df = pd.DataFrame(r, columns=cols)
+    df_sorted = df.sort_values(by='Granger score', ascending=False)
+    df_sorted.to_csv(Path(pth_res.parent, 'granger.csv'), index=False)
+
+  
+  
   
