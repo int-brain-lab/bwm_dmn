@@ -1175,7 +1175,7 @@ def stack_simple(nmin=10):
 '''
         
 
-def plot_dim_reduction(algo='umap', mapping='Beryl',norm_=False , 
+def plot_dim_reduction(algo='umap_z', mapping='Beryl',norm_=False , 
                        means=False, exa=False, shuf=False,
                        exa_squ=False, vers='concat', ax=None, ds=0.5,
                        axx=None, exa_kmeans=False, leg=False, restr=None,
@@ -1199,10 +1199,12 @@ def plot_dim_reduction(algo='umap', mapping='Beryl',norm_=False ,
     
     r = regional_group(mapping, algo, vers=vers, norm_=norm_, 
                        nclus=nclus)
-
+    alone = False
     if not ax:
+        alone = True
         fig, ax = plt.subplots(label=f'{vers}_{mapping}')
-        #ax.set_title(vers) 
+        #ax.set_title(vers)
+    
     if shuf:
         shuffle(r['cols'])
     
@@ -1232,7 +1234,8 @@ def plot_dim_reduction(algo='umap', mapping='Beryl',norm_=False ,
 #    ax.set_xlabel(f'{algo} dim1')
 #    ax.set_ylabel(f'{algo} dim2')
     zs = True if algo == 'umap_z' else False
-    ax.set_title(f'norm: {norm_}, z-score: {zs}')
+    if alone:
+        ax.set_title(f'norm: {norm_}, z-score: {zs}')
     ax.axis('off')
     ss = 'shuf' if shuf else ''
        
@@ -1253,8 +1256,8 @@ def plot_dim_reduction(algo='umap', mapping='Beryl',norm_=False ,
                                 cmap=cmap), 
                                 cax=cax, orientation='horizontal')
 
-
-    fig.tight_layout()
+    if alone:
+        fig.tight_layout()
 #    fig.savefig(Path(one.cache_dir,'dmn', 'figs',
 #        f'{algo}_{vers}_{mapping}.png'), dpi=150, bbox_inches='tight')
 
@@ -1359,7 +1362,8 @@ def plot_dim_reduction(algo='umap', mapping='Beryl',norm_=False ,
 #        #axx.set_title(f'{s} \n {len(pts)} points in square')
         axx[kk - 1].set_xlabel('time [sec]')
 #        axx.set_ylabel(feat)
-        fg.tight_layout()
+        if alone:
+            fg.tight_layout()
 #        fg.savefig(Path(one.cache_dir,'dmn', 'figs',
 #            f'{vers}_kmeans_clusters.png'), dpi=150, bbox_inches='tight')
 
@@ -1450,7 +1454,6 @@ def plot_dim_reduction(algo='umap', mapping='Beryl',norm_=False ,
                          fontsize=12, color='k')
             
                 h += r['len'][i]
-
 
 
 def smooth_dist(algo='umap_z', mapping='Beryl', show_imgs=False,
@@ -1886,18 +1889,18 @@ def plot_ave_PETHs(feat = 'concat', vers='concat', rerun=False):
 
 
 def plot_xyz(mapping='Beryl', vers='concat', add_cents=False,
-             restr=False, smooth=False):
+             restr=False, smooth=False, nclus=7):
 
     '''
     3d plot of feature per cell
     add_cents: superimpose stars for region volumes and centroids
     '''
-    
-    r = regional_group(mapping, 'umap_z', vers=vers)
+
+    r = regional_group(mapping, 'umap_z', vers=vers, nclus=nclus)
     xyz = r['xyz']*1000  #convert to mm
     fig = plt.figure(figsize=(8.43,7.26), label=mapping)
     ax = fig.add_subplot(111,projection='3d')
-    
+
     if isinstance(restr, list):
         idcs = np.bitwise_or.reduce([r['acs'] == reg for reg in restr])   
         xyz = xyz[idcs]
@@ -1978,11 +1981,11 @@ def plot_xyz(mapping='Beryl', vers='concat', add_cents=False,
     ax.xaxis.set_major_locator(MaxNLocator(nbins=nbins))
     ax.yaxis.set_major_locator(MaxNLocator(nbins=nbins))
     ax.zaxis.set_major_locator(MaxNLocator(nbins=nbins))
-    
+    ax.set_title(f'{mapping}_{vers}_{nclus}')
     
     fig.tight_layout()
-#    fig.savefig(Path(one.cache_dir,'dmn', 'figs',
-#        f'cells_3d_{mapping}.png'),dpi=150)
+    fig.savefig(Path(one.cache_dir,'dmn', 'imgs',
+        f'{mapping}_{vers}_{nclus}_3d.png'),dpi=150)
 
 
 def plot_sim():
@@ -3153,7 +3156,7 @@ def var_expl(minreg=20):
   
 
     
-def clus_freqs(foc='kmeans'):
+def clus_freqs(foc='kmeans', nmin=50, nclus=7, vers='concat'):
 
     '''
     For each k-means cluster, show an Allen region bar plot of frequencies,
@@ -3161,8 +3164,8 @@ def clus_freqs(foc='kmeans'):
     foc: focus, either kmeans or Allen 
     '''
     
-    r_a = regional_group('Beryl', 'umap_z', vers='concat')    
-    r_k = regional_group('kmeans', 'umap_z', vers='concat')
+    r_a = regional_group('Beryl', 'umap_z', vers=vers, nclus=nclus)    
+    r_k = regional_group('kmeans', 'umap_z', vers=vers, nclus=nclus)
 
     if foc == 'kmeans':
     
@@ -3170,7 +3173,7 @@ def clus_freqs(foc='kmeans'):
         cluss = sorted(Counter(r_k['acs']))
         fig, axs = plt.subplots(nrows = len(cluss), ncols = 1,
                                figsize=(18.79,  15),
-                                sharex=True, sharey=True)
+                               sharex=True, sharey=False)
                                
         cols_dict = dict(list(Counter(zip(r_a['acs'], r_a['cols']))))
         
@@ -3209,7 +3212,8 @@ def clus_freqs(foc='kmeans'):
 
             k += 1
         
-        fig.suptitle('Frequency of Beryl region label per kmeans cluster')
+        fig.suptitle(f'Frequency of Beryl region label per'
+                     f' kmeans cluster ({nclus}); vers = {vers}')
         fig.tight_layout()        
         fig.subplots_adjust(top=0.951,
                             bottom=0.059,
@@ -3228,11 +3232,12 @@ def clus_freqs(foc='kmeans'):
         regs_ = Counter(r_a['acs'])
         reg_ord = []
         for reg in regs_can:
-            if reg in regs_:
+            if reg in regs_ and regs_[reg] >= nmin:
                 reg_ord.append(reg)        
 
-        ncols = int((len(regs_) ** 0.5) + 0.999)
-        nrows = (len(regs_) + ncols - 1) // ncols
+        print(len(reg_ord), f'regions with at least {nmin} cells')
+        ncols = int((len(reg_ord) ** 0.5) + 0.999)
+        nrows = (len(reg_ord) + ncols - 1) // ncols
         
         fig, axs = plt.subplots(nrows = nrows, 
                                 ncols = ncols,
@@ -3275,14 +3280,15 @@ def clus_freqs(foc='kmeans'):
 
             k += 1
         
-        fig.suptitle('Frequency of kmeans cluster per Beryl region')
+        fig.suptitle(f'Frequency of kmeans cluster ({nclus}) per'
+                     f' Beryl region label per; vers = {vers}')
+                     
         fig.tight_layout()        
-#        fig.subplots_adjust(top=0.951,
-#                            bottom=0.059,
-#                            left=0.037,
-#                            right=0.992,
-#                            hspace=0.225,
-#                            wspace=0.2)     
+
+
+    fig.savefig(Path(pth_dmn.parent, 'imgs',
+                     f'{foc}_{nclus}_{vers}.png')) 
+    
 
 
 def count_trials():
@@ -3307,7 +3313,7 @@ def count_trials():
            (len(t) - np.array(list(d.values())))/len(t))
     ax.set_xticks(list(d.keys()))
     ax.set_xticklabels(t[list(t.keys())[0]].keys(),rotation=90)
-    ax.set_ylabel('percentage of insertions \n with 0 trials for peth type')
+    ax.set_ylabel('percentage of insertions \n with trials for peth type')
     ax.set_xlabel('peth types')    
     
     
