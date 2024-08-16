@@ -1666,77 +1666,6 @@ def smooth_dist(algo='umap_z', mapping='Beryl', show_imgs=False,
     return res, regs
 
 
-def plot_dec(r, rs):
-    
-    '''
-    scatter decoding accuracies for actual data
-    and below for data with shuffled labels
-    '''
-    
-    r = np.array(r)
-    rs = np.array(rs)
-
-    fig, ax = plt.subplots()
-    ax.scatter(np.concatenate(r[:,:,0]), 
-               np.concatenate(r[:,:,1]), color='r', label='true')
-               
-    # borders
-    ax.axvline(min(np.concatenate(r[:,:,0])), color='r')
-    ax.axhline(min(np.concatenate(r[:,:,1])), color='r')           
-    ax.scatter(np.concatenate(rs[:,:,0]), 
-               np.concatenate(rs[:,:,1]), color='b', label='shuf')
-    ax.set_xlabel('train accuracy')
-    ax.set_ylabel('test accuracy')
-   
-
-def plot_dec_confusion(src ='concat', mapping='Beryl', 
-                       minreg=20, decoder='LDA', n_runs = 1):
-           
-    '''
-    For train and test, plot a confusion matrix
-    src in ['concat', 'concat_z', 'ephysTF']
-    '''       
-
-    cm_train, cm_test, regs, r_train, r_test  = decode(src=src,
-        mapping=mapping, minreg=minreg, 
-        decoder=decoder,
-        confusion=True)
-    
-    cms = {'train': cm_train, 'test': cm_test}
-    
-                                     
-    vmin, vmax = np.min([cm_train, cm_test]), np.max([cm_train, cm_test])
-        
-    fig, axs = plt.subplots(nrows=1, ncols=2, figsize=(15,6))
-    k = 0
-    for ty in cms:
-        ims = axs[k].imshow(cms[ty], interpolation=None, 
-               cmap=plt.get_cmap('Blues'))
-        axs[k].set_title(f'Confusion Matrix {ty}')
-        
-        tick_marks = range(len(regs))
-        axs[k].set_xticks(tick_marks, list(regs), rotation=45)
-        axs[k].set_yticks(tick_marks, list(regs))
-
-        if cm_train.shape[0]<15:
-            for i in range(len(regs)):
-                for j in range(len(regs)):
-                    axs[k].text(j, i, np.round(cms[ty][i, j],2), ha='center', 
-                             va='center', color='k')
-
-        axs[k].set_ylabel('True label')
-        axs[k].set_xlabel('Predicted label')
-        k+=1    
-    
-        cb = plt.colorbar(ims,fraction=0.046, pad=0.04)
-    
-    fig.suptitle(f'source:{src}; '
-                 f'ac. train:{r_train}, ac. test:{r_test}')   
-    fig.tight_layout()
-
-    return cms                                         
-
-
 def plot_ave_PETHs(feat = 'concat', vers='concat', rerun=False):
 
     '''
@@ -1744,40 +1673,42 @@ def plot_ave_PETHs(feat = 'concat', vers='concat', rerun=False):
     plot as lines within average trial times
     '''   
     evs = {'stimOn_times':'gray', 'firstMovement_times':'cyan',
-           'feedback_times':'orange', 'intervals_1':'purple'}
+           'feedback_times':'orange'}
     
     # needs update; do via if in dict else grey       
-    win_cols = {
-         'inter_trial': 'grey', 
-         'stimL': blue_left,
-         'stimR': red_right,
-         'blockL': blue_left,
-         'blockR': red_right,
-         'choiceL': blue_left,
-         'choiceR': red_right,
-         'fback1': 'g',
-         'fback0': 'k',
-         'stimLbLcL': 'grey',
-         'stimLbRcL': 'grey',
-         'stimLbRcR': 'grey',
-         'stimLbLcR': 'grey',
-         'stimRbLcL': 'grey',
-         'stimRbRcL': 'grey',
-         'stimRbRcR': 'grey',
-         'stimRbLcR': 'grey',
-         'sLbLchoiceL': 'grey',
-         'sLbRchoiceL': 'grey',
-         'sLbRchoiceR': 'grey',
-         'sLbLchoiceR': 'grey',
-         'sRbLchoiceL': 'grey',
-         'sRbRchoiceL': 'grey',
-         'sRbRchoiceR': 'grey',
-         'sRbLchoiceR': 'grey'}
+    win_cols = {'inter_trial': 'grey',
+                 'stimL': [0.13850039, 0.41331206, 0.74052025],
+                 'stimR': [0.66080672, 0.21526712, 0.23069468],
+                 'blockL': [0.13850039, 0.41331206, 0.74052025],
+                 'blockR': [0.66080672, 0.21526712, 0.23069468],
+                 'choiceL': [0.13850039, 0.41331206, 0.74052025],
+                 'choiceR': [0.66080672, 0.21526712, 0.23069468],
+                 'fback1': 'g',
+                 'fback0': 'k',
+                 'block50': 'grey',
+                 'stimLbLcL': 'grey',
+                 'stimLbRcL': 'grey',
+                 'stimLbRcR': 'grey',
+                 'stimLbLcR': 'grey',
+                 'stimRbLcL': 'grey',
+                 'stimRbRcL': 'grey',
+                 'stimRbRcR': 'grey',
+                 'stimRbLcR': 'grey',
+                 'sLbLchoiceL': 'grey',
+                 'sLbRchoiceL': 'grey',
+                 'sLbRchoiceR': 'grey',
+                 'sLbLchoiceR': 'grey',
+                 'sRbLchoiceL': 'grey',
+                 'sRbRchoiceL': 'grey',
+                 'sRbRchoiceR': 'grey',
+                 'sRbLchoiceR': 'grey',
+                 'quiescence': 'grey',
+                 'motor_init': 'grey'}
 
 
     # trial split types, with string to define alignment
     def align(win):
-        if ('stim' in win) or ('block' in win) or ('inter' in win):
+        if ('stim' in win) or ('block' in win):
             return 'stimOn_times'
         elif 'choice' in win:
             return 'firstMovement_times'
@@ -1889,7 +1820,7 @@ def plot_ave_PETHs(feat = 'concat', vers='concat', rerun=False):
 
 
 def plot_xyz(mapping='Beryl', vers='concat', add_cents=False,
-             restr=False, smooth=False, nclus=7):
+             restr=False, smooth=False, nclus=7, ax = None):
 
     '''
     3d plot of feature per cell
@@ -1898,8 +1829,12 @@ def plot_xyz(mapping='Beryl', vers='concat', add_cents=False,
 
     r = regional_group(mapping, 'umap_z', vers=vers, nclus=nclus)
     xyz = r['xyz']*1000  #convert to mm
-    fig = plt.figure(figsize=(8.43,7.26), label=mapping)
-    ax = fig.add_subplot(111,projection='3d')
+    
+    alone = False
+    if not ax:
+        alone = True
+        fig = plt.figure(figsize=(8.43,7.26), label=mapping)
+        ax = fig.add_subplot(111,projection='3d')
 
     if isinstance(restr, list):
         idcs = np.bitwise_or.reduce([r['acs'] == reg for reg in restr])   
@@ -1908,7 +1843,7 @@ def plot_xyz(mapping='Beryl', vers='concat', add_cents=False,
         r['acs'] = np.array(r['acs'])[idcs]
        
     ax.scatter(xyz[:,0], xyz[:,1],xyz[:,2], 
-               marker='o', s = 1, c=r['cols'])
+               marker='o', s = 1 if alone else 0.5, c=r['cols'])
                
     if smooth:
         # overlay smooth kernels
@@ -1981,11 +1916,25 @@ def plot_xyz(mapping='Beryl', vers='concat', add_cents=False,
     ax.xaxis.set_major_locator(MaxNLocator(nbins=nbins))
     ax.yaxis.set_major_locator(MaxNLocator(nbins=nbins))
     ax.zaxis.set_major_locator(MaxNLocator(nbins=nbins))
-    ax.set_title(f'{mapping}_{vers}_{nclus}')
     
-    fig.tight_layout()
-    fig.savefig(Path(one.cache_dir,'dmn', 'imgs',
-        f'{mapping}_{vers}_{nclus}_3d.png'),dpi=150)
+    if alone:
+        ax.set_title(f'{mapping}_{vers}_{nclus}')
+    
+#    if alone:
+#        fig.tight_layout()
+#        fig.savefig(Path(one.cache_dir,'dmn', 'imgs',
+#            f'{mapping}_{vers}_{nclus}_3d.png'),dpi=150)
+
+
+def clus_grid():
+
+    fig = plt.figure(figsize=(14,10))
+    
+    axs = []
+    for cl in range(7):
+        axs.append(fig.add_subplot(2, 4, cl + 1, projection='3d'))
+        plot_xyz(mapping='kmeans',restr=[cl], ax=axs[-1])    
+
 
 
 def plot_sim():
@@ -2027,7 +1976,7 @@ def plot_sim():
 
 
 def plot_connectivity_matrix(metric='umap_z', mapping='Beryl',
-                             vers = 'concat', ax0=None, ari=False):
+                             vers = 'concat', ax0=None, ari=False, rerun=True):
 
     '''
     all-to-all matrix for some measures
@@ -2039,7 +1988,7 @@ def plot_connectivity_matrix(metric='umap_z', mapping='Beryl',
     elif metric == 'pw':
         d = get_pw_dist(mapping=mapping, vers=vers)        
     else:     
-        d = get_umap_dist(algo=metric, vers=vers)
+        d = get_umap_dist(algo=metric, vers=vers, rerun=rerun)
                 
     res = d['res']
     regs = d['regs']
@@ -2142,8 +2091,8 @@ def plot_multi_matrices(ticktype='rectangles', add_clus=True,
     pth_matrices = Path(one.cache_dir, 'dmn', 'd.npy')
     
     if (not pth_matrices.is_file() or rerun):        
-        verss = list(PETH_types_dict.keys()) + ['cartesian']
-        #verss = ['concat', 'resting', 'quiescence']
+        #verss = list(PETH_types_dict.keys()) + ['cartesian']
+        verss = ['concat','stim_surp_incon', 'resting']
         D = {}
         for vers in verss:
             if vers == 'cartesian':
@@ -2923,9 +2872,9 @@ right=0.98,
 hspace=0.05,
 wspace=0.05)
 
-    fig.savefig(Path(one.cache_dir,'dmn', 'figs','umap_cell.svg'))
-    fig.savefig(Path(one.cache_dir,'dmn', 'figs','umap_cell.pdf'),
-                dpi=150, bbox_inches='tight')    
+#    fig.savefig(Path(one.cache_dir,'dmn', 'figs','umap_cell.svg'))
+#    fig.savefig(Path(one.cache_dir,'dmn', 'figs','umap_cell.pdf'),
+#                dpi=150, bbox_inches='tight')    
 
 
 
@@ -3050,7 +2999,7 @@ def plot_dist_clusters(anno=True, axs=None):
 
 
 def plot_single_feature(algo='umap_z', vers='concat', mapping='Beryl',
-                        reg = 'MRN'):
+                        reg = 'MOp'):
 
     '''
     For a single cell, plot feature vector with PETH labels
@@ -3174,6 +3123,10 @@ def clus_freqs(foc='kmeans', nmin=50, nclus=7, vers='concat'):
         fig, axs = plt.subplots(nrows = len(cluss), ncols = 1,
                                figsize=(18.79,  15),
                                sharex=True, sharey=False)
+        
+        fig.canvas.manager.set_window_title(
+            f'Frequency of Beryl region label per'
+            f' kmeans cluster ({nclus}); vers ={vers}')                      
                                
         cols_dict = dict(list(Counter(zip(r_a['acs'], r_a['cols']))))
         
@@ -3212,8 +3165,6 @@ def clus_freqs(foc='kmeans', nmin=50, nclus=7, vers='concat'):
 
             k += 1
         
-        fig.suptitle(f'Frequency of Beryl region label per'
-                     f' kmeans cluster ({nclus}); vers = {vers}')
         fig.tight_layout()        
         fig.subplots_adjust(top=0.951,
                             bottom=0.059,
@@ -3279,9 +3230,10 @@ def clus_freqs(foc='kmeans', nmin=50, nclus=7, vers='concat'):
             axs[k].set_xlim(-0.5, len(labels)-0.5)
 
             k += 1
-        
-        fig.suptitle(f'Frequency of kmeans cluster ({nclus}) per'
-                     f' Beryl region label per; vers = {vers}')
+            
+        fig.canvas.manager.set_window_title(
+            f'Frequency of kmeans cluster ({nclus}) per'
+            f' Beryl region label per; vers = {vers}')
                      
         fig.tight_layout()        
 
