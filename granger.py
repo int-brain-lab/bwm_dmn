@@ -27,8 +27,9 @@ from one.api import ONE
 from iblatlas.regions import BrainRegions
 from iblatlas.atlas import AllenAtlas
 import iblatlas
-import logging
 
+
+import logging
 import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -60,6 +61,14 @@ bad_eids = ['4e560423-5caf-4cda-8511-d1ab4cd2bf7d',
             '29a6def1-fc5c-4eea-ac48-47e9b053dcb5',
             '0cc486c3-8c7b-494d-aa04-b70e2690bcba']
 
+         
+# window names: [alignment times, segment length, gap, side           
+wins = {'whole_session': ['no_events', 10, 0, 'plus'],
+        'feedback_plus1': ['feedback_times',1, 0, 'plus'],
+        'stim_plus01': ['stimOn_times', 0.1, 0, 'plus'],
+        'stim_minus06_minus02': ['stimOn_times', 0.4, 0.2, 'minus'],
+        'move_minus01': ['firstMovement_times', 0.1, 0, 'minus']}
+
           
 ba = AllenAtlas()          
 br = BrainRegions()
@@ -67,13 +76,13 @@ br = BrainRegions()
 T_BIN = 0.0125  # 0.005
 sigl=0.05  # alpha throughout
 
-
+df = bwm_query(one)
 #align = {'stim': 'stim on',
 #         'choice': 'motion on',
 #         'fback': 'feedback'}
 
 # save results here
-pth_res = Path(one.cache_dir, 'granger', 'res')
+pth_res = Path(one.cache_dir, 'granger') #, 'res_feedback_times')
 pth_res.mkdir(parents=True, exist_ok=True)
 
 
@@ -96,12 +105,14 @@ def p_fisher(p_values):
     return p_combined
 
 
-def get_nregs():
+def get_nregs(win='whole_session'):
 
     '''
     get a dict with regs per eid
     '''
-    p = pth_res.glob('**/*')
+
+    pthh = pth_res / win
+    p = pthh.glob('**/*')
     files = [x for x in p if x.is_file()]
     
     d = {}
@@ -380,6 +391,8 @@ def bin_average_neural(eid, mapping='Beryl', nmin=1):
     
     used to get session-wide time series, not cut into trials
     
+    nmin: 
+        minumum number of neurons per brain region to consider it
     returns: 
         R2: binned firing rate per region per time bin
         times: time stamps for all time bins
@@ -387,7 +400,7 @@ def bin_average_neural(eid, mapping='Beryl', nmin=1):
     '''
     
     pids0, probes = one.eid2pid(eid)
-    df = bwm_query(one)
+    
     pids = []
     
     for pid in pids0:
@@ -571,6 +584,67 @@ def fr_performance(eid, nmin=1, nts = 20):
     return D
     
     
+def cut_segments(r, ts, te, segment_length=100, side='plus', gap_length=0):
+
+    '''
+    r:
+        binned activity time series
+    ts:
+        time stamps per bin
+    te:
+        event times where segments start
+    segment_length:
+        seg length in bins
+    side: ['plus', 'minus']
+        if segments start or end at alignement time
+    gap_length:
+        gap between segment and alignement event in bins
+        
+    Returns:
+        A 3D array of segments with shape (n_regions, n_events, segment_length)
+
+    ''' 
+
+    r = np.array(r)
+    ts = np.array(ts)
+    te = np.array(te)
+    
+    # Ensure r is 2D, even if it's a single region
+    if r.ndim == 1:
+        r = r[np.newaxis, :]
+        
+    # Find indices of the nearest time stamps to event times
+    event_indices = np.searchsorted(ts, te)  
+      
+    # Adjust start indices based on 'side' and gap_length
+    if side == 'plus':
+        # Start segment after the event time plus the gap
+        start_indices = event_indices + gap_length
+    elif side == 'minus':
+        # End segment at event time minus the gap, so start earlier
+        start_indices = event_indices - segment_length - gap_length
+    else:
+        raise ValueError("Invalid value for 'side'. Choose 'plus' or 'minus'.")
+    
+    # Create an array of indices for each segment
+    indices = start_indices[:, np.newaxis] + np.arange(segment_length)
+    
+    # Clip indices to ensure they're within bounds
+    indices = np.clip(indices, 0, r.shape[1] - 1)
+    
+    # Extract segments
+    segments = r[:, indices]
+
+    # Rearrange dimensions to (n_regions, n_events, segment_length)
+    segments = np.transpose(segments, (0, 1, 2))
+    
+    # If original input was 1D, remove the singleton dimension
+    if r.shape[0] == 1:
+        segments = segments.squeeze(axis=1)
+    
+    return segments
+    
+       
 '''  
 ####################
 bulk processing
@@ -578,10 +652,18 @@ bulk processing
 '''
 
 
-def get_all_granger(eids='all', nshufs = 100, segl=10, nmin=10):
+def get_all_granger(eids='all', nshufs = 100, nmin=10, wins=wins):
 
     '''
     get spectral directed granger for all bwm sessions
+    segl: 
+        segment length in seconds (unless wins are given)
+    wins: 
+        Window of interest and seg length, if None, the whole session 
+        is binned and cut into segments; else segments
+        of length segl are cut after win times                
+        eid, probe = one.pid2eid(pid)
+   
     '''
 
     if isinstance(eids, str):
@@ -608,118 +690,155 @@ def get_all_granger(eids='all', nshufs = 100, segl=10, nmin=10):
             if not bool(regsd):
                 print(f'no data for {eid}') 
                 continue
-            
-            
+                
             nchans, nobs = r.shape
-            segment_length = int(segl / T_BIN)
-            num_segments = nobs // segment_length
-            
-            # reshape into: n_signals x n_segments x n_time_samples
-            r_segments = r[:, :num_segments * segment_length
-                           ].reshape((nchans, num_segments, 
-                           segment_length))
-                                       
-            # reshape to n_time_samples x n_segments x n_signals               
-            r_segments_reshaped = r_segments.transpose((2, 1, 0))
 
-            m = Multitaper(
-                r_segments_reshaped,
-                sampling_frequency=1/T_BIN,
-                time_halfbandwidth_product=2,
-                start_time=0)
-
-            c = Connectivity(
-                fourier_coefficients=m.fft(), 
-                frequencies=m.frequencies, 
-                time=m.time)
+            for win in wins:
             
-
-            psg = c.pairwise_spectral_granger_prediction()[0]
-            coh = c.coherence_magnitude()[0]
-            score_g = np.mean(psg,axis=0)
-            score_c = np.mean(coh,axis=0)
-            
-            # get scores after shuffling segments
-            shuf_g = []
-            shuf_c = []
-            
-            # shuffle pairs of regions separately
-            pairs = np.array(list(combinations(range(nchans),2)))
-            
-            print('data binned', regsd, f'{len(pairs)} pairs')
-                        
-            for i in range(nshufs):
-                if i%10 == 0:
-                    print('shuf', i, f'({nshufs})')
-                
-                mg = np.zeros([nchans,nchans])
-                mc = np.zeros([nchans,nchans])
-                
-                for pair in pairs:                                      
-                    rs = np.zeros([2, r_segments.shape[1],
-                                      r_segments.shape[2]])
-                                      
-                    for trial in range(r_segments.shape[1]):
-                        np.random.shuffle(pair)    
-                        rs[:,trial,:] = r_segments[pair, trial, :]
-                        
-                    r_segments0 = np.array(rs)
+                if win == 'whole_session':
+                    print('chop up whole session into segments')
+                    print(win, 'align|segl|gap|side', wins[win])
+                    segl = wins[win][1]  # in sec
+                    segment_length = int(segl / T_BIN)  # in bins
                     
-                    #into n_time_samples x n_segments x n_signals               
-                    r_segments_reshaped0 = r_segments0.transpose((2, 1, 0))
-
-                    m = Multitaper(
-                        r_segments_reshaped0,
-                        sampling_frequency=1/T_BIN,
-                        time_halfbandwidth_product=2,
-                        start_time=0)
+                    # chop up whole session into segments
+                    num_segments = nobs // segment_length
                     
-                    c0 = Connectivity(
-                        fourier_coefficients=m.fft(), 
-                        frequencies=m.frequencies, 
-                        time=m.time)
+                    # reshape into: n_signals x n_segments x n_time_samples
+                    r_segments = r[:, :num_segments * segment_length
+                                   ].reshape((nchans, num_segments, 
+                                   segment_length))
+                                               
+                    # reshape to n_time_samples x n_segments x n_signals
+                    r_segments_reshaped = r_segments.transpose((2, 1, 0))
+                    
+                else:
+                    print(win, 'align|segl|gap|side', wins[win])
+                    
+                    segl = wins[win][1]  # in sec
+                    segment_length = int(segl / T_BIN)  # in bins
+                    gap = wins[win][2]  # in sec
+                    gap_length = int(gap / T_BIN)  # in bins
+                    side = wins[win][3]
+                    
+                    # only pick segments starting at "win" times
+                    # Load in trials data and mask bad trials (False if bad)
+                    trials, mask = load_trials_and_mask(one, eid,
+                        saturation_intervals=['saturation_stim_plus04',
+                                              'saturation_feedback_plus04',
+                                              'saturation_move_minus02',
+                                              'saturation_stim_minus04_minus01',
+                                              'saturation_stim_plus06',
+                                              'saturation_stim_minus06_plus06'])
+                                              
+                    te = trials[mask][wins[win][0]].values
+                     
+                    # n_regions x n_segments x n_time_samples
+                    r_segments = cut_segments(r, ts, te, gap_length=gap_length,
+                                    side=side, segment_length=segment_length)
+                                              
+                    # reshape to n_time_samples x n_segments x n_signals
+                    r_segments_reshaped = r_segments.transpose((2, 1, 0))
+                    
+                    
+                m = Multitaper(
+                    r_segments_reshaped,
+                    sampling_frequency=1/T_BIN,
+                    time_halfbandwidth_product=2,
+                    start_time=0)
+
+                c = Connectivity(
+                    fourier_coefficients=m.fft(), 
+                    frequencies=m.frequencies, 
+                    time=m.time)
                 
-                    mmg = np.mean(
-                        c0.pairwise_spectral_granger_prediction()[0],
-                            axis=0)
-                    mmc = np.mean(
-                        c0.coherence_magnitude()[0],
-                            axis=0)        
+
+                psg = c.pairwise_spectral_granger_prediction()[0]
+                coh = c.coherence_magnitude()[0]
+                score_g = np.mean(psg,axis=0)
+                score_c = np.mean(coh,axis=0)
+                
+                # get scores after shuffling segments
+                shuf_g = []
+                shuf_c = []
+                
+                # shuffle pairs of regions separately
+                pairs = np.array(list(combinations(range(nchans),2)))
+                
+                print('data binned', regsd, f'{len(pairs)} pairs')
                             
-                    mg[pair[0], pair[1]] = mmg[0,1]
-                    mg[pair[1], pair[0]] = mmg[1,0]
-                    mc[pair[0], pair[1]] = mmc[0,1]
-                    mc[pair[1], pair[0]] = mmc[1,0]
-             
-                shuf_g.append(mg)
-                shuf_c.append(mc)
-                
-            shuf_g.append(score_g)
-            shuf_c.append(score_c)          
-                
-            shuf_g = np.array(shuf_g)
-            shuf_c = np.array(shuf_c)
+                for i in range(nshufs):
+                    if i%10 == 0:
+                        print('shuf', i, f'({nshufs})')
+                    
+                    mg = np.zeros([nchans,nchans])
+                    mc = np.zeros([nchans,nchans])
+                    
+                    for pair in pairs:                                      
+                        rs = np.zeros([2, r_segments.shape[1],
+                                          r_segments.shape[2]])
+                                          
+                        for trial in range(r_segments.shape[1]):
+                            np.random.shuffle(pair)    
+                            rs[:,trial,:] = r_segments[pair, trial, :]
+                            
+                        r_segments0 = np.array(rs)
+                        
+                        #into n_time_samples x n_segments x n_signals               
+                        r_segments_reshaped0 = r_segments0.transpose((2, 1, 0))
 
-            p_g = np.mean(shuf_g >= score_g, axis=0)
-            p_c = np.mean(shuf_c >= score_c, axis=0)    
-            
-            D = {'regsd': regsd,
-                 'freqs': c.frequencies,
-                 'p_granger': p_g,
-                 'p_coherence': p_c,
-                 'coherence': score_c,
-                 'granger': score_g,
-                 'coherence_pks': c.frequencies[np.argmax(coh,axis=0)],  
-                 'granger_pks': c.frequencies[np.argmax(psg,axis=0)]}
-
+                        m = Multitaper(
+                            r_segments_reshaped0,
+                            sampling_frequency=1/T_BIN,
+                            time_halfbandwidth_product=2,
+                            start_time=0)
+                        
+                        c0 = Connectivity(
+                            fourier_coefficients=m.fft(), 
+                            frequencies=m.frequencies, 
+                            time=m.time)
+                    
+                        mmg = np.mean(
+                            c0.pairwise_spectral_granger_prediction()[0],
+                                axis=0)
+                        mmc = np.mean(
+                            c0.coherence_magnitude()[0],
+                                axis=0)        
+                                
+                        mg[pair[0], pair[1]] = mmg[0,1]
+                        mg[pair[1], pair[0]] = mmg[1,0]
+                        mc[pair[0], pair[1]] = mmc[0,1]
+                        mc[pair[1], pair[0]] = mmc[1,0]
                  
-            np.save(Path(pth_res, f'{eid}.npy'), D, 
-                    allow_pickle=True)
+                    shuf_g.append(mg)
+                    shuf_c.append(mc)
+                    
+                shuf_g.append(score_g)
+                shuf_c.append(score_c)          
+                    
+                shuf_g = np.array(shuf_g)
+                shuf_c = np.array(shuf_c)
 
-            garbage.collect()
-            print(k + 1, 'of', len(eids), 'ok')
-            time11 = time.perf_counter()
-            print('runtime [sec]: ', time11 - time00)
+                p_g = np.mean(shuf_g >= score_g, axis=0)
+                p_c = np.mean(shuf_c >= score_c, axis=0)    
+                
+                D = {'regsd': regsd,
+                     'freqs': c.frequencies,
+                     'p_granger': p_g,
+                     'p_coherence': p_c,
+                     'coherence': score_c,
+                     'granger': score_g,
+                     'coherence_pks': c.frequencies[np.argmax(coh,axis=0)],  
+                     'granger_pks': c.frequencies[np.argmax(psg,axis=0)]}
+
+                pthh = Path(pth_res, win)
+                pthh.mkdir(parents=True, exist_ok=True)     
+                np.save(pthh / f'{eid}.npy', D, allow_pickle=True)
+
+                garbage.collect()
+                print(k + 1, 'of', len(eids), 'ok')
+                time11 = time.perf_counter()
+                print('runtime [sec]: ', time11 - time00)
             
         except BaseException:
             Fs.append(eid)
@@ -735,8 +854,8 @@ def get_all_granger(eids='all', nshufs = 100, segl=10, nmin=10):
 
 
 
-def get_res(nmin=10, metric='coherence', combine_=True,
-            rerun=False, sig_only=False, sessmin=1):
+def get_res(nmin=10, metric='granger', combine_=True,
+            rerun=False, sig_only=False, sessmin=1, win='whole_session'):
 
     '''
     Group results
@@ -746,12 +865,12 @@ def get_res(nmin=10, metric='coherence', combine_=True,
     
     metric in ['coherence', 'granger']    
     '''
-   
-    pth_ = Path(one.cache_dir, 'granger', f'{metric}.npy')
+       
+    pth_ = Path(pth_res, f'{metric}_{win}.npy')
     if (not pth_.is_file() or rerun):
 
-        
-        p = pth_res.glob('**/*')
+        pthh = pth_res / win
+        p = pthh.glob('**/*')
         files = [x for x in p if x.is_file()]
         
         d = {}
@@ -822,7 +941,7 @@ def get_res(nmin=10, metric='coherence', combine_=True,
         print(f'Uncorrected significant: {np.sum(np.array(ps)<sigl)}')
         print(f'Corrected significant: {np.sum(corrected_ps<sigl)}')
 
-        np.save(Path(one.cache_dir, 'granger', f'{metric}.npy'), 
+        np.save(Path(one.cache_dir, 'granger', f'{metric}{ss}.npy'), 
                 d2, allow_pickle=True)
                 
         d = d2        
@@ -861,17 +980,18 @@ def get_res(nmin=10, metric='coherence', combine_=True,
     return dd    
     
     
-def get_meta_info(rerun=False):
+def get_meta_info(rerun=False, win='whole_session'):
 
     '''
     get neuron number and peak freq_s per region???
     '''
     
 
-    pth_ = Path(one.cache_dir, 'granger', f'all_regs.npy')
+    pth_ = Path(pth_res, f'all_regs.npy')
     if (not pth_.is_file() or rerun):
-
-        p = pth_res.glob('**/*')
+    
+        pthh = pth_res / win
+        p = pthh.glob('**/*')
         files = [x for x in p if x.is_file()]
         
         d = {}
@@ -929,9 +1049,10 @@ def get_all_fr_performance(eids='all', nmin=10, nts=20):
         logging.info(f'{eid} done')
         
         # Use timeit module for accurate timing
-        execution_time = timeit.timeit(lambda: np.save(Path(one.cache_dir, 'fr_performance', f'{eid}.npy'), D, allow_pickle=True), number=1)
-        logging.info(f'Saved {eid} in {execution_time:.2f} seconds')
-        print(f'Runtime for {eid}: {execution_time:.2f} seconds')
+        np.save(Path(one.cache_dir, 'fr_performance', f'{eid}.npy'),
+            D, allow_pickle=True)
+            
+        print(f'{eid}, {k} of {len(eids)} done')
 
 
 '''
@@ -1129,7 +1250,7 @@ def plot_strip_fr_perf(corrtype='pears'):
     fig, axs = plt.subplots(ncols=ncols, figsize=(10,15))                  
     _, pal = get_allen_info()
     for k in range(ncols):
-    
+        print(k)
         colsreg = regsC[ k * len(regsC)//ncols : (k+1) * len(regsC)//ncols]
                                                               
         df_fil1 = df[df['reg'].isin(colsreg)]
@@ -1138,14 +1259,15 @@ def plot_strip_fr_perf(corrtype='pears'):
 
         sns.stripplot(x=f'{corrtype}_r', y='reg', hue = f'{corrtype}_p', 
                       marker='o', size=3, palette=colors,  
-                      data=df_fil1, ax=axs[k], legend=False)
+                      data=df_fil1, ax=axs[k])
 
         for label in axs[k].get_yticklabels():
             label.set_color(pal[label.get_text()])
             
         axs[k].spines['top'].set_visible(False)
         axs[k].spines['right'].set_visible(False)
-
+        if k != 0:
+            axs[k].legend().remove()
     fig.tight_layout()
 
   
@@ -1776,10 +1898,13 @@ def get_ari():
         if x not in unique_visual_sensory and x not in unique_stim_integrator
         and x not in unique_choice_action]
 
-
-    print(list(unique_visual_sensory))    
-    print(list(unique_stim_integrator))    
-    print(list(unique_choice_action))    
+    print('unique_visual_sensory')
+    print(list(unique_visual_sensory))
+    print('unique_stim_integrator')    
+    print(list(unique_stim_integrator))
+    print('unique_choice_action')        
+    print(list(unique_choice_action))
+    print('unique_block_prior')     
     print(list(unique_block_prior))     
 
     return np.concatenate([list(unique_visual_sensory),    
@@ -1788,7 +1913,7 @@ def get_ari():
                            unique_block_prior])     
 
 
-def plot_graph(metric='granger', restrict='', ax=None,
+def plot_graph(metric='granger', restrict='', ax=None, win='whole_session',
                direction='both', sa = 1.5, sessmin=2, ari=False):
 
     '''
@@ -1802,14 +1927,24 @@ def plot_graph(metric='granger', restrict='', ax=None,
     If ari: order regions by Ari's lists
     
     '''
-
+    from dmn_bwm import trans_, get_umap_dist, get_pw_dist
     alone = False
     if ax == None:
         alone = True
-        fig, ax = plt.subplots(figsize=(6,6))
+        fig, ax = plt.subplots(figsize=(6,6), label=win)
 
-
-    d = get_res(metric=metric,combine_=True, sessmin=sessmin)
+    if metric == 'cartesian':
+        d = trans_(get_centroids(dist_=True))
+    elif metric == 'granger':
+        d = get_res(metric=metric,combine_=True, sessmin=sessmin, win=win)   
+    elif metric == 'pw':
+        d = trans_(get_pw_dist(vers='concat'))   
+    elif metric == 'umap_z':     
+        d = trans_(get_umap_dist(algo='umap_z', vers='concat'))
+    else:
+        print('what metric?')
+        return
+   
     ews = 80 if metric == 'granger' else 8
     fontsize = 11 if alone else 1
     
@@ -1835,12 +1970,22 @@ def plot_graph(metric='granger', restrict='', ax=None,
     G = nx.DiGraph()
     for edge, weight in d.items():
         source, target = edge.split(' --> ')
-        w = weight[0] if (weight[1] < sigl) else nsw
-        w = w*ews
-        G.add_edge(source, target, 
-                   weight=w, 
-                   color='k' if weight[1] < sigl else 'cyan')
-
+        if (source in ['void', 'root']) or (target in ['void', 'root']):
+            continue
+        
+        if metric in ['granger', 'coherence']:
+            w = weight[0] if (weight[1] < sigl) else nsw
+            w = w*ews
+            G.add_edge(source, target, 
+                       weight=w, 
+                       color='k' if weight[1] < sigl else 'cyan')
+        else:
+            w = weight
+            w = w*ews
+            G.add_edge(source, target, 
+                       weight=w, 
+                       color='k')            
+        
 
     if ari:
         rs = get_ari()
@@ -1924,32 +2069,37 @@ def plot_graph(metric='granger', restrict='', ax=None,
     if alone:
         #ax.set_title(f'{metric}, black edges significant; restrict {restrict}')
         fig.tight_layout()
-        fig.savefig(Path(one.cache_dir,
-                        'bwm_res/bwm_figs_imgs/si/granger/',
-                        'granger_single_graph.svg'))
+#        fig.savefig(Path(one.cache_dir,
+#                        'bwm_res/bwm_figs_imgs/si/granger/',
+#                        'granger_single_graph.svg'))
 
 
-def plot_multi_graph(sessmin=2):
+def plot_multi_graph(sessmin=2, win='whole_session'):
 
     cregs = ['CB', 'TH', 'HPF', 'Isocortex', 
              'OLF', 'CTXsp', 'CNU', 'HY', 'HB', 'MB']
  
     directions = ['source', 'target']
-    fig, axs = plt.subplots(nrows=5, ncols=4, figsize=(8.5,14))
+    fig, axs = plt.subplots(nrows=5, ncols=4, figsize=(8.5,14), label=win)
     axs = axs.flatten()
     
     k = 0
     for creg in cregs: 
         for direction in directions:
             plot_graph(metric='granger', restrict=creg, sessmin = sessmin, 
-                       ax=axs[k], sa = 1.5, direction=direction)     
+                       ax=axs[k], sa = 1.5, direction=direction, win=win)     
             axs[k].set_title(f'{creg} {direction}')
             k += 1
   
     fig.tight_layout()
-    fig.savefig(Path(one.cache_dir,
-                    'bwm_res/bwm_figs_imgs/si/granger/',
-                    'granger_multi_graph.svg'))
+#    fig.savefig(Path(one.cache_dir,
+#                    'bwm_res/bwm_figs_imgs/si/granger/',
+#                    f'granger_multi_graph_{win}.svg'))
+#    fig.savefig(Path(one.cache_dir,
+#                    'bwm_res/bwm_figs_imgs/si/granger/',
+#                    f'granger_multi_graph_{win}.svg'))                    
+                    
+                    
 
 def plot_series(eid):
 
