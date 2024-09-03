@@ -27,7 +27,8 @@ from one.api import ONE
 from iblatlas.regions import BrainRegions
 from iblatlas.atlas import AllenAtlas
 import iblatlas
-
+import sys
+sys.path.append('Dropbox/scripts/IBL/')
 
 import logging
 import seaborn as sns
@@ -854,8 +855,8 @@ def get_all_granger(eids='all', nshufs = 100, nmin=10, wins=wins):
 
 
 
-def get_res(nmin=10, metric='granger', combine_=True,
-            rerun=False, sig_only=False, sessmin=1, win='whole_session'):
+def get_res(nmin=10, metric='granger', combine_=True, c_mc =False,
+            rerun=False, sig_only=False, sessmin=2, win='whole_session'):
 
     '''
     Group results
@@ -863,7 +864,9 @@ def get_res(nmin=10, metric='granger', combine_=True,
     nmin: minimum number of neurons per region to be included
     sessmin: min number of sessions with region combi
     
-    metric in ['coherence', 'granger']    
+    metric in ['coherence', 'granger']  
+    
+    c_ms: correction for multiple comparisons (fdr_bh)  
     '''
        
     pth_ = Path(pth_res, f'{metric}_{win}.npy')
@@ -907,22 +910,24 @@ def get_res(nmin=10, metric='granger', combine_=True,
                         
                     if f'{regs[i]} --> {regs[j]}' in d:
                         d[f'{regs[i]} --> {regs[j]}'].append(
-                            [m[j, i], (p_c[i,j]/1.0002) + 1/5001, 
+                            [m[j, i], p_c[i,j], 
                             D['regsd'][regs[i]], D['regsd'][regs[j]], eid])
                         
 
                     else:
                         d[f'{regs[i]} --> {regs[j]}'] = []
                         d[f'{regs[i]} --> {regs[j]}'].append(
-                            [m[j, i], (p_c[i,j]/1.0002) + 1/5001,
+                            [m[j, i], p_c[i,j],
                             D['regsd'][regs[i]], D['regsd'][regs[j]], eid])
 
                     
-                    ps.append((p_c[i,j]/1.0002) + 1/5001)
-
-                            
-        _, corrected_ps, _, _ = multipletests(ps, sigl, 
-                                           method='fdr_bh')
+                    ps.append(p_c[i,j])
+        
+        if c_mc:                   
+            _, corrected_ps, _, _ = multipletests(ps, sigl, 
+                                               method='fdr_bh')
+        else:
+            corrected_ps = np.array(ps)                                       
                                            
         kp = 0                                           
         d2 = {}
@@ -941,7 +946,7 @@ def get_res(nmin=10, metric='granger', combine_=True,
         print(f'Uncorrected significant: {np.sum(np.array(ps)<sigl)}')
         print(f'Corrected significant: {np.sum(corrected_ps<sigl)}')
 
-        np.save(Path(one.cache_dir, 'granger', f'{metric}{ss}.npy'), 
+        np.save(Path(one.cache_dir, 'granger', f'{metric}_{win}.npy'), 
                 d2, allow_pickle=True)
                 
         d = d2        
@@ -2069,6 +2074,9 @@ def plot_graph(metric='granger', restrict='', ax=None, win='whole_session',
     if alone:
         #ax.set_title(f'{metric}, black edges significant; restrict {restrict}')
         fig.tight_layout()
+        
+        pth_ = Path(pth_res, 'plots', f'graph_{win}.png')
+        fig.savefig(pth_, dpi=200)         
 #        fig.savefig(Path(one.cache_dir,
 #                        'bwm_res/bwm_figs_imgs/si/granger/',
 #                        'granger_single_graph.svg'))
@@ -2095,9 +2103,9 @@ def plot_multi_graph(sessmin=2, win='whole_session'):
 #    fig.savefig(Path(one.cache_dir,
 #                    'bwm_res/bwm_figs_imgs/si/granger/',
 #                    f'granger_multi_graph_{win}.svg'))
-#    fig.savefig(Path(one.cache_dir,
-#                    'bwm_res/bwm_figs_imgs/si/granger/',
-#                    f'granger_multi_graph_{win}.svg'))                    
+
+    pth_ = Path(pth_res, 'plots', f'multi_graph_{win}.png')
+    fig.savefig(pth_, dpi=200)                    
                     
                     
 
