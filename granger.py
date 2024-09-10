@@ -63,7 +63,7 @@ bad_eids = ['4e560423-5caf-4cda-8511-d1ab4cd2bf7d',
             '0cc486c3-8c7b-494d-aa04-b70e2690bcba']
 
          
-# window names: [alignment times, segment length, gap, side           
+# window names: [alignment times, segment length, gap, side]           
 wins = {'whole_session': ['no_events', 10, 0, 'plus'],
         'feedback_plus1': ['feedback_times',1, 0, 'plus'],
         'stim_plus01': ['stimOn_times', 0.1, 0, 'plus'],
@@ -77,7 +77,7 @@ br = BrainRegions()
 T_BIN = 0.0125  # 0.005
 sigl=0.05  # alpha throughout
 
-df = bwm_query(one)
+#df = bwm_query(one)
 #align = {'stim': 'stim on',
 #         'choice': 'motion on',
 #         'fback': 'feedback'}
@@ -1593,59 +1593,54 @@ def plot_strip_pairs(metric='granger', sessmin = 3,
             fig.tight_layout()        
 
     
-def scatter_psg_coh(sig_only=True):
+def scatter_two(wins=['whole_session', 'feedback_plus1']):
 
-    '''
-    scatter region pairs, granger and coherence
-    '''
-    
-    h = '' if sig_only else '_all'
-    
-    
     dg = np.load(Path(one.cache_dir, 'granger', 
-                        f'granger{h}.npy'), 
+                        f'granger_{wins[0]}.npy'), 
                         allow_pickle=True).flat[0]    
-    
-    dc = np.load(Path(one.cache_dir, 'granger', 
-                        f'coherence{h}.npy'), 
-                        allow_pickle=True).flat[0]
                         
+    dc = np.load(Path(one.cache_dir, 'granger', 
+                        f'granger_{wins[1]}.npy'), 
+                        allow_pickle=True).flat[0]
+                                               
     pairs = list(set(dg.keys()).intersection(set(dc.keys())))
     
     pts = []
-    gs = []
-    cs = []
+    scores = []
     
     for p in pairs:
-        if sig_only:
-            gs.append(np.mean(dg[p]))
-            cs.append(np.mean(dc[p]))
-            pts.append(p)        
-        else:
-            for i in range(len(dg[p])):
-                
-                gs.append(dg[p][i])
-                cs.append(dc[p][i])
-                pts.append(p)
+        for i in range(len(dg[p])):
+            scores.append([dg[p][i][0],dg[p][i][1], 
+                           dc[p][i][0],dc[p][i][1]])
+            pts.append(p)
+     
+    scores = np.array(scores) 
+    scores[:,0] = np.log(scores[:,0])
+    scores[:,2] = np.log(scores[:,2])
             
-            
-    fig, ax = plt.subplots()
-    ax.scatter(gs, cs, color='k', s=0.5)
+    fig, ax = plt.subplots(figsize=(8, 6))
     
-    for i in range(len(pts)):
-        ax.annotate('  ' + pts[i], 
-            (gs[i], cs[i]),
-            fontsize=5,color='k')                   
+    # all pairs in black
+    ax.scatter(scores[:,0], scores[:,2], color='k', s=1, label='neither sig')
     
-    ax.set_xlabel('granger')       
-    ax.set_ylabel('coherence')
-
-    cors,ps = spearmanr(gs, cs)
-    corp,pp = pearsonr(gs, cs)
-
-    ax.set_title(f'pearson: (r,p)=({np.round(corp,2)},{np.round(pp,2)}) \n'
-                 f'spearman: (r,p)=({np.round(cors,2)},{np.round(ps,2)}) \n'
-                 f'both significant only = {sig_only}')
+    # sig ones x in red crosses
+    ax.scatter(scores[:,0][scores[:,1]<sigl], scores[:,2][scores[:,1]<sigl], 
+               color='r', s=15, marker='o', label='x sig')
+    
+    # sig ones y in blue circles
+    ax.scatter(scores[:,0][scores[:,3]<sigl], scores[:,2][scores[:,3]<sigl], 
+               color='b', s=15, marker='x', label='y sig')
+    
+    plt.legend()      
+    ax.set_xlabel(f'{wins[0]} (log(granger))')       
+    ax.set_ylabel(f'{wins[1]} (log(granger))')
+    both_sig = np.bitwise_and(scores[:,1]<sigl, scores[:,3]<sigl) 
+    
+    cors,ps = spearmanr(scores[:,0][both_sig], scores[:,2][both_sig])
+    corp,pp = pearsonr(scores[:,0][both_sig], scores[:,2][both_sig])
+    ax.set_title(f'pearson: (r,p)=({np.round(corp,2)},{np.round(pp,2)}),'
+                 f'spearman: (r,p)=({np.round(cors,2)},{np.round(ps,2)});'
+                 ' only for pairs where both score types were significant')
     
     
 def plot_dist_scat(dist_='centroids'):
