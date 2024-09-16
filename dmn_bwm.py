@@ -580,6 +580,7 @@ def regional_group(mapping, algo, vers='concat', norm_=False,
                    nclus = 7):
 
     '''
+    mapping: how to color 2d points, say Beryl, layers, kmeans
     find group labels for all cells
     mapping: [Allen, Beryl, Cosmos, layers, clusters, clusters_xyz]
     '''
@@ -596,7 +597,7 @@ def regional_group(mapping, algo, vers='concat', norm_=False,
         # use kmeans to cluster 2d points
          
         nclus = nclus
-        kmeans = KMeans(n_clusters=nclus, random_state=0)
+        kmeans = KMeans(n_clusters=nclus, random_state=3)
         kmeans.fit(r[algo])
         clusters = kmeans.labels_
         
@@ -885,7 +886,7 @@ def get_all_PETHs(eids_plus=None, vers='concat'):
 
 
 def stack_concat(vers='concat', get_concat=False, get_tls=False, 
-                 ephys=False, norm_=False):
+                 ephys=False, norm_=False, n_neighbors=15):
 
     '''
     stack concatenated PETHs; 
@@ -983,7 +984,7 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
     if get_concat:
         return cs
         
-    r['concat'] = cs
+#    r['concat'] = cs
 
     cs_z = zscore(cs,axis=1)
     r['concat_z'] = cs_z
@@ -991,14 +992,15 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
     
     scaler = StandardScaler()
     cs_ss = scaler.fit_transform(cs)
-    r['concat_ss'] = cs_ss
+#    r['concat_ss'] = cs_ss
     
     # various dim reduction of PETHs to 2 dims
     print('dimensionality reduction ...')
     ncomp = 2
-    r['umap'] = umap.UMAP(n_components=ncomp).fit_transform(cs)
-    r['umap_z'] = umap.UMAP(n_components=ncomp).fit_transform(cs_z)
-    r['umap_ss'] = umap.UMAP(n_components=ncomp).fit_transform(cs_ss)
+#    r['umap'] = umap.UMAP(n_components=ncomp).fit_transform(cs)
+    r['umap_z'] = umap.UMAP(n_components=ncomp, 
+        n_neighbors=n_neighbors).fit_transform(cs_z)
+#    r['umap_ss'] = umap.UMAP(n_components=ncomp).fit_transform(cs_ss)
     
     r['len'] = dict(zip(D_['trial_names'],
                     [x.shape[1] for x in D_['ws']]))
@@ -1071,7 +1073,7 @@ def stack_simple(nmin=10):
     
     # to fix latency time unit (seg length in sec)          
     pre_post00 = {'stim': [0, 0.15],
-                 'choice': [0.15, 0],
+                 'choice': [0, 0.15],
                  'fback': [0, 0.15],
                  'stim0': [0, 0.15]}    
     
@@ -1179,7 +1181,7 @@ def plot_dim_reduction(algo='umap_z', mapping='Beryl',norm_=False ,
                        means=False, exa=False, shuf=False,
                        exa_squ=False, vers='concat', ax=None, ds=0.5,
                        axx=None, exa_kmeans=False, leg=False, restr=None,
-                       nclus = 7):
+                       nclus = 10, n_neighbors=15):
                        
     '''
     2 dims being pca on concat PETH; 
@@ -1195,7 +1197,7 @@ def plot_dim_reduction(algo='umap_z', mapping='Beryl',norm_=False ,
     restr: list of Beryl regions to restrict plot to
     '''
     
-    feat = 'concat'
+    feat = 'concat_z'
     
     r = regional_group(mapping, algo, vers=vers, norm_=norm_, 
                        nclus=nclus)
@@ -1758,18 +1760,21 @@ def plot_ave_PETHs(feat = 'concat', vers='concat', rerun=False):
     d = np.load(pth_dmnm, allow_pickle=True).flat[0]
     
     fig, ax = plt.subplots(figsize=(8.57, 2.75))
-    r = np.load(Path(pth_dmn, f'{vers}.npy'),allow_pickle=True).flat[0]
-    r['mean'] = np.mean(r[feat],axis=0)
-    
+    r = np.load(Path(pth_dmn, 'concat_normTrue.npy'),allow_pickle=True).flat[0]
+    r['mean'] = np.mean(r['concat'],axis=0)
+
+    # get alignment event per PETH type
+    pid = '1a60a6e1-da99-4d4e-a734-39b1d4544fad'
+    ttt =  concat_PETHs(pid = pid,get_tts=True)
     
     # plot trial averages
     yys = []  # to find maxes for annotation
     st = 0
-    for tt in r['len']:
+    for tt in ttt:
   
-        xx = np.linspace(-pre_post(tt)[0],
-                         pre_post(tt)[1],
-                         r['len'][tt]) + d['av_times'][align(tt)][0]
+        xx = np.linspace(-ttt[tt][-1][0],
+                         ttt[tt][-1][1],
+                         r['len'][tt]) + d['av_times'][ttt[tt][0]][0]
 
         yy = r['mean'][st: st + r['len'][tt]]
         yys.append(max(yy))
@@ -1782,6 +1787,8 @@ def plot_ave_PETHs(feat = 'concat', vers='concat', rerun=False):
         
     
     for ev in d['av_times']:
+        if ev == 'intervals_1':
+            continue
         ax.axvline(x=d['av_times'][ev][0], label=ev,
                    color=evs[ev], linestyle='-')
         ax.annotate(ev, (d['av_times'][ev][0], 0.8*max(yys)), 
@@ -1984,7 +1991,7 @@ def plot_connectivity_matrix(metric='umap_z', mapping='Beryl',
 
 
     if metric == 'cartesian':
-        d = get_centroids(dist_=True)
+        d = get_centroids(dist_=False)
     elif metric == 'pw':
         d = get_pw_dist(mapping=mapping, vers=vers)        
     else:     
@@ -2478,7 +2485,7 @@ def swansons_all(metric='latency', minreg=10, annotate=True,
                     allow_pickle=True).flat[0]
 
         xs = {'stim': np.linspace(0,0.15,len(r['MRN']['stim'])),
-              'choice': np.linspace(-0.15,0,len(r['MRN']['choice'])),
+              'choice': np.linspace(0,0.15,len(r['MRN']['choice'])),
               'fback': np.linspace(0,0.15,len(r['MRN']['fback'])),
               'stim0': np.linspace(0,0.15,len(r['MRN']['stim0']))}
         
@@ -2551,7 +2558,7 @@ def swansons_all(metric='latency', minreg=10, annotate=True,
         # assure all panels have same scale
         lats_all = np.array([np.array([avs[x][s] for x in avs]) 
                     for s in avs[regs2[0]].keys() if 'lat' in s]).flatten()
-            
+        lats_all = lats_all * 1000 # ms    
         vmin, vmax = (np.nanmin(lats_all), np.nanmax(lats_all))
    
     
@@ -2567,7 +2574,7 @@ def swansons_all(metric='latency', minreg=10, annotate=True,
             cmap_ = 'viridis'        
         
 
-        lats = np.array([avs[x][s] for x in avs])
+        lats = np.array([avs[x][s] for x in avs]) * 1000 # ms
         
         print(s)
         asort = np.argsort(lats)
@@ -2599,10 +2606,9 @@ def swansons_all(metric='latency', minreg=10, annotate=True,
                                 ax=axs[k],
                                 location='bottom', pad=0.04)
         cbar.formatter = ScalarFormatter(useMathText=True)
-        
-        cbar.locator = plt.MaxNLocator(nbins=2)
-        cbar.update_ticks()
-        cbar.set_label('latency [sec]' 
+        cbar.set_ticks([0, 75, 150])
+        cbar.set_ticklabels(['0', '75', '150'])
+        cbar.set_label('latency [ms]' 
                        if metric == 'latency' 
                        else 'fr [Hz]')
                        
@@ -2630,8 +2636,8 @@ def swansons_all(metric='latency', minreg=10, annotate=True,
 #                 'ephysTF_example_swansons.svg'))
 
     if metric == 'latency':
-        fig.savefig(Path(one.cache_dir, 'bwm_res', 'bwm_figs_imgs',
-                         'si', 'n6_supp_figure_peth_latency_swanson.svg'))
+#        fig.savefig(Path(one.cache_dir, 'bwm_res', 'bwm_figs_imgs',
+#                         'si', 'n6_supp_figure_peth_latency_swanson.svg'))
         fig.savefig(Path(one.cache_dir, 'bwm_res', 'bwm_figs_imgs',
                          'si', 'n6_supp_figure_peth_latency_swanson.pdf'),
                         dpi=150,bbox_inches='tight')                         
@@ -2898,7 +2904,7 @@ def plot_peth():
             regs1.append(reg)
 
     xs = {'stim': np.linspace(0,0.15,len(d['MRN']['stim'])),
-          'choice': np.linspace(-0.15,0,len(d['MRN']['choice'])),
+          'choice': np.linspace(0,0.15,len(d['MRN']['choice'])),
           'fback': np.linspace(0,0.15,len(d['MRN']['fback'])),
           'stim0': np.linspace(0,0.15,len(d['MRN']['stim0'])),
           'stimdiff': np.linspace(0,0.15,len(d['MRN']['stim0']))}
@@ -3269,8 +3275,80 @@ def count_trials():
     ax.set_xlabel('peth types')    
     
     
+def compare_two_goups(vers='concat', filt = 'VISp'):
+
+    '''
+    compare average feature vecotr for two groups of cells
+    '''
+
+    r = regional_group('Beryl', 'umap_z', vers=vers)        
+    df = pd.DataFrame({'acs': r['acs'], 'x': r['xyz'][:,0]})    
+    regs = np.unique(r['acs'])
     
     
+    vis = [x for x in regs if filt in x]
+    print(vis)
+    
+    colsd = {'left': blue_left, 'right': red_right}
+    
+    fig, axs = plt.subplots(nrows=2, sharex=True, sharey=True,
+                            figsize=[18 , 7.63])
+    
+    kk = 0
+    for hem in ['left', 'right']:
+        idc = np.bitwise_and(df['acs'].isin(vis), 
+            (df['x'] < 0) if (hem == 'left') else (df['x'] >= 0))
+
+        n_cells = sum(idc)
+        yy = np.mean(r['concat_z'][idc],axis=0)
+        xx = np.arange(len(yy)) /480
+        axs[kk].plot(xx, yy,
+                 color=colsd[hem],
+                 linewidth=2, 
+                 label=f'{n_cells} cells'
+                       f' in {filt} areas in {hem} hemisphere')                     
+
+        axs[kk].spines['top'].set_visible(False)
+        axs[kk].spines['right'].set_visible(False)
+        axs[kk].set_xlabel('time [sec]')
+        axs[kk].set_ylabel('firing rate')
+            
+        axs[kk].legend(loc='lower right')    
+        d2 = {}
+        for sec in PETH_types_dict[vers]:
+            d2[sec] = r['len'][sec]
+                            
+        # plot vertical boundaries for windows
+        h = 0
+        for i in d2:
+        
+            xv = d2[i] + h
+            axs[kk].axvline(xv/480, linestyle='--', linewidth=1,
+                        color='grey')
+            
+            if kk == 0: 
+                axs[kk].text(xv/480 - d2[i]/(2*480), max(yy),
+                         '   '+i, rotation=90, color='k', 
+                         fontsize=10, ha='center')        
+            h += d2[i]
+        kk += 1
+
+    fig.tight_layout()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
