@@ -2027,7 +2027,9 @@ def plot_connectivity_matrix(metric='umap_z', mapping='Beryl',
         
     else:    
         # Order the matrix using hierarchical clustering
-        linkage_matrix = hierarchy.linkage(1-res)
+        
+        cres = squareform(np.max(res) - res)
+        linkage_matrix = hierarchy.linkage(cres)
         ordered_indices = hierarchy.leaves_list(linkage_matrix)
             
             
@@ -2151,10 +2153,13 @@ def plot_multi_matrices(ticktype='rectangles', add_clus=True,
     for row in range(len(verss)):   
         # use dendro order of first version for all 
         res0 = np.round(D2[verss[row]], decimals=10)
-        cres = squareform(1 - res0)
+        
+        # turn similarity into distance and put into vector form 
+        cres = squareform(np.max(res0) - res0)
         linkage_matrix = hierarchy.linkage(cres)
         ordered_indices = hierarchy.leaves_list(linkage_matrix) 
         regso = np.array(regs)[ordered_indices]
+        
             
         for col in range(len(verss)):
            
