@@ -7,8 +7,8 @@ from iblatlas.regions import BrainRegions
 import iblatlas
 from iblatlas.plots import plot_swanson_vector 
 from brainbox.io.one import SessionLoader
-import ephys_atlas.data
-from reproducible_ephys_functions import figure_style, labs
+#import ephys_atlas.data
+#from reproducible_ephys_functions import figure_style, labs
 
 import sys
 sys.path.append('Dropbox/scripts/IBL/')
@@ -21,13 +21,14 @@ import pandas as pd
 import numpy as np
 from collections import Counter
 from sklearn.decomposition import PCA, FastICA
-from sklearn.cluster import KMeans, SpectralClustering
+from sklearn.cluster import KMeans, SpectralClustering, SpectralCoclustering
 from sklearn.manifold import TSNE
 from scipy.cluster.hierarchy import linkage, fcluster, dendrogram
 from statsmodels.stats.multitest import multipletests
 from sklearn.metrics import confusion_matrix
 from numpy.linalg import norm
-from scipy.stats import gaussian_kde, f_oneway, pearsonr, spearmanr, kruskal
+from scipy.stats import (gaussian_kde, f_oneway, 
+    pearsonr, spearmanr, kruskal, rankdata)
 from scipy.spatial import distance
 from scipy.cluster import hierarchy
 from scipy.spatial.distance import squareform, cdist
@@ -42,7 +43,9 @@ import random
 from copy import deepcopy
 import time, sys, math, string, os
 from scipy.stats import spearmanr, zscore
-import umap
+import umap.umap_ as umap
+from rastermap import Rastermap
+
 from itertools import combinations, chain
 from datetime import datetime
 import scipy.ndimage as ndi
@@ -68,8 +71,6 @@ import warnings
 warnings.filterwarnings("ignore")
 #mpl.use('QtAgg')
 
-# for vari plot
-_, b, lab_cols = labs()
 plt.ion() 
  
 np.set_printoptions(threshold=sys.maxsize)
@@ -86,6 +87,10 @@ red_right = [0.66080672, 0.21526712, 0.23069468]
 T_BIN = 0.0125  # bin size [sec] for neural binning
 sts = 0.002  # stride size in [sec] for overlapping bins
 ntravis = 30  # #trajectories for vis, first 2 real, rest pseudo
+
+# conversion divident to get bins in seconds 
+# (taking strinding into account)
+c_sec =  int(T_BIN // sts) / T_BIN
 
 one = ONE()
 
@@ -104,7 +109,13 @@ sigl = 0.05  # significance level (for stacking, plotting, fdr)
 
 
 # order sensitive: must be tts__ = concat_PETHs(pid, get_tts=True).keys()
-tts__ = ['inter_trial', 'blockL', 'blockR', 'block50', 'quiescence', 'stimLbLcL', 'stimLbRcL', 'stimLbRcR', 'stimLbLcR', 'stimRbLcL', 'stimRbRcL', 'stimRbRcR', 'stimRbLcR', 'motor_init', 'sLbLchoiceL', 'sLbRchoiceL', 'sLbRchoiceR', 'sLbLchoiceR', 'sRbLchoiceL', 'sRbRchoiceL', 'sRbRchoiceR', 'sRbLchoiceR', 'choiceL', 'choiceR',  'fback1', 'fback0']
+tts__ = ['inter_trial', 'blockL', 'blockR', 'block50', 
+         'quiescence', 'stimLbLcL', 'stimLbRcL', 'stimLbRcR', 
+         'stimLbLcR', 'stimRbLcL', 'stimRbRcL', 'stimRbRcR', 
+         'stimRbLcR', 'motor_init', 'sLbLchoiceL', 'sLbRchoiceL', 
+         'sLbRchoiceR', 'sLbLchoiceR', 'sRbLchoiceL', 'sRbRchoiceL', 
+         'sRbRchoiceR', 'sRbLchoiceR', 'choiceL', 'choiceR',  
+         'fback1', 'fback0']
 #'fback0sRbL', 'fback0sLbR',
      
 
@@ -116,6 +127,7 @@ PETH_types_dict = {
     'block50': ['block50'],
     'stim_surp_incon': ['stimLbRcL','stimRbLcR'],
     'stim_surp_con': ['stimLbLcL', 'stimRbRcR'],
+    'stim_all': ['stimLbRcL','stimRbLcR','stimLbLcL', 'stimRbRcR'],
     #'resp_surp': ['fback0sRbL', 'fback0sLbR'],
     'motor_init': ['motor_init'],
     'fback1': ['fback1'],
@@ -395,20 +407,6 @@ def concat_PETHs(pid, get_tts=False, vers='concat'):
                 np.bitwise_and.reduce([mask,
                     trials['choice'] == -1]), 
                         [0, 0.15]],            
-#            'fback0sRbL': ['feedback_times',    
-#                np.bitwise_and.reduce([mask,
-#                    trials['feedbackType'] == 0,
-#                    ~np.isnan(trials[f'contrastRight']),
-#                    trials['probabilityLeft'] == 0.8,
-#                    deep_in_block(trials, 0.8)]), 
-#                       [0, 0.3]], 
-#            'fback0sLbR': ['feedback_times',    
-#                np.bitwise_and.reduce([mask,
-#                    trials['feedbackType'] == 0,
-#                    ~np.isnan(trials[f'contrastLeft']),
-#                    trials['probabilityLeft'] == 0.2,
-#                    deep_in_block(trials, 0.2)]), 
-#                       [0, 0.3]],
             'fback1': ['feedback_times',    
                 np.bitwise_and.reduce([mask,
                     trials['feedbackType'] == 1]), 
@@ -577,28 +575,33 @@ def get_allen_info(rerun=False):
 
 
 def regional_group(mapping, algo, vers='concat', norm_=False,
-                   nclus = 7):
+                   nclus = 13):
 
     '''
     mapping: how to color 2d points, say Beryl, layers, kmeans
     find group labels for all cells
-    mapping: [Allen, Beryl, Cosmos, layers, clusters, clusters_xyz]
+    mapping: [Allen, Beryl, Cosmos, layers, clusters, clusters_xyz, 'in tts__']
     '''
 
     r = np.load(Path(pth_dmn, f'{vers}_norm{norm_}.npy'),
                  allow_pickle=True).flat[0]
-                 
-                              
+
+    # remove cells in void or root             
+    rmv_void_rt = False
+
     # add point names to dict
     r['nums'] = range(len(r[algo][:,0]))
                    
 
     if mapping == 'kmeans':
-        # use kmeans to cluster 2d points
-         
+   
+        feat = 'concat_z'
+
         nclus = nclus
         kmeans = KMeans(n_clusters=nclus, random_state=3)
-        kmeans.fit(r[algo])
+        # kmeans.fit(r[algo]) # use kmeans to cluster 2d points
+        kmeans.fit(r[feat])  # kmeans in feature space
+
         clusters = kmeans.labels_
         
         cmap = mpl.cm.get_cmap('Spectral')
@@ -618,11 +621,12 @@ def regional_group(mapping, algo, vers='concat', norm_=False,
               for clus in range(1,nclus+1)}
               
 
-    elif mapping == 'hdbscan':
-        mcs = 10
-        clusterer = hdbscan.HDBSCAN(min_cluster_size=mcs)    
-        clusterer.fit(r[algo])
-        labels = clusterer.labels_
+    elif mapping == 'cocluster':
+        feat = 'concat_z'
+
+        clusterer = SpectralCoclustering(n_clusters=nclus, random_state=0) 
+        clusterer.fit(r[feat])
+        labels = clusterer.row_labels_
         unique_labels = np.unique(labels)
         mapping = {old_label: new_label 
                       for new_label, old_label in 
@@ -637,7 +641,6 @@ def regional_group(mapping, algo, vers='concat', norm_=False,
                     cols] 
               for clus in range(1,len(unique_labels)+1)} 
         
-
 
     elif mapping == 'layers':       
     
@@ -701,18 +704,99 @@ def regional_group(mapping, algo, vers='concat', norm_=False,
                     cmap(clus/nclus)] 
               for clus in range(1,nclus+1)}      
 
+
+    elif mapping in PETH_types_dict:
+        # For a group of PETH types defined in PETH_types_dict,
+        # concatenate the defined PETH segments and rank cells by mean score
+        feat = 'concat_bd'
+        assert vers == 'concat', 'vers needs to be concat for this'
+        assert feat == 'concat_bd'
+
+        # Retrieve the list of PETH types to concatenate from PETH_types_dict
+        peth_types_to_concat = PETH_types_dict[mapping]
+
+        # Initialize a list to store the concatenated segments
+        concatenated_data = []
+
+        # Iterate through each PETH type in the list and concatenate the data
+        for peth_type in peth_types_to_concat:
+            # Extract relevant information from the data
+            # Get the start and end indices of the PETH segment
+            segment_names = list(r['len'].keys())
+            segment_lengths = list(r['len'].values())
+            start_idx = sum(segment_lengths[:segment_names.index(peth_type)])
+            end_idx = start_idx + r['len'][peth_type]
+
+            # Extract the segment of interest and append to concatenated_data
+            segment_data = r[feat][:, start_idx:end_idx]
+            concatenated_data.append(segment_data)
+
+        # Concatenate all the segments along the column axis
+        concatenated_data = np.concatenate(concatenated_data, axis=1)
+
+        # Compute the mean for each neuron across the concatenated segment
+        means = np.mean(concatenated_data, axis=1)
+
+        # Rank neurons based on their mean values
+        df = pd.DataFrame({'means': means})
+        df['rankings'] = df['means'].rank(method='min', ascending=False).astype(int)
+        r['rankings'] = df['rankings'].values
+
+        # Map neuron IDs to brain region acronyms (if needed)
+        acs = np.array(br.id2acronym(r['ids'], mapping='Beryl'))
+
+        # Apply a color map based on the rankings
+        cmap = mpl.cm.get_cmap('Spectral')
+        cols = cmap(r['rankings'] / max(r['rankings']))
+
+        # Count the occurrence of each brain region acronym
+        regs = Counter(acs)
+        
+        # Handle additional processing as necessary
+        av = None
+        rmv_void_rt = True
+
+
+    elif mapping in tts__:
+        # for a specific PETH type, 
+        # rank cells by mean score
+        feat = 'concat_bd'
+        assert vers == 'concat', 'vers needs to be concat for this'
+        assert feat == 'concat_bd'
+
+        # Extract relevant information from the data
+        # Get the start and end indices of the PETH segment
+        segment_names = list(r['len'].keys())
+        segment_lengths = list(r['len'].values())
+        start_idx = sum(segment_lengths[:segment_names.index(mapping)])
+        end_idx = start_idx + r['len'][mapping]
+
+        # Extract the segment of interest
+        segment_data = r[feat][:, start_idx:end_idx]
+
+        # Compute the mean for each neuron across the segment
+        means = np.mean(segment_data, axis=1)
+
+        # Get the ranking of neurons based on their mean values 
+        df = pd.DataFrame({'means': means})
+        df['rankings'] = df['means'].rank(method='min', 
+                                ascending=False).astype(int)
+        r['rankings'] = df['rankings'].values 
+
+        acs = np.array(br.id2acronym(r['ids'], 
+                                     mapping='Beryl'))
+                                     
+        cmap = mpl.cm.get_cmap('Spectral')
+        cols = cmap(r['rankings']/max(r['rankings'])) 
+        regs = Counter(acs)  
+        av = None       
+        rmv_void_rt = True
+
     else:
         acs = np.array(br.id2acronym(r['ids'], 
                                      mapping=mapping))
                                      
-#        # remove void and root
-#        zeros = np.arange(len(acs))[np.bitwise_or(acs == 'root',
-#                                                  acs == 'void')]
-#        for key in r:
-#            if len(r[key]) == len(acs):
-#                r[key] = np.delete(r[key], zeros, axis=0)
-#                   
-#        acs = np.delete(acs, zeros)          
+         
         
                                                               
         _,pa = get_allen_info()
@@ -730,7 +814,20 @@ def regional_group(mapping, algo, vers='concat', norm_=False,
     r['acs'] = acs
     r['cols'] = cols
     r['av'] = av
-              
+
+    if rmv_void_rt:
+       # remove void and root
+       zeros = np.arange(len(acs))[np.bitwise_or(acs == 'root',
+                                                 acs == 'void')]
+       for key in r:
+           if r[key] is None:
+                continue
+           if len(r[key]) == len(acs):
+               r[key] = np.delete(r[key], zeros, axis=0)
+                  
+       acs = np.delete(acs, zeros) 
+
+
     return r
 
 
@@ -902,7 +999,8 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
     # pool data
     
     r = {}
-    for ke in ['ids', 'xyz', 'uuids']:
+    kes = ['ids', 'xyz', 'uuids','pid']
+    for ke in kes:
         r[ke] = []   
 
     # get PETH type names from first insertion
@@ -914,14 +1012,28 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
     ttypes = PETH_types_dict[vers]
     tlss = {}  # for stats on trial numbers
 
+
+    df = bwm_query(one)    
+    def pid__(eid,probe_name):
+        return df[np.bitwise_and(df['eid'] == eid, 
+                          df['probe_name'] == probe_name
+                          )]['pid'].values[0]
+
+
     ws = []
     # group results across insertions
     for s in ss:
                    
-        eid =  s.split('_')[0]                    
+        eid =  s.split('_')[0]
+        probe_name = s.split('_')[1].split('.')[0]
+
+        pid = pid__(eid,probe_name)                  
                    
         D_ = np.load(Path(pth, s),
                      allow_pickle=True).flat[0]
+
+        D_['pid'] = [pid]*len(D_['ids'])
+
         tlss[s] = D_['tls']
         
         if get_tls:
@@ -953,7 +1065,7 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
                      
         # concatenate normalized PETHs             
         ws.append(np.concatenate(peths,axis=1))
-        for ke in ['ids', 'xyz', 'uuids']:
+        for ke in kes:
             r[ke].append(D_[ke])
 
     print(len(ws), 'insertions combined')
@@ -962,20 +1074,20 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
         return tlss
     
     
-    for ke in ['ids', 'xyz', 'uuids']:  
+    for ke in kes:  
         r[ke] = np.concatenate(r[ke])
                     
     cs = np.concatenate(ws, axis=0)
     
     # remove cells with nan entries
     goodcells = [~np.isnan(k).any() for k in cs]
-    for ke in ['ids', 'xyz', 'uuids']:  
+    for ke in kes:  
         r[ke] = r[ke][goodcells]       
     cs = cs[goodcells] 
 
     # remove cells that are zero all the time
     goodcells = [np.any(x) for x in cs]
-    for ke in ['ids', 'xyz', 'uuids']:  
+    for ke in kes:  
         r[ke] = r[ke][goodcells]       
     cs = cs[goodcells]
         
@@ -983,16 +1095,37 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
 
     if get_concat:
         return cs
-        
-#    r['concat'] = cs
+
+
+    ptypes = [x for x in D_['trial_names']
+              if x in ttypes]
+
+    idc = [D_['trial_names'].index(x) for x in ttypes]          
+    r['len'] = dict(zip(ptypes,
+                    [D_['ws'][x].shape[1] for x in idc]))
+
+
+    r['concat'] = cs
 
     cs_z = zscore(cs,axis=1)
     r['concat_z'] = cs_z
     
-    
-    scaler = StandardScaler()
-    cs_ss = scaler.fit_transform(cs)
-#    r['concat_ss'] = cs_ss
+    # baseline ('inter_trial' subtract)
+
+    # Get the start and end indices of the PETH segment
+    segment_names = list(r['len'].keys())
+    segment_lengths = list(r['len'].values())
+    start_idx = sum(segment_lengths[:segment_names.index('inter_trial')])
+    end_idx = start_idx + r['len']['inter_trial']
+
+    # Extract the segment of interest
+    segment_data = r['concat'][:, start_idx:end_idx]
+
+    # Compute the mean for each neuron across the segment
+    means = np.mean(segment_data, axis=1)
+    means = means.reshape(-1, 1)
+    uu = r['concat'] - means
+    r['concat_bd'] = uu/np.std(uu, axis=1)[:, np.newaxis]
     
     # various dim reduction of PETHs to 2 dims
     print('dimensionality reduction ...')
@@ -1001,9 +1134,7 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
     r['umap_z'] = umap.UMAP(n_components=ncomp, 
         n_neighbors=n_neighbors).fit_transform(cs_z)
 #    r['umap_ss'] = umap.UMAP(n_components=ncomp).fit_transform(cs_ss)
-    
-    r['len'] = dict(zip(D_['trial_names'],
-                    [x.shape[1] for x in D_['ws']]))
+
 
     if ephys:
         print('loading and concatenating ephys features ...')
@@ -1306,8 +1437,8 @@ def plot_dim_reduction(algo='umap_z', mapping='Beryl',norm_=False ,
 
     if exa_kmeans:
         # show for each kmeans cluter the mean PETH
-        if mapping != 'kmeans':
-            print('mapping must be kmeans')
+        if mapping not in ['kmeans', 'cocluster']:
+            print("mapping must be in ['kmeans', 'cocluster']")
             return
             
         if axx is None:
@@ -1323,7 +1454,7 @@ def plot_dim_reduction(algo='umap_z', mapping='Beryl',norm_=False ,
         for clu in np.unique(r['acs']):
                     
             #cluster mean
-            xx = np.arange(len(r[feat][0])) /480
+            xx = np.arange(len(r[feat][0])) /c_sec
             yy = np.mean(r[feat][np.where(r['acs'] == clu)], axis=0)
 
             axx[kk].plot(xx, yy,
@@ -1350,11 +1481,11 @@ def plot_dim_reduction(algo='umap_z', mapping='Beryl',norm_=False ,
             for i in d2:
             
                 xv = d2[i] + h
-                axx[kk].axvline(xv/480, linestyle='--', linewidth=1,
+                axx[kk].axvline(xv/c_sec, linestyle='--', linewidth=1,
                             color='grey')
                 
                 if  kk == 0:            
-                    axx[kk].text(xv/480 - d2[i]/(2*480), max(yy),
+                    axx[kk].text(xv/c_sec - d2[i]/(2*c_sec), max(yy),
                              '   '+i, rotation=90, color='k', 
                              fontsize=10, ha='center')
             
@@ -1827,14 +1958,24 @@ def plot_ave_PETHs(feat = 'concat', vers='concat', rerun=False):
 
 
 def plot_xyz(mapping='Beryl', vers='concat', add_cents=False,
-             restr=False, smooth=False, nclus=7, ax = None):
+             restr=False, ax = None,
+             exa=True):
 
     '''
     3d plot of feature per cell
     add_cents: superimpose stars for region volumes and centroids
+    exa: show example average feature vectors
     '''
 
-    r = regional_group(mapping, 'umap_z', vers=vers, nclus=nclus)
+    r = regional_group(mapping, 'umap_z', vers=vers)
+
+    if ((mapping in tts__) or (mapping in PETH_types_dict)):
+        cmap = mpl.cm.get_cmap('Spectral')
+        norm = mpl.colors.Normalize(vmin=min(r['rankings']), 
+                                    vmax=max(r['rankings']))
+        cols = cmap(norm(r['rankings']))
+        r['cols'] = cols
+
     xyz = r['xyz']*1000  #convert to mm
     
     alone = False
@@ -1852,37 +1993,6 @@ def plot_xyz(mapping='Beryl', vers='concat', add_cents=False,
     ax.scatter(xyz[:,0], xyz[:,1],xyz[:,2], 
                marker='o', s = 1 if alone else 0.5, c=r['cols'])
                
-    if smooth:
-        # overlay smooth kernels
-        
-        reso = 50j
-        xi, yi, zi = np.mgrid[
-            min((xyz.T)[0]):max((xyz.T)[0]):reso,
-            min((xyz.T)[1]):max((xyz.T)[1]):reso,
-            min((xyz.T)[2]):max((xyz.T)[2]):reso]
-        
-        coords = np.vstack([item.ravel() for item in [xi, yi, zi]])
-        
-        cs = np.unique(r['acs'])
-                               
-        for c in cs:
-              kde_ = gaussian_kde(xyz[r['acs'] == c].T)
-              density = kde_(coords).reshape(xi.shape)
-              
-              # create colormap
-              custom_rgba = list(np.array(r['cols'])[r['acs'] == c][0])
-              density_flat = density.ravel()
-              norm = plt.Normalize(density_flat.min(), density_flat.max())
-              colors = list(reversed([tuple(custom_rgba[:3] + [alpha]) 
-                            for alpha in np.linspace(0, 1, 256)]))
-              custom_cmap = LinearSegmentedColormap.from_list('custom_cmap', 
-                     colors, N=256)
-                     
-              ax.scatter(coords[0], coords[1], coords[2],
-                         c=custom_cmap(norm(density_flat)), 
-                         s=1, alpha=0.5)
-              
-
     if add_cents:
         # add centroids with size relative to volume
         if mapping !='Beryl':
@@ -1923,14 +2033,94 @@ def plot_xyz(mapping='Beryl', vers='concat', add_cents=False,
     ax.xaxis.set_major_locator(MaxNLocator(nbins=nbins))
     ax.yaxis.set_major_locator(MaxNLocator(nbins=nbins))
     ax.zaxis.set_major_locator(MaxNLocator(nbins=nbins))
-    
+
+    if ((mapping in tts__) or (mapping in PETH_types_dict)):
+        # Create a colorbar based on the colormap and normalization
+        mappable = mpl.cm.ScalarMappable(cmap=cmap, norm=norm)
+        mappable.set_array(r['rankings'])  # Set the data array for the colorbar
+        cbar = fig.colorbar(mappable, ax=ax, shrink=0.5, aspect=10)
+        cbar.set_label(f'mean {mapping} rankings')
+
     if alone:
-        ax.set_title(f'{mapping}_{vers}_{nclus}')
-    
+        ax.set_title(f'{mapping}_{vers}')
+
 #    if alone:
 #        fig.tight_layout()
 #        fig.savefig(Path(one.cache_dir,'dmn', 'imgs',
 #            f'{mapping}_{vers}_{nclus}_3d.png'),dpi=150)
+
+    if exa:
+        # add example time series; 20 from max to min equally spaced 
+        if (mapping not in tts__) and (mapping not in PETH_types_dict):
+            print('not implemented for other mappings')
+            return
+
+        
+        feat = 'concat_bd'
+        nrows = 10  # show 5 top cells in the ranking and 5 last
+        rankings_s = sorted(r['rankings'])
+        indices = [list(r['rankings']).index(x) for x in
+                    np.concatenate([rankings_s[:nrows//2], 
+                                    rankings_s[-nrows//2:]])]
+
+        fg, axx = plt.subplots(nrows=nrows,
+                                   sharex=True, sharey=False,
+                                   figsize=(7,7))                   
+
+        xx = np.arange(len(r[feat][0]))/c_sec 
+
+        kk = 0             
+        for ind in indices:
+                                
+            yy = r[feat][ind]
+
+            axx[kk].plot(xx, yy,
+                     color=r['cols'][ind],
+                     linewidth=2)
+
+            sss = (r['acs'][ind] + '\n' + str(r['pid'][ind][:3]))
+
+
+            axx[kk].set_ylabel(sss)
+
+            if kk != (len(indices) -1):
+                axx[kk].spines['top'].set_visible(False)
+                axx[kk].spines['right'].set_visible(False)
+                axx[kk].spines['bottom'].set_visible(False)                
+            else:
+
+                axx[kk].spines['top'].set_visible(False)
+                axx[kk].spines['right'].set_visible(False)
+                #axx[kk].spines['left'].set_visible(False)      
+                #axx[kk].tick_params(left=False, labelleft=False)
+                       
+            # plot vertical boundaries for windows
+            h = 0
+            for i in r['len']:
+            
+                xv = r['len'][i] + h
+                axx[kk].axvline(xv/c_sec, linestyle='--', linewidth=1,
+                            color='grey')
+                
+                ccc = ('r' if ((i == mapping) or 
+                        (i in PETH_types_dict[mapping])) else 'k')
+
+                if  kk == 0:            
+                    axx[kk].text(xv/c_sec - r['len'][i]/(2*c_sec), max(yy),
+                             '   '+i, rotation=90, 
+                             color=ccc, 
+                             fontsize=10, ha='center')
+            
+                h += r['len'][i] 
+            kk += 1                
+
+#        #axx.set_title(f'{s} \n {len(pts)} points in square')
+        axx[kk - 1].set_xlabel('time [sec]')
+
+        fg.suptitle(f'mapping: {mapping}, feat: {feat}')
+        fg.tight_layout()
+    
+
 
 
 def clus_grid():
@@ -2340,32 +2530,27 @@ def scatter_Beryl_similarity(ranks=False, hexbin_=False, anno=False):
     looking for max intersection of data
     '''
 
-    D = {'cartesian': trans_(get_centroids(dist_=True)),
-#         'concat': trans_(get_umap_dist(algo='umap_z', 
-#                                                vers='concat')),
-#         'surprise': trans_(get_umap_dist(algo='umap_z', 
-#                                                vers='surprise')),
-#         'reward': trans_(get_umap_dist(algo='umap_z',
-#                                                vers='reward')),
-#         'quiescence': trans_(get_umap_dist(algo='umap_z',
-#                                                vers='quiescence')),
-#         'resting': trans_(get_umap_dist(algo='umap_z',
-#                                                vers='resting')),
+    D = {k: trans_(get_umap_dist(algo='umap_z',vers=k))
+         for k in PETH_types_dict}
+    
+    D['cartesian']= trans_(get_centroids(dist_=True))
+
 #         '30ephys': trans_(get_umap_dist(algo='umap_e')),
 #         #'coherence': get_res(metric='coherence', 
                               #sig_only=True, combine_=True),
-         'granger': get_res(metric='granger', 
-                            sig_only=True, combine_=True),
+         #'granger': get_res(metric='granger', 
+                           # sig_only=True, combine_=True),
          #'structural3_sp': get_structural(fign=3, shortestp=True),
-         'axonal': get_structural(fign=3)
-         }
+         #'axonal': get_structural(fign=3)
+         
      
-#    tt = len(list(combinations(list(D.keys()),2)))
-#    nrows = 1 if tt == 1 else 4
-#    ncols = 1 if tt == 1 else tt//nrows 
-        
-    nrows = 3
-    ncols = 1    
+    tt = len(list(combinations(list(D.keys()),2)))
+    ncols = math.ceil(math.sqrt(tt))
+    nrows = math.ceil(tt / ncols)
+
+       
+#    nrows = 3
+#    ncols = 1    
         
      
     fig, ax = plt.subplots(ncols=ncols, nrows=nrows,
@@ -2407,7 +2592,7 @@ def scatter_Beryl_similarity(ranks=False, hexbin_=False, anno=False):
             ax[k].hexbin(gs, cs, cmap='Greys', gridsize=150)
         else:                
             ax[k].scatter(gs, cs, color='b' if ranks else 'k', 
-                          s=0.5, alpha=0.1, rasterized=True)
+                          s=0.1, alpha=0.1, rasterized=True)
 
         if anno:
      
@@ -2416,14 +2601,16 @@ def scatter_Beryl_similarity(ranks=False, hexbin_=False, anno=False):
                     (gs[i], cs[i]),
                     fontsize=5,color='b' if ranks else 'k')
                        
+        cc = ('r' if 'cartesian' in (metrics[nf[k][0]], metrics[nf[k][1]]) 
+              else 'k')              
         a = 'ranks' if ranks else ''
-        ax[k].set_xlabel(f'{metrics[nf[k][0]]} ' + a)       
-        ax[k].set_ylabel(f'{metrics[nf[k][1]]} ' + a)
+        ax[k].set_xlabel(f'{metrics[nf[k][0]]} ' + a, color=cc)       
+        ax[k].set_ylabel(f'{metrics[nf[k][1]]} ' + a, color=cc)
         ax[k].spines['right'].set_visible(False)
         ax[k].spines['top'].set_visible(False)
         ss = (f"{np.round(corp,2) if pp<0.05 else '_'}, "
               f"{np.round(cors,2) if ps<0.05 else '_'}")
-        ax[k].set_title(ss + f'\n {len(pts)}')
+        ax[k].set_title(ss)# + f'\n {len(pts)}')
     
         print(metrics[nf[k][0]], metrics[nf[k][1]], len(pts))
         print(f'pe: (r,p)=({np.round(corp,2)},{np.round(pp,2)})')
@@ -3022,7 +3209,7 @@ def plot_single_feature(algo='umap_z', vers='concat', mapping='Beryl',
     
     fig, ax = plt.subplots(figsize=(6.97, 3.01))
     
-    xx = np.arange(len(r[feat][0])) /480  # convert to sec
+    xx = np.arange(len(r[feat][0])) /c_sec  # convert to sec
     
     # pick random cell from region
     samp = random.choices(np.where(r['acs'] == reg)[0],k=1)[0]
@@ -3046,11 +3233,11 @@ def plot_single_feature(algo='umap_z', vers='concat', mapping='Beryl',
     for i in d2:
     
         xv = d2[i] + h
-        ax.axvline(xv/480, linestyle='--', linewidth=1,
+        ax.axvline(xv/c_sec, linestyle='--', linewidth=1,
                     color='grey')
         
         # place text in middle of interval
-        ax.text(xv/480 - d2[i]/(2*480), max(yy),
+        ax.text(xv/c_sec - d2[i]/(2*c_sec), max(yy),
                  '   '+i, rotation=90, color='k', 
                  fontsize=10, ha='center')
     
@@ -3305,8 +3492,8 @@ def compare_two_goups(vers='concat', filt = 'VISp'):
             (df['x'] < 0) if (hem == 'left') else (df['x'] >= 0))
 
         n_cells = sum(idc)
-        yy = np.mean(r['concat_z'][idc],axis=0)
-        xx = np.arange(len(yy)) /480
+        yy = np.mean(r['concat_bd'][idc],axis=0)
+        xx = np.arange(len(yy)) /c_sec
         axs[kk].plot(xx, yy,
                  color=colsd[hem],
                  linewidth=2, 
@@ -3328,17 +3515,18 @@ def compare_two_goups(vers='concat', filt = 'VISp'):
         for i in d2:
         
             xv = d2[i] + h
-            axs[kk].axvline(xv/480, linestyle='--', linewidth=1,
+            axs[kk].axvline(xv/c_sec, linestyle='--', linewidth=1,
                         color='grey')
             
             if kk == 0: 
-                axs[kk].text(xv/480 - d2[i]/(2*480), max(yy),
+                axs[kk].text(xv/c_sec - d2[i]/(2*c_sec), max(yy),
                          '   '+i, rotation=90, color='k', 
                          fontsize=10, ha='center')        
             h += d2[i]
         kk += 1
 
     fig.tight_layout()
+
 
 
 
