@@ -72,7 +72,9 @@ warnings.filterwarnings("ignore")
 #mpl.use('QtAgg')
 
 plt.ion() 
- 
+
+
+
 np.set_printoptions(threshold=sys.maxsize)
 
 plt.rcParams.update(plt.rcParamsDefault)
@@ -578,6 +580,7 @@ def get_allen_info(rerun=False):
     r = np.load(pth_dmna, allow_pickle=True).flat[0]
     return r['dfa'], r['palette']  
 
+_,pal = get_allen_info()
 
 def regional_group(mapping, algo, vers='concat', norm_=False,
                    nclus = 13, rerun=False):
@@ -596,9 +599,6 @@ def regional_group(mapping, algo, vers='concat', norm_=False,
 
     r = np.load(Path(pth_dmn, f'{vers}_norm{norm_}.npy'),
                  allow_pickle=True).flat[0]
-
-    # remove cells in void or root             
-    rmv_void_rt = False
 
     # add point names to dict
     r['nums'] = range(len(r[algo][:,0]))
@@ -761,7 +761,7 @@ def regional_group(mapping, algo, vers='concat', norm_=False,
         
         # Handle additional processing as necessary
         av = None
-        rmv_void_rt = True
+        
 
 
     elif mapping in tts__:
@@ -797,7 +797,7 @@ def regional_group(mapping, algo, vers='concat', norm_=False,
         cols = cmap(r['rankings']/max(r['rankings'])) 
         regs = Counter(acs)  
         av = None       
-        rmv_void_rt = True
+        
 
 
     elif mapping == 'functional':
@@ -850,7 +850,7 @@ def regional_group(mapping, algo, vers='concat', norm_=False,
         regs = Counter(acs)  
         av = {reg: [np.mean(r[algo][acs == reg], axis=0), pa[reg]] 
               for reg in regs}
-              
+        rmv_void_rt = True              
 
     if 'end' in r['len']:
         del r['len']['end']
@@ -858,18 +858,6 @@ def regional_group(mapping, algo, vers='concat', norm_=False,
     r['acs'] = np.array(acs)
     r['cols'] = np.array(cols)
     r['av'] = av
-
-    if rmv_void_rt:
-       # remove void and root
-       zeros = np.arange(len(acs))[np.bitwise_or(acs == 'root',
-                                                 acs == 'void')]
-       for key in r:
-           if r[key] is None:
-                continue
-           if len(r[key]) == len(acs):
-               r[key] = np.delete(r[key], zeros, axis=0)
-                  
-       acs = np.delete(acs, zeros) 
 
     if (mapping == 'kmeans') and (algo == 'umap_z'):
         pth__ = Path(one.cache_dir, 'dmn', 'kmeans_group.npy')
@@ -1645,7 +1633,7 @@ def plot_cluster_mean_PETHs(r, mapping, feat, vers='concat',
 
 
 def smooth_dist(dim=2, algo='umap_z', mapping='Beryl', show_imgs=False, restr=False,
-                   norm_=True, dendro=True, nmin=50, vers='concat'):
+                norm_=True, dendro=True, nmin=50, vers='concat'):
     """
     Generalized smoothing and analysis of N-dimensional point clouds.
     
@@ -1736,7 +1724,7 @@ def smooth_dist(dim=2, algo='umap_z', mapping='Beryl', show_imgs=False, restr=Fa
             
             k += 1
 
-        fig.text(0.01, 0.8, f'{algo} \n embedded activity', fontsize=14, 
+        fig.text(0.02, 0.8, f'{algo} \n embedded activity', fontsize=14, 
             rotation='vertical', va='center', ha='center')
 
         # Second row: Smoothed density (Max projection if dim > 3)
@@ -1751,7 +1739,7 @@ def smooth_dist(dim=2, algo='umap_z', mapping='Beryl', show_imgs=False, restr=Fa
             ax.axis('off')
             k += 1
 
-        fig.text(0.01, 0.5, 'Smoothed 2d \n projected Density', fontsize=14, 
+        fig.text(0.02, 0.5, 'Smoothed 2d \n projected Density', fontsize=14, 
             rotation='vertical', va='center', ha='center')
 
         # Third row: Feature vectors
@@ -1783,7 +1771,7 @@ def smooth_dist(dim=2, algo='umap_z', mapping='Beryl', show_imgs=False, restr=Fa
 
             k += 1
 
-        fig.text(0.03, 0.25, 'Avg. Feature \n Vectors', 
+        fig.text(0.02, 0.25, 'Avg. Feature \n Vectors', 
             fontsize=14, rotation='vertical', va='center', ha='center')
 
         fig.tight_layout()
@@ -1815,9 +1803,9 @@ def smooth_dist(dim=2, algo='umap_z', mapping='Beryl', show_imgs=False, restr=Fa
 
         ax0 = axs[1]
     else:
-        fig0, ax0 = plt.subplots(figsize=(6, 6))
+        fig0, ax0 = plt.subplots(figsize=(3, 3))
 
-    ax0.set_title(f'{algo}, {mapping}')               
+    ax0.set_title(f'{algo}, {mapping}, {dim} dims')               
     ims = ax0.imshow(res, origin='lower', interpolation=None)
     ax0.set_xticks(np.arange(len(regs)), regs,
                    rotation=90, fontsize=fontsize)
@@ -3342,17 +3330,20 @@ def var_expl(minreg=20):
   
 
     
-def clus_freqs(foc='kmeans', nmin=50, nclus=13, vers='concat', get_res=False):
+def clus_freqs(foc='kmeans', nmin=50, nclus=13, vers='concat', get_res=False,
+               rerun=False, norm_=False):
 
     '''
     For each k-means cluster, show an Allen region bar plot of frequencies,
     or vice versa
     foc: focus, either kmeans or Allen
     get_res: return results
+    norm_: normalize distribution so they all sum up to 1
     '''
+    
+    pthres = Path(pth_dmn.parent, f'nclus{nclus}_{foc}_nrm_{norm_}.npy')
 
-    if get_res:
-        pthres = Path(pth_dmn.parent, f'nclus{nclus}_{foc}.npy')
+    if get_res and not rerun:
         if pthres.is_file():
             return np.load(pthres, allow_pickle=True).flat[0]
 
@@ -3393,13 +3384,18 @@ def clus_freqs(foc='kmeans', nmin=50, nclus=13, vers='concat', get_res=False):
             for reg in reg_order:
                 if reg in counts:
                     reg_order[reg] = counts[reg] 
-                    
+
+            values = list(reg_order.values())
+
+            if norm_:
+               values = np.array(values)/float(sum(values))           
+
             # Preparing data for plotting
             labels = list(reg_order.keys())
-            values = list(reg_order.values())        
+            values = list(values)        
             colors = [cols_dict[label] for label in labels]                
 
-            d[clus] = values
+            d[clus] = values 
 
             # Creating the bar chart
             bars = axs[k].bar(labels, values, color=colors)
@@ -3420,10 +3416,7 @@ def clus_freqs(foc='kmeans', nmin=50, nclus=13, vers='concat', get_res=False):
                             left=0.037,
                             right=0.992,
                             hspace=0.225,
-                            wspace=0.2)       
-
-        if get_res:
-            return d
+                            wspace=0.2)
 
     elif foc == 'Beryl':
 
@@ -3441,11 +3434,12 @@ def clus_freqs(foc='kmeans', nmin=50, nclus=13, vers='concat', get_res=False):
         print(len(reg_ord), f'regions with at least {nmin} cells')
         ncols = int((len(reg_ord) ** 0.5) + 0.999)
         nrows = (len(reg_ord) + ncols - 1) // ncols
-        
+
         fig, axs = plt.subplots(nrows = nrows, 
                                 ncols = ncols,
                                 figsize=(18.79,  15),
-                                sharex=True)
+                                sharex=True,
+                                sharey=True if norm_ else False)
         
         axs = axs.flatten()
                                
@@ -3466,12 +3460,17 @@ def clus_freqs(foc='kmeans', nmin=50, nclus=13, vers='concat', get_res=False):
             clus_order = {clus: 0 for clus in cluss}
             for clus in clus_order:
                 if clus in counts:
-                    clus_order[clus] = counts[clus] 
-                    
+                    clus_order[clus] = counts[clus]
+
+            values = list(clus_order.values())
+            if norm_:
+               values = np.array(values)/float(sum(values))    
+
             # Preparing data for plotting
             labels = list(clus_order.keys())
-            values = list(clus_order.values())        
+            values = list(values)        
             colors = [cols_dict[label] for label in labels]                
+
 
             d[reg] = values          
 
@@ -3494,13 +3493,63 @@ def clus_freqs(foc='kmeans', nmin=50, nclus=13, vers='concat', get_res=False):
                      
         fig.tight_layout()
 
-        if get_res:
-            return d
+    elif foc == 'dec':
+        # Get data from get_dec_bwm()
+        d = get_dec_bwm()
 
-    fig.savefig(Path(pth_dmn.parent, 'imgs',
-                     f'{foc}_{nclus}_{vers}.png')) 
-    
+        # Order regions by canonical list 
+        p = (Path(iblatlas.__file__).parent / 'beryl.npy')
+        regs_can = br.id2acronym(np.load(p), mapping='Beryl')
+        regs_ = list(d.keys())
+        reg_ord = []
+        for reg in regs_can:
+            if reg in regs_ :
+                reg_ord.append(reg)
 
+        print(len(reg_ord), f'regions')
+        ncols = int((len(reg_ord) ** 0.5) + 0.999)
+        nrows = (len(reg_ord) + ncols - 1) // ncols
+
+        fig, axs = plt.subplots(nrows=nrows, ncols=ncols,
+                                figsize=(18.79, 15), sharex=True, sharey=True)
+        axs = axs.flatten()
+
+        rrcols = ['r', 'g', 'b', 'y', 'c', 'm', 'k', 'o', 'p']
+        cols_dictr = dict(list(Counter(zip(list(r_a['acs']),
+                    [tuple(color) for color in r_a['cols']]))))
+        # Iterate over regions
+        for k, reg in enumerate(reg_ord):
+            if reg not in d:
+                continue
+            
+            # Prepare data
+            values = d[reg]
+            labels = range(len(values))  # Assuming `d[reg]` is a list of scores
+            colors = rrcols[:len(values)]
+
+            if norm_:
+                values = np.array(values) / float(sum(values))    
+
+            # Create the bar chart
+            bars = axs[k].bar(labels, values, color=colors)
+            axs[k].set_ylabel(reg, color=cols_dictr[reg])
+            axs[k].set_xticks(labels)
+            axs[k].set_xticklabels(labels, fontsize=8)
+            
+            for ticklabel, bar in zip(axs[k].get_xticklabels(), bars):
+                ticklabel.set_color(bar.get_facecolor())        
+
+            axs[k].set_xlim(-0.5, len(labels)-0.5)
+            
+        fig.canvas.manager.set_window_title(
+            f'Values from get_dec_bwm per Beryl region; vers = {vers}')
+        fig.tight_layout()
+    # fig.savefig(Path(pth_dmn.parent, 'imgs',
+    #                  f'{foc}_{nclus}_{vers}_nrm_{norm_}.png'))
+
+    np.save(pthres, d, allow_pickle=True)
+    if get_res:
+        return d
 
 def count_trials():
 
@@ -3589,7 +3638,8 @@ def compare_two_goups(vers='concat', filt = 'VISp'):
     fig.tight_layout()
 
 
-def plot_rastermap(feat='concat_z', exa = False, mapping='kmeans'):
+def plot_rastermap(feat='concat_z', exa = False, 
+                   mapping='kmeans', alpha=0.9):
     """
     Function to plot a rastermap with vertical segment boundaries 
     and labels positioned above the segments.
@@ -3597,47 +3647,98 @@ def plot_rastermap(feat='concat_z', exa = False, mapping='kmeans'):
     Extra panel with colors of mapping.
 
     """
-    vers='concat'
+
     r = regional_group(mapping, 'umap_z')
+
+    if feat == 'concat_z_no_mistake':
+
+        # remove all mistake PETHs
+        to_remove = []
+
+        # to_remove = ['stimLbRcR',
+        #             'stimLbLcR',
+        #             'stimRbLcL',
+        #             'stimRbRcL',
+        #             'sLbRchoiceR',
+        #             'sLbLchoiceR',
+        #             'sRbLchoiceL',
+        #             'sRbRchoiceL']
+    
+        # Extract relevant information from the data
+        # Initialize an empty list to store the indices to keep
+        keep_indices = []
+
+        # Get segment names and lengths
+        segment_names = list(r['len'].keys())
+        segment_lengths = list(r['len'].values())
+
+        # Track the current start index
+        current_idx = 0
+
+        # Identify indices to keep
+        for i, segment in enumerate(segment_names):
+            segment_length = segment_lengths[i]
+            if segment not in to_remove:
+                # Add indices of this segment to the keep list
+                keep_indices.extend(range(current_idx, 
+                                    current_idx + segment_length))
+            # Update the current index for the next segment
+            current_idx += segment_length
+
+        # Filter the data to keep only the desired indices
+        
+
+        data = r['concat_z'][:, keep_indices]
+        r[feat] = data
+        # Update r['len'] to reflect the new structure
+        r['len'] = {k: v for k, v in r['len'].items() if k not in to_remove}
+        print('embedding rastermap ...')
+
+        # Fit the Rastermap model
+        model = Rastermap(bin_size=1).fit(data)
+
+        r['isort'] = model.isort
+
     if exa:
         plot_cluster_mean_PETHs(r,mapping, feat)
 
+
     spks = r[feat]
     isort = r['isort']
+    data = spks[isort]
+    row_colors = np.array(r['cols'])[isort]  # Reorder colors by sorted index
 
+    n_rows, n_cols = data.shape
     # Create a figure for the rastermap
     fig, ax = plt.subplots(figsize=(10, 8))
-    # Plot the imshow for the embedding
-    im = ax.imshow(spks[isort], vmin=0, vmax=1.5, cmap="gray_r",
-                   aspect="auto")
+
+    # plot in greys, then overlay color (good for big picture)
+    im = ax.imshow(data, vmin=0, vmax=1.5, cmap="gray_r",
+                aspect="auto", interpolation="none")
+
+    
+    for i, color in enumerate(row_colors):
+        ax.hlines(i, xmin=0, xmax=n_cols, colors=color, 
+        lw=.01, alpha=alpha)
+
     ax.set_xlabel('time [bins]')    
     ax.set_ylabel('cells')
-
-    row_colors = np.array(r['cols'])[isort]  # Reorder colors by sorted index
-    for i, color in enumerate(row_colors):
-        ax.hlines(i, xmin=0, xmax=spks.shape[1], colors=color, 
-        lw=0.01, alpha=0.9)
-
-    # Collect the length data for segments based on the version
-    d2 = {}
-    for sec in PETH_types_dict[vers]:
-        d2[sec] = r['len'][sec]
 
     ylim = ax.get_ylim()  
 
     # Plot vertical boundaries and add text labels
     h = 0
-    for segment in d2:
-        xv = h + d2[segment]  # Cumulative position of the vertical line
+    for segment in r['len']:
+        xv = h + r['len'][segment]  # Cumulative position of the vertical line
         ax.axvline(xv, linestyle='--', linewidth=1, color='grey')  # Draw vertical line
         
         # Add text label above the segment boundary
-        midpoint = h + d2[segment] / 2  # Midpoint of the segment
+        midpoint = h + r['len'][segment] / 2  # Midpoint of the segment
         ax.text(midpoint, ylim[1] + 0.05 * (ylim[1] - ylim[0]), 
                 segment, rotation=90, color='k', 
                 fontsize=10, ha='center')  # Label positioned above the plot
         
-        h += d2[segment]  # Update cumulative sum for the next segment
+        h += r['len'][segment]  # Update cumulative sum for the next segment
 
 
     # Remove top and right spines
@@ -3648,19 +3749,24 @@ def plot_rastermap(feat='concat_z', exa = False, mapping='kmeans'):
     plt.show()
 
 
-def non_flatness_score(d, get_cells=False):
+def non_flatness_score(d, get_cells=False, norm_=True):
     '''
     for each item compute the non-flatness score as the 
     wasserstein metric to a flat distibution
     i.e. zero when flat, high when far from it
     d: dict with region acronyms as keys and distributions as values
+    norm_: distribution sums to 1
     '''
 
     scores = {}
     for reg in d:
 
         n_cells = np.sum(d[reg])
-        flat_dist = [n_cells/len(d[reg])] * len(d[reg])
+        if norm_:
+            d[reg] = np.array(d[reg])/n_cells
+
+        flat_dist = [np.sum(d[reg])/len(d[reg])] * len(d[reg])
+
         emd = wasserstein_distance(d[reg], flat_dist)
         
         if get_cells:
@@ -3668,15 +3774,15 @@ def non_flatness_score(d, get_cells=False):
         else:    
             scores[reg] = emd
 
-    return scores
+    return dict(sorted(scores.items(), key=lambda item: item[1]))
 
 
-def plot_xyz_cents(score='clus_flat', ax=None):
+def plot_xyz_cents(foc='Beryl', ax=None, norm_=True):
 
     '''
     3d plot of feature per Beryl region centroid
     stars for region volumes and centroids
-    colored by 'Beryl' and 'score',
+    colored by 'Beryl' and 'foc',
     score in 'clus_flat', 'dec_flat'
     i.e. flatness of distribution of clusters or decoding scores
     '''
@@ -3684,12 +3790,20 @@ def plot_xyz_cents(score='clus_flat', ax=None):
     alone = False
     if not ax:
         alone = True
-        fig = plt.figure(figsize=(8.43,7.26), label=f'{score}')
+        fig = plt.figure(figsize=(8.43,7.26), label=f'{foc}')
         ax = fig.add_subplot(111,projection='3d')
 
-    if score == 'clus_flat':
-        d = clus_freqs(foc='Beryl', get_res=True)    
-        fs = non_flatness_score(d)
+    if foc == 'Beryl':
+        d = clus_freqs(foc=foc, get_res=True, norm_=norm_) 
+
+    elif foc == 'dec':
+        d = get_dec_bwm()
+
+    else:
+        print('??? what score')
+        return
+
+    fs = non_flatness_score(d, norm_=norm_)
 
     regs = list(Counter(fs.keys()))
     centsd = get_centroids()
@@ -3712,7 +3826,8 @@ def plot_xyz_cents(score='clus_flat', ax=None):
     cols = cmap(norm(scores))
 
     scatter = ax.scatter(cents[:,0], cents[:,1], cents[:,2], linewidths=3,
-                marker='o', s = vols, color=cols, edgecolor=colsB)
+                marker='o', s = vols, color=cols, edgecolor=colsB,
+                depthshade=False)
                        
     scalef = 1.2                  
     ax.view_init(elev=45.78, azim=-33.4)
@@ -3734,8 +3849,206 @@ def plot_xyz_cents(score='clus_flat', ax=None):
     ax.yaxis.set_major_locator(MaxNLocator(nbins=nbins))
     ax.zaxis.set_major_locator(MaxNLocator(nbins=nbins))
 
+    ax.set_title(f'{foc}, norm:{norm_}')
+
     cbar = fig.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), ax=ax, 
                         fraction=0.02, pad=0.1)
-    cbar.set_label('non-flatness score \n low is flat distribution',
+    cbar.set_label('the lower the flatter the distribution',
                    fontsize=fontsize)
     cbar.ax.tick_params(labelsize=12)
+
+
+def get_dec_bwm(nscores=3):
+    """
+    Calculate the average score per variable for each region, 
+    averaged across recordings.
+
+    Parameters:
+    - nscores: Minimum number of scores for a region to be included.
+
+    Returns:
+    - A dictionary with region acronyms as keys and lists of 
+      average scores per variable as values.
+    """        
+            
+    dec_pth = Path(one.cache_dir, 'bwm_res', 'bwm_figs_data', 'decoding') 
+    varis = ['stimside', 'choice', 'feedback', 'wheel-speed', 'wheel-velocity']
+
+    res = {}
+    
+
+    for vari in varis:
+        # Load pooled data based on variable
+        data_file = dec_pth / f'{vari}_stage2.pqt'
+        d = pd.read_parquet(data_file)      
+        d = d.dropna(subset=['score', 'region'])
+        
+        # Filter out regions that do not meet the minimum score count
+        score_count = d.groupby(['region'])[
+            'score'].count().reset_index(name='score_count')
+
+        valid_regions = score_count[
+            score_count['score_count'] >= nscores]['region']
+
+        d = d[d['region'].isin(valid_regions)]
+
+        # Calculate mean score for each region
+        mean_scores = d.groupby('region')['score'].mean()
+
+        # Normalize scores for the current variable
+        min_score, max_score = mean_scores.min(), mean_scores.max()
+        normalized_scores = (mean_scores - min_score) / (max_score - min_score)
+
+        # Store normalized scores in the result dictionary
+        res[vari] = normalized_scores
+
+    # Combine dictionaries so each region has a list of scores across variables
+    combined_res = {}
+    for vari in varis:
+        for region, score in res[vari].items():
+            if region not in combined_res:
+                combined_res[region] = [None] * len(varis)  # Initialize list for each region
+            combined_res[region][varis.index(vari)] = score  # Assign normalized score to the correct index
+
+    return combined_res
+
+
+def scat_dec_clus(norm_=True, ari=True):
+    
+    # Replace the example dictionaries with the processed scores
+    be = non_flatness_score(clus_freqs(foc='Beryl', get_res=True), 
+                            norm_=norm_) 
+
+    if ari:
+        d0 = np.load('/home/mic/wasserstein_fromflatdist_13_concat_nd2.npy',
+                     allow_pickle=True).flat[0]
+        de = {}
+        k = 0
+        for reg in d0['regs']:
+            de[reg] = d0['res'][k]
+            k+=1
+
+    else:                             
+        de = non_flatness_score(clus_freqs(foc='dec', get_res=True),
+                                norm_=norm_)  
+
+    # Merge the scores to get common regions
+    common_regions = set(be.keys()).intersection(de.keys())
+    merged_data = {region: (be[region], de[region]) for region in common_regions}
+
+    # Separate values for plotting
+    x = [merged_data[region][0] for region in merged_data]
+    y = [merged_data[region][1] for region in merged_data]
+    colors = [pal[region] for region in merged_data]
+    labels = list(merged_data.keys())
+
+    # Fit regression line
+    from scipy.stats import linregress, pearsonr
+
+    slope, intercept, r_value, _, _ = linregress(x, y)
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    for i, region in enumerate(labels):
+        ax.scatter(x[i], y[i], color=colors[i], label=region)
+        ax.text(x[i], y[i], region, color=colors[i], fontsize=9, ha='left')
+
+    # Plot regression line
+    xx = np.linspace(min(x), max(x), 100)
+    yy = slope * xx + intercept
+    ax.plot(xx, yy, color='black', linestyle='--', label=f'Fit: y={slope:.2f}x+{intercept:.2f}')
+
+    # Calculate Pearson correlation coefficient
+    corr, p = pearsonr(x, y)
+    ax.text(0.05, 0.95, f"Pearson r,p = {corr:.2f},{p:.4f}", 
+            transform=ax.transAxes, fontsize=12, verticalalignment='top')
+
+    # Set labels and title
+    ax.set_xlabel('Beryl_clusters (non_flatness_score(d_b))', fontsize=12)
+    ax.set_ylabel('BWM dec (non_flatness_score(d_d))' if not ari else
+                  "ari's non-flatness-scores", fontsize=12)
+
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_brain_region_counts(start=None, end=None, nmin=50):
+    """
+    Plot a bar chart of brain region counts, color-coded by a given palette.
+    
+    Parameters:
+    - data (dict or Counter): Dictionary or Counter object with region names as keys and counts as values.
+    - norm_ binary, control for total cell counts across regions    
+    Output:
+    - Displays a bar chart with regions sorted by count.
+    """
+
+    r = regional_group('Beryl', 'umap_z')
+
+    start = start if start is not None else 0
+    end = end if end is not None else len(r['acs'])    
+    d0 = Counter(np.array(r['acs'])[r['isort']][start:end])
+    d00 = Counter(np.array(r['acs'])[r['isort']])
+
+    data = {}
+    for reg in d0:
+        if d00[reg] < nmin:
+            continue
+        data[reg] = d0[reg]/d00[reg]
+
+    # Sort data by values
+    sorted_data = dict(sorted(data.items(), key=lambda item: item[1], reverse=True))
+
+    # Extract keys, values, and colors
+    regions = list(sorted_data.keys())
+    values = list(sorted_data.values())
+    colors = [pal[region] for region in regions]
+
+    # Create the bar plot
+    plt.figure(figsize=(17.27,  6.  ))
+    plt.bar(regions, values, color=colors)
+
+    # Customize plot
+    plt.xticks(rotation=90, fontsize=8)
+    plt.ylabel('Count', fontsize=12)
+    plt.title(f'cells {start} to {end} in rastermap ordering', fontsize=14)
+    # Set x-tick labels to the same color as bars
+    ax = plt.gca()
+    for tick, color in zip(ax.get_xticklabels(), colors):
+        tick.set_color(color)
+    # Show the plot
+    plt.tight_layout()
+    plt.show()
+
+
+def embed_histograms_scatter(foc='dec', ax=None):
+
+    '''
+    per region, get histogram (bwm dec or PETH based k-means counts)
+    embed in 2d via umap
+    '''
+
+    alone = False
+    if not ax:
+        alone = True
+        fig, ax = plt.subplots(figsize=(8.43,7.26), label=f'{foc}')
+
+    if foc == 'Beryl':
+        d = clus_freqs(foc=foc, get_res=True, norm_=False) 
+
+    elif foc == 'dec':
+        d = get_dec_bwm()
+
+    regs, data = [reg for reg in d], np.array([d[reg] for reg in d])
+    cols = [pal[reg] for reg in regs]
+
+    emb = umap.UMAP(n_components=2).fit_transform(data)
+
+    ax.scatter(emb[:,0], emb[:,1], color='w')
+    # Plot colored text instead of scatter markers
+    for i, reg in enumerate(regs):
+        ax.text(emb[i, 0], emb[i, 1], reg, color=cols[i], 
+            fontsize=9, ha='center', va='center')
+  
+    ax.set_title(f'embed histograms of {foc}')
+    ax.set_xlabel('umap dim 1')
+    ax.set_ylabel('umap_dim 2')
