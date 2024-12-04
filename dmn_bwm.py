@@ -7,7 +7,7 @@ from iblatlas.regions import BrainRegions
 import iblatlas
 from iblatlas.plots import plot_swanson_vector 
 from brainbox.io.one import SessionLoader
-#import ephys_atlas.data
+import ephys_atlas.data
 #from reproducible_ephys_functions import figure_style, labs
 
 import sys
@@ -28,7 +28,7 @@ from statsmodels.stats.multitest import multipletests
 from sklearn.metrics import confusion_matrix
 from numpy.linalg import norm
 from scipy.stats import (gaussian_kde, f_oneway, 
-    pearsonr, spearmanr, kruskal, rankdata)
+    pearsonr, spearmanr, kruskal, rankdata, linregress)
 from scipy.spatial import distance
 from scipy.cluster import hierarchy
 from scipy.spatial.distance import squareform, cdist
@@ -134,6 +134,15 @@ PETH_types_dict = {
     'motor_init': ['motor_init'],
     'fback1': ['fback1'],
     'fback0': ['fback0']}      
+
+# https://github.com/XY-DIng/mouse_dist_wm/blob/main/results/area_list.csv
+harris_hierarchy = [
+    "VISp", "AUDp", "SSp-ll", "AUDd", "SSp-n", "SSp-ul", "AIp", "SSp-m", 
+    "SSp-un", "SSp-bfd", "VISl", "AUDv", "SSs", "VISC", "SSp-tr", "VISli", 
+    "MOp", "VISrl", "VISpl", "RSPv", "RSPd", "GU", "RSPagl", "PERI", "ECT", 
+    "VISal", "ILA", "ORBl", "AId", "VISpm", "ORBm", "PL", "VISpor", "FRP", 
+    "AUDpo", "TEa", "VISa", "VISam"
+]
 
 
 def put_panel_label(ax, k):
@@ -582,6 +591,7 @@ def get_allen_info(rerun=False):
 
 _,pal = get_allen_info()
 
+
 def regional_group(mapping, algo, vers='concat', norm_=False,
                    nclus = 13, rerun=False):
 
@@ -715,9 +725,9 @@ def regional_group(mapping, algo, vers='concat', norm_=False,
     elif mapping in PETH_types_dict:
         # For a group of PETH types defined in PETH_types_dict,
         # concatenate the defined PETH segments and rank cells by mean score
-        feat = 'concat_bd'
+        feat = 'concat_z'  # was _bd
         assert vers == 'concat', 'vers needs to be concat for this'
-        assert feat == 'concat_bd'
+        assert feat == 'concat_z'
 
         # Retrieve the list of PETH types to concatenate from PETH_types_dict
         peth_types_to_concat = PETH_types_dict[mapping]
@@ -741,8 +751,8 @@ def regional_group(mapping, algo, vers='concat', norm_=False,
         # Concatenate all the segments along the column axis
         concatenated_data = np.concatenate(concatenated_data, axis=1)
 
-        # Compute the mean for each neuron across the concatenated segment
-        means = np.mean(concatenated_data, axis=1)
+        # Compute the mean (max) for each neuron across the concatenated segment
+        means = np.mean(abs(concatenated_data), axis=1)
 
         # Rank neurons based on their mean values
         df = pd.DataFrame({'means': means})
@@ -767,9 +777,9 @@ def regional_group(mapping, algo, vers='concat', norm_=False,
     elif mapping in tts__:
         # for a specific PETH type, 
         # rank cells by mean score
-        feat = 'concat_bd'
+        feat = 'concat_z'  # was _bd
         assert vers == 'concat', 'vers needs to be concat for this'
-        assert feat == 'concat_bd'
+        assert feat == 'concat_z'
 
         # Extract relevant information from the data
         # Get the start and end indices of the PETH segment
@@ -782,7 +792,7 @@ def regional_group(mapping, algo, vers='concat', norm_=False,
         segment_data = r[feat][:, start_idx:end_idx]
 
         # Compute the mean for each neuron across the segment
-        means = np.mean(segment_data, axis=1)
+        means = np.mean(abs(segment_data), axis=1)
 
         # Get the ranking of neurons based on their mean values 
         df = pd.DataFrame({'means': means})
@@ -1018,7 +1028,7 @@ def get_all_PETHs(eids_plus=None, vers='concat'):
 
 
 def stack_concat(vers='concat', get_concat=False, get_tls=False, 
-                 ephys=False, norm_=False, n_neighbors=15):
+                 ephys=False, n_neighbors=15):
 
     '''
     stack concatenated PETHs; 
@@ -1084,19 +1094,7 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
         # pick PETHs to concatenate
         idc = [D_['trial_names'].index(x) for x in ttypes]
         
-        if norm_:
-            # normalize each PETH type independently
-            peths = []
-            for x in idc:
-                peth = D_['ws'][x]
-                mu = np.mean(peth)
-                std_ = np.sum(((np.mean(peth,axis=1) - mu)**2))**0.5
-                peth_n = (peth - mu)/std_
-                peths.append(peth_n)
-                if np.isnan(peth_n).flatten().any():
-                    print(s,x)
-        else:
-            peths = [D_['ws'][x] for x in idc]
+        peths = [D_['ws'][x] for x in idc]
                      
         # concatenate normalized PETHs             
         ws.append(np.concatenate(peths,axis=1))
@@ -1128,6 +1126,59 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
         
     print(len(cs), 'good cells stacked')
 
+    if ephys:
+        print('loading and concatenating ephys features ...')
+
+        #  include ephys atlas info
+        df = pd.DataFrame({'uuids':r['uuids']})
+        merged_df = load_atlas_data()
+        dfm = df.merge(merged_df, on=['uuids'])
+        
+        # remove cells that have no ephys info
+        dfr = set(r['uuids']).difference(set(dfm['uuids']))
+        rmv = [True if u in dfr else False for u in r['uuids']]
+
+        l0 = deepcopy(len(r['uuids']))
+        for key in r:
+            if len(r[key]) == l0:
+                r[key] = np.delete(r[key], rmv, axis=0)
+        
+        # make ephys feature vector, concat those:
+        fts = ['alpha_mean', 'alpha_std', 'depolarisation_slope', 
+            'peak_time_secs', 'peak_val', 
+            'polarity', 'psd_alpha', 'psd_alpha_csd', 
+            'psd_beta', 'psd_beta_csd', 'psd_delta', 
+            'psd_delta_csd', 'psd_gamma', 
+            'psd_gamma_csd', 'psd_lfp', 'psd_lfp_csd', 
+            'psd_theta', 'psd_theta_csd', 
+            'recovery_slope', 'recovery_time_secs', 
+            'repolarisation_slope', 
+            'rms_ap', 'rms_lf', 'rms_lf_csd', 'spike_count_x', 
+            'spike_count_y', 'tip_time_secs', 'tip_val', 
+            'trough_time_secs', 
+            'trough_val']
+
+        r['ephysTF'] = np.array([dfm[dfm['uuids'] == u][fts].values[0] 
+                            for u in r['uuids']])
+        
+        r['fts'] = fts
+               
+        # remove cells with nan/inf/allzero entries
+        goodcells = np.bitwise_and.reduce([
+                    [~np.isinf(k).any() for k in r['ephysTF']],
+                    [np.any(x) for x in r['ephysTF']],
+                    [~np.isnan(k).any() for k in r['ephysTF']]])
+                    
+        l0 = deepcopy(len(r['uuids']))
+        for key in r:
+            if len(r[key]) == l0:
+                r[key] = r[key][goodcells]
+
+        print('hierarchical clustering of ephys ...')
+        # dim reducing ephys features
+        r['umap_e'] = umap.UMAP(
+                        n_components=ncomp).fit_transform(r['ephysTF'])  
+
     if get_concat:
         return cs
 
@@ -1153,71 +1204,16 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
                       locality=0.75, time_lag_window=5, bin_size=1).fit(cs_z)
     r['isort'] = model.isort
     print('embedding umap...')
-    ncomp = 3
+    ncomp = 2
 
     r['umap_z'] = umap.UMAP(n_components=ncomp, 
         n_neighbors=n_neighbors).fit_transform(cs_z)
 
     print('embedding pca...')
     r['pca_z'] = PCA(n_components=ncomp).fit_transform(cs_z)
+    
 
-
-    if ephys:
-        print('loading and concatenating ephys features ...')
-
-        #  include ephys atlas info
-        df = pd.DataFrame({'uuids':r['uuids']})
-        merged_df = load_atlas_data()
-        dfm = df.merge(merged_df, on=['uuids'])
-        
-        # remove cells that have no ephys info
-        dfr = set(r['uuids']).difference(set(dfm['uuids']))
-        rmv = [True if u in dfr else False for u in r['uuids']]
-
-        l0 = deepcopy(len(r['uuids']))
-        for key in r:
-            if len(r[key]) == l0:
-                r[key] = np.delete(r[key], rmv, axis=0)
-     
-        
-        # make ephys feature vector, concat those:
-        fts = ['alpha_mean', 'alpha_std', 'depolarisation_slope', 
-        'peak_time_secs', 'peak_val', 
-        'polarity', 'psd_alpha', 'psd_alpha_csd', 
-        'psd_beta', 'psd_beta_csd', 'psd_delta', 
-        'psd_delta_csd', 'psd_gamma', 
-        'psd_gamma_csd', 'psd_lfp', 'psd_lfp_csd', 
-        'psd_theta', 'psd_theta_csd', 
-        'recovery_slope', 'recovery_time_secs', 
-        'repolarisation_slope', 
-        'rms_ap', 'rms_lf', 'rms_lf_csd', 'spike_count_x', 
-        'spike_count_y', 'tip_time_secs', 'tip_val', 
-        'trough_time_secs', 
-        'trough_val']
-
-        r['ephysTF'] = np.array([dfm[dfm['uuids'] == u][fts].values[0] 
-                            for u in r['uuids']])
-        
-        r['fts'] = fts
-        
-        
-        # remove cells with nan/inf/allzero entries
-        goodcells = np.bitwise_and.reduce([
-                    [~np.isinf(k).any() for k in r['ephysTF']],
-                    [np.any(x) for x in r['ephysTF']],
-                    [~np.isnan(k).any() for k in r['ephysTF']]])
-                    
-        l0 = deepcopy(len(r['uuids']))
-        for key in r:
-            if len(r[key]) == l0:
-                r[key] = r[key][goodcells]
-
-        print('hierarchical clustering ...')
-        # dim reducing ephys features
-        r['umap_e'] = umap.UMAP(
-                        n_components=ncomp).fit_transform(r['ephysTF'])      
-
-    np.save(Path(pth_dmn, f'{vers}_norm{norm_}.npy'),
+    np.save(Path(pth_dmn, f'{vers}_ephys{ephys}.npy'),
             r, allow_pickle=True)
             
             
@@ -2017,7 +2013,7 @@ def plot_xyz(mapping='Beryl', vers='concat', add_cents=False,
         r['cols'] = np.array(r['cols'])[idcs]
         r['acs'] = np.array(r['acs'])[idcs]
        
-    ax.scatter(xyz[:,0], xyz[:,1],xyz[:,2], 
+    ax.scatter(xyz[:,0], xyz[:,1],xyz[:,2], depthshade=False,
                marker='o', s = 1 if alone else 0.5, c=r['cols'])
                
     if add_cents:
@@ -2038,7 +2034,7 @@ def plot_xyz(mapping='Beryl', vers='concat', add_cents=False,
             _,pa = get_allen_info()
             cols = [pa[reg] for reg in regs]
             ax.scatter(cents[:,0], cents[:,1], cents[:,2], 
-                       marker='*', s = vols, color=cols)
+                       marker='*', s = vols, color=cols, depthshade=False)
                        
     scalef = 1.2                  
     ax.view_init(elev=45.78, azim=-33.4)
@@ -2069,7 +2065,7 @@ def plot_xyz(mapping='Beryl', vers='concat', add_cents=False,
         cbar.set_label(f'mean {mapping} rankings')
 
     if alone:
-        ax.set_title(f'{mapping}_{vers}')
+        ax.set_title(f'{mapping}')
 
 #    if alone:
 #        fig.tight_layout()
@@ -2083,7 +2079,7 @@ def plot_xyz(mapping='Beryl', vers='concat', add_cents=False,
             return
 
         
-        feat = 'concat_bd'
+        feat = 'concat_z'
         nrows = 10  # show 5 top cells in the ranking and 5 last
         rankings_s = sorted(r['rankings'])
         indices = [list(r['rankings']).index(x) for x in
@@ -2129,8 +2125,10 @@ def plot_xyz(mapping='Beryl', vers='concat', add_cents=False,
                 axx[kk].axvline(xv/c_sec, linestyle='--', linewidth=1,
                             color='grey')
                 
-                ccc = ('r' if ((i == mapping) or 
-                        (i in PETH_types_dict[mapping])) else 'k')
+                ccc = 'r' if i == mapping else 'k'
+                if mapping in PETH_types_dict:
+                    if i in PETH_types_dict[mapping]:
+                        ccc = 'r'
 
                 if  kk == 0:            
                     axx[kk].text(xv/c_sec - r['len'][i]/(2*c_sec), max(yy),
@@ -3639,7 +3637,7 @@ def compare_two_goups(vers='concat', filt = 'VISp'):
 
 
 def plot_rastermap(feat='concat_z', exa = False, 
-                   mapping='kmeans', alpha=0.9):
+                   mapping='kmeans', alpha=0.5):
     """
     Function to plot a rastermap with vertical segment boundaries 
     and labels positioned above the segments.
@@ -3714,7 +3712,7 @@ def plot_rastermap(feat='concat_z', exa = False,
 
     # plot in greys, then overlay color (good for big picture)
     im = ax.imshow(data, vmin=0, vmax=1.5, cmap="gray_r",
-                aspect="auto", interpolation="none")
+                aspect="auto")
 
     
     for i, color in enumerate(row_colors):
@@ -3913,60 +3911,83 @@ def get_dec_bwm(nscores=3):
     return combined_res
 
 
-def scat_dec_clus(norm_=True, ari=True):
-    
+def scat_dec_clus(norm_=True, ari=False):
     # Replace the example dictionaries with the processed scores
-    be = non_flatness_score(clus_freqs(foc='Beryl', get_res=True), 
-                            norm_=norm_) 
+    be = non_flatness_score(clus_freqs(foc='Beryl', get_res=True), norm_=norm_) 
 
     if ari:
-        d0 = np.load('/home/mic/wasserstein_fromflatdist_13_concat_nd2.npy',
-                     allow_pickle=True).flat[0]
+        d0 = np.load('/home/mic/wasserstein_fromflatdist_13_concat_nd2.npy', allow_pickle=True).flat[0]
         de = {}
         k = 0
         for reg in d0['regs']:
             de[reg] = d0['res'][k]
-            k+=1
-
+            k += 1
     else:                             
-        de = non_flatness_score(clus_freqs(foc='dec', get_res=True),
-                                norm_=norm_)  
+        de = non_flatness_score(clus_freqs(foc='dec', get_res=True), norm_=norm_)  
 
-    # Merge the scores to get common regions
-    common_regions = set(be.keys()).intersection(de.keys())
-    merged_data = {region: (be[region], de[region]) for region in common_regions}
+    # Harris hierarchy scores
+    harris_hierarchy_scores = {region: idx for idx, region in enumerate(harris_hierarchy)}
+
+    # Merge scores for common regions
+    common_regions = set(be.keys()).intersection(de.keys()).intersection(harris_hierarchy_scores.keys())
+    merged_data = {region: (be[region], de[region], harris_hierarchy_scores[region]) for region in common_regions}
 
     # Separate values for plotting
-    x = [merged_data[region][0] for region in merged_data]
-    y = [merged_data[region][1] for region in merged_data]
+    x_be = [merged_data[region][0] for region in merged_data]
+    y_de = [merged_data[region][1] for region in merged_data]
+    z_harris = [merged_data[region][2] for region in merged_data]
     colors = [pal[region] for region in merged_data]
     labels = list(merged_data.keys())
 
-    # Fit regression line
-    from scipy.stats import linregress, pearsonr
+    # Set up subplots
+    fig, axes = plt.subplots(1, 3, figsize=(15, 8))  # 3 rows, 1 column
 
-    slope, intercept, r_value, _, _ = linregress(x, y)
+    # Define scatter plot function for reuse
+    def scatter_panel(ax, x, y, xlabel, ylabel):
+        # Fit regression line
+        slope, intercept, r_value, _, _ = linregress(x, y)
+        xx = np.linspace(min(x), max(x), 100)
+        yy = slope * xx + intercept
+        ax.plot(xx, yy, color='black', linestyle='--', label=f'Fit: y={slope:.2f}x+{intercept:.2f}')
 
-    fig, ax = plt.subplots(figsize=(8, 6))
-    for i, region in enumerate(labels):
-        ax.scatter(x[i], y[i], color=colors[i], label=region)
-        ax.text(x[i], y[i], region, color=colors[i], fontsize=9, ha='left')
+        # Scatter points with labels
+        for i, region in enumerate(labels):
+            ax.scatter(x[i], y[i], color=colors[i], label=region)
+            ax.text(x[i], y[i], region, color=colors[i], fontsize=8, ha='left')
 
-    # Plot regression line
-    xx = np.linspace(min(x), max(x), 100)
-    yy = slope * xx + intercept
-    ax.plot(xx, yy, color='black', linestyle='--', label=f'Fit: y={slope:.2f}x+{intercept:.2f}')
+        # Pearson correlation
+        corr, p = pearsonr(x, y)
+        ax.text(0.05, 0.95, f"Pearson r,p = {corr:.2f},{p:.4f}", transform=ax.transAxes, fontsize=12, verticalalignment='top')
 
-    # Calculate Pearson correlation coefficient
-    corr, p = pearsonr(x, y)
-    ax.text(0.05, 0.95, f"Pearson r,p = {corr:.2f},{p:.4f}", 
-            transform=ax.transAxes, fontsize=12, verticalalignment='top')
+        # Set labels
+        ax.set_xlabel(xlabel, fontsize=12)
+        ax.set_ylabel(ylabel, fontsize=12)
 
-    # Set labels and title
-    ax.set_xlabel('Beryl_clusters (non_flatness_score(d_b))', fontsize=12)
-    ax.set_ylabel('BWM dec (non_flatness_score(d_d))' if not ari else
-                  "ari's non-flatness-scores", fontsize=12)
+    # Panel 1: `be` vs `de`
+    scatter_panel(
+        axes[0],
+        x_be, y_de,
+        xlabel='Beryl_clusters (non_flatness_score(d_b))',
+        ylabel='BWM dec (non_flatness_score(d_d))' if not ari else "ari's non-flatness-scores"
+    )
 
+    # Panel 2: `be` vs `harris`
+    scatter_panel(
+        axes[1],
+        x_be, z_harris,
+        xlabel='Beryl_clusters (non_flatness_score(d_b))',
+        ylabel='Harris hierarchy score'
+    )
+
+    # Panel 3: `de` vs `harris`
+    scatter_panel(
+        axes[2],
+        y_de, z_harris,
+        xlabel='BWM dec (non_flatness_score(d_d))' if not ari else "ari's non-flatness-scores",
+        ylabel='Harris hierarchy score'
+    )
+
+    # Adjust layout and show
     plt.tight_layout()
     plt.show()
 
