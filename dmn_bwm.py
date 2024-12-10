@@ -25,18 +25,22 @@ from sklearn.cluster import KMeans, SpectralClustering, SpectralCoclustering
 from sklearn.manifold import TSNE
 from scipy.cluster.hierarchy import linkage, fcluster, dendrogram
 from statsmodels.stats.multitest import multipletests
-from sklearn.metrics import confusion_matrix
 from numpy.linalg import norm
 from scipy.stats import (gaussian_kde, f_oneway, 
     pearsonr, spearmanr, kruskal, rankdata, linregress)
 from scipy.spatial import distance
 from scipy.cluster import hierarchy
 from scipy.spatial.distance import squareform, cdist
+
+from sklearn.metrics import confusion_matrix
 from sklearn.preprocessing import StandardScaler
 from random import shuffle
 from sklearn.linear_model import LogisticRegression
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.model_selection import KFold
+from joblib import Parallel, delayed
+from sklearn.utils import parallel_backend
+
 import gc
 from pathlib import Path
 import random
@@ -50,6 +54,7 @@ from itertools import combinations, chain
 from datetime import datetime
 import scipy.ndimage as ndi
 import hdbscan
+
 
 from matplotlib.axis import Axis
 import matplotlib.pyplot as plt
@@ -118,7 +123,6 @@ tts__ = ['inter_trial', 'blockL', 'blockR', 'block50',
          'sLbRchoiceR', 'sLbLchoiceR', 'sRbLchoiceL', 'sRbRchoiceL', 
          'sRbRchoiceR', 'sRbLchoiceR', 'choiceL', 'choiceR',  
          'fback1', 'fback0']
-#'fback0sRbL', 'fback0sLbR',
      
 
 PETH_types_dict = {
@@ -130,7 +134,6 @@ PETH_types_dict = {
     'stim_surp_incon': ['stimLbRcL','stimRbLcR'],
     'stim_surp_con': ['stimLbLcL', 'stimRbRcR'],
     'stim_all': ['stimLbRcL','stimRbLcR','stimLbLcL', 'stimRbRcR'],
-    #'resp_surp': ['fback0sRbL', 'fback0sLbR'],
     'motor_init': ['motor_init'],
     'fback1': ['fback1'],
     'fback0': ['fback0']}      
@@ -457,6 +460,9 @@ def concat_PETHs(pid, get_tts=False, vers='concat'):
     D = {}
     D['ids'] = np.array(clusters['atlas_id'])
     D['xyz'] = np.array(clusters[['x','y','z']])
+    D['channels'] = np.array(clusters['channels'])
+    D['axial_um'] = np.array(clusters['axial_um'])
+    D['lateral_um'] = np.array(clusters['lateral_um'])
     D['uuids'] = np.array(clusters['uuids'])
 
     tls = {}  # trial numbers for each type
@@ -514,7 +520,7 @@ def load_atlas_data():
                     
     merged_df0 = D['df_raw_features'].merge(D['df_channels'], 
                                      on=['pid','channel'])               
-                
+    merged_df0.reset_index(inplace=True)            
     merged_df = merged_df0.merge(
                 D['df_clusters'], 
                 on=['pid', 'axial_um', 'lateral_um'])                     
@@ -592,7 +598,7 @@ def get_allen_info(rerun=False):
 _,pal = get_allen_info()
 
 
-def regional_group(mapping, algo, vers='concat', norm_=False,
+def regional_group(mapping, algo, vers='concat', ephys=False,
                    nclus = 13, rerun=False):
 
     '''
@@ -607,7 +613,7 @@ def regional_group(mapping, algo, vers='concat', norm_=False,
         if ((pth__.is_file()) and (not rerun)):
             return np.load(pth__,allow_pickle=True).flat[0] 
 
-    r = np.load(Path(pth_dmn, f'{vers}_norm{norm_}.npy'),
+    r = np.load(Path(pth_dmn, f'{vers}_ephys{ephys}.npy'),
                  allow_pickle=True).flat[0]
 
     # add point names to dict
@@ -969,6 +975,170 @@ def get_pw_dist(rerun=False, mapping='Beryl', vers='concat',
     return d
 
 
+def NN(x, y, decoder='LDA', CC=1.0, confusion=False,
+       return_weights=False, shuf=False, verb=True):
+    '''
+    Decode region label y from activity x with parallelized cross-validation.
+    '''
+    
+    nclasses = len(Counter(y))
+    startTime = datetime.now()
+    
+    if shuf:
+        np.random.shuffle(y)
+
+    if len(x.shape) == 1:
+        x = x.reshape(-1, 1)
+
+    acs = []
+
+    # predicted labels for train/test
+    yp_train = []  
+    yp_test = []
+    
+    # true labels for train/test
+    yt_train = []  
+    yt_test = []  
+    
+    folds = 5
+    kf = KFold(n_splits=folds, shuffle=True)
+
+    if verb:
+        print('input dimension:', np.shape(x))    
+        print(f'# classes = {nclasses}')
+        print(f'uniform chance at 1 / {nclasses} = {np.round(1/nclasses,5)}')
+        print('x.shape:', x.shape, 'y.shape:', y.shape)
+        print(f'{folds}-fold cross validation')
+        if shuf: 
+            print('labels are SHUFFLED')
+
+    def process_fold(train_index, test_index):
+        """
+        Process a single fold of cross-validation.
+        """
+        sc = StandardScaler()
+        train_X = sc.fit_transform(x[train_index])
+        test_X = sc.fit_transform(x[test_index])
+
+        train_X = x[train_index]
+        test_X = x[test_index]
+
+        train_y = y[train_index]
+        test_y = y[test_index]
+
+        if decoder == 'LR':
+            clf = LogisticRegression(C=CC, random_state=0, n_jobs=-1)
+        elif decoder == 'LDA':
+            clf = LinearDiscriminantAnalysis()
+        else:
+            raise ValueError('Unsupported model type. Use "LR" or "LDA".')
+
+        clf.fit(train_X, train_y)
+        y_pred_test = clf.predict(test_X)
+        y_pred_train = clf.predict(train_X)
+
+        res_test = np.mean(test_y == y_pred_test)
+        res_train = np.mean(train_y == y_pred_train)
+
+        return (res_train, res_test, y_pred_train, y_pred_test, train_y, test_y)
+
+    with parallel_backend('loky'):
+        results = Parallel(n_jobs=-1)(
+            delayed(process_fold)(train_index, test_index)
+            for train_index, test_index in kf.split(x)
+        )
+
+    # Collect results from parallel processing
+    for res_train, res_test, y_pred_train, y_pred_test, train_y, test_y in results:
+        acs.append([res_train, res_test])
+        yp_train.append(y_pred_train)
+        yp_test.append(y_pred_test)
+        yt_train.append(train_y)
+        yt_test.append(test_y)
+
+    r_train = round(np.mean(np.array(acs)[:, 0]), 3)
+    r_test = round(np.mean(np.array(acs)[:, 1]), 3)
+    
+    if verb:
+        print('')
+        print('Mean train accuracy:', r_train)
+        print('Mean test accuracy:', r_test)
+        print('')
+        print('time to compute:', datetime.now() - startTime)
+        print('')
+        
+    if return_weights:
+        if decoder == 'LR':
+            clf = LogisticRegression(C=CC, random_state=0, n_jobs=-1)
+        else:
+            clf = LinearDiscriminantAnalysis()
+
+        clf.fit(x, y)
+        return clf.coef_
+
+    if confusion:
+        yt_train = np.concatenate(yt_train)
+        yp_train = np.concatenate(yp_train)
+        yt_test = np.concatenate(yt_test)
+        yp_test = np.concatenate(yp_test)
+        
+        cm_train = confusion_matrix(yt_train, yp_train, normalize='pred')
+        cm_test = confusion_matrix(yt_test, yp_test, normalize='pred')
+                   
+        return cm_train, cm_test, r_train, r_test                              
+
+    return np.array(acs)
+
+
+def decode(src='concat_z', mapping='Beryl', minreg=20, decoder='LDA', 
+           algo='umap_z', n_runs = 1, confusion=False):
+    
+    '''
+    src in ['concat', 'concat_z', 'ephysTF']
+    '''
+    
+           
+    print(src, mapping, f', minreg: {minreg},', decoder)
+                               
+    r = regional_group(mapping, algo)
+     
+    # get average points and color per region
+    regs = Counter(r['acs'])
+    
+    x = r[src]
+    y = r['acs']
+
+    # restrict to regions with minreg cells
+    regs2 = [reg for reg in regs if regs[reg]>minreg]
+    mask = [True if ac in regs2 else False for ac in r['acs']]
+
+    x = x[mask]    
+    y = y[mask]
+    
+    # remove void and root
+    mask = [False if ac in ['void', 'root'] else True for ac in y]
+    x = x[mask]    
+    y = y[mask]  
+    regs = Counter(y)  
+
+    if confusion:
+        cm_train, cm_test, r_train, r_test = NN(x, y, 
+            decoder=decoder, confusion=True)
+        return cm_train, cm_test, regs, r_train, r_test    
+
+    
+    res = []
+    res_shuf = []  
+    for i in range(n_runs):
+        y_ = deepcopy(y)
+        
+        res.append(NN(x, y_, decoder=decoder, shuf=False, 
+                      verb=False if n_runs > 1 else True))
+        res_shuf.append(NN(x, y_, decoder=decoder, shuf=True, 
+                      verb=False if n_runs > 1 else True))        
+            
+    return res, res_shuf
+
 
 '''
 ###
@@ -1044,7 +1214,7 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
     # pool data
     
     r = {}
-    kes = ['ids', 'xyz', 'uuids','pid']
+    kes = ['ids', 'xyz', 'uuids','pid','axial_um', 'lateral_um', 'channels']
     for ke in kes:
         r[ke] = []   
 
@@ -1058,12 +1228,11 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
     tlss = {}  # for stats on trial numbers
 
 
-    df = bwm_query(one)    
+    df = bwm_query(one)   
     def pid__(eid,probe_name):
         return df[np.bitwise_and(df['eid'] == eid, 
                           df['probe_name'] == probe_name
                           )]['pid'].values[0]
-
 
     ws = []
     # group results across insertions
@@ -1126,22 +1295,46 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
         
     print(len(cs), 'good cells stacked')
 
+    ptypes = [x for x in D_['trial_names']
+              if x in ttypes]
+
+    idc = [D_['trial_names'].index(x) for x in ttypes]          
+    r['len'] = dict(zip(ptypes,
+                    [D_['ws'][x].shape[1] for x in idc]))
+
+    # r['concat'] = cs
+
+    cs_z = zscore(cs,axis=1)
+    r['concat_z'] = cs_z
+
+    if get_concat:
+        return cs
+
+    # n components for PCA, umap ... 
+    ncomp = 2
+
     if ephys:
         print('loading and concatenating ephys features ...')
 
-        #  include ephys atlas info
-        df = pd.DataFrame({'uuids':r['uuids']})
-        merged_df = load_atlas_data()
-        dfm = df.merge(merged_df, on=['uuids'])
-        
-        # remove cells that have no ephys info
-        dfr = set(r['uuids']).difference(set(dfm['uuids']))
-        rmv = [True if u in dfr else False for u in r['uuids']]
+        #  include ephys atlas info per channel, 
+        #  so some clusters have the same!
 
-        l0 = deepcopy(len(r['uuids']))
-        for key in r:
-            if len(r[key]) == l0:
-                r[key] = np.delete(r[key], rmv, axis=0)
+        df = pd.DataFrame({'uuids':r['uuids'], 
+                           'pid': r['pid'],
+                           'channels': r['channels'],
+                           'axial_um': r['axial_um'],
+                           'lateral_um':r['lateral_um'],
+                           'concat_z':[row for row in r['concat_z']]})
+
+        atlas_df = load_atlas_data()
+        atlas_df = atlas_df.drop_duplicates(
+            subset=['pid', 'axial_um', 'lateral_um'])
+
+        dfm = df.merge(atlas_df, 
+                     on=['pid', 'axial_um', 'lateral_um'], 
+                     how='left')
+
+        assert len(df) == len(dfm)
         
         # make ephys feature vector, concat those:
         fts = ['alpha_mean', 'alpha_std', 'depolarisation_slope', 
@@ -1158,43 +1351,44 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
             'trough_time_secs', 
             'trough_val']
 
-        r['ephysTF'] = np.array([dfm[dfm['uuids'] == u][fts].values[0] 
-                            for u in r['uuids']])
+        dfm['ephysTF'] = dfm[fts].apply(
+            lambda row: np.concatenate([np.atleast_1d(val) 
+            for val in row.values if pd.notna(val)])
+            if any(pd.notna(row.values)) else np.array([]),  
+            axis=1)
         
+
+        # Add 'ephysTF' to the dictionary
+        r['ephysTF'] = dfm['ephysTF'].values
         r['fts'] = fts
                
         # remove cells with nan/inf/allzero entries
         goodcells = np.bitwise_and.reduce([
-                    [~np.isinf(k).any() for k in r['ephysTF']],
-                    [np.any(x) for x in r['ephysTF']],
-                    [~np.isnan(k).any() for k in r['ephysTF']]])
+            [~np.isinf(k).any() for k in r['ephysTF']],   # No inf values
+            [np.any(x) for x in r['ephysTF']], # At least one non-zero value
+            [~np.isnan(k).any() for k in r['ephysTF']],  # No NaN values
+            [k.size > 0 for k in r['ephysTF']]           # Non-empty arrays
+        ])
                     
         l0 = deepcopy(len(r['uuids']))
         for key in r:
             if len(r[key]) == l0:
                 r[key] = r[key][goodcells]
 
+        r['ephysTF'] = np.stack(r['ephysTF'], axis=0)
         print('hierarchical clustering of ephys ...')
         # dim reducing ephys features
         r['umap_e'] = umap.UMAP(
-                        n_components=ncomp).fit_transform(r['ephysTF'])  
+                        n_components=ncomp).fit_transform(r['ephysTF'])
 
-    if get_concat:
-        return cs
+        # various dim reduction of PETHs to 2 dims
+        print('embedding rastermap on ephys')
 
+        # Fit the Rastermap model
+        model = Rastermap(n_PCs=200, n_clusters=100,
+                        locality=0.75, time_lag_window=5, bin_size=1).fit(r['ephysTF'])
+        r['isort_e'] = model.isort       
 
-    ptypes = [x for x in D_['trial_names']
-              if x in ttypes]
-
-    idc = [D_['trial_names'].index(x) for x in ttypes]          
-    r['len'] = dict(zip(ptypes,
-                    [D_['ws'][x].shape[1] for x in idc]))
-
-
-    # r['concat'] = cs
-
-    cs_z = zscore(cs,axis=1)
-    r['concat_z'] = cs_z
 
     # various dim reduction of PETHs to 2 dims
     print('embedding rastermap ...')
@@ -1203,8 +1397,9 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
     model = Rastermap(n_PCs=200, n_clusters=100,
                       locality=0.75, time_lag_window=5, bin_size=1).fit(cs_z)
     r['isort'] = model.isort
-    print('embedding umap...')
-    ncomp = 2
+
+    print(f'embedding umap on {vers}...')
+    
 
     r['umap_z'] = umap.UMAP(n_components=ncomp, 
         n_neighbors=n_neighbors).fit_transform(cs_z)
@@ -1330,7 +1525,7 @@ def stack_simple(nmin=10):
 '''
         
 
-def plot_dim_reduction(algo='umap_z', mapping='Beryl',norm_=False , 
+def plot_dim_reduction(algo='umap_z', mapping='Beryl',ephys=False, 
                        means=False, exa=False, shuf=False,
                        exa_squ=False, vers='concat', ax=None, ds=0.5,
                        axx=None, exa_kmeans=False, leg=False, restr=None,
@@ -1352,7 +1547,7 @@ def plot_dim_reduction(algo='umap_z', mapping='Beryl',norm_=False ,
     
     feat = 'concat_z'
     
-    r = regional_group(mapping, algo, vers=vers, norm_=norm_, 
+    r = regional_group(mapping, algo, vers=vers, ephys=ephys, 
                        nclus=nclus)
     alone = False
     if not ax:
@@ -2153,8 +2348,8 @@ def clus_grid():
     fig = plt.figure(figsize=(14,10))
     
     axs = []
-    for cl in range(7):
-        axs.append(fig.add_subplot(2, 4, cl + 1, projection='3d'))
+    for cl in range(13):
+        axs.append(fig.add_subplot(3, 5, cl + 1, projection='3d'))
         plot_xyz(mapping='kmeans',restr=[cl], ax=axs[-1])    
 
 
@@ -3637,7 +3832,7 @@ def compare_two_goups(vers='concat', filt = 'VISp'):
 
 
 def plot_rastermap(feat='concat_z', exa = False, 
-                   mapping='kmeans', alpha=0.5):
+                   mapping='Beryl', alpha=0.5, bg=False):
     """
     Function to plot a rastermap with vertical segment boundaries 
     and labels positioned above the segments.
@@ -3651,16 +3846,15 @@ def plot_rastermap(feat='concat_z', exa = False,
     if feat == 'concat_z_no_mistake':
 
         # remove all mistake PETHs
-        to_remove = []
 
-        # to_remove = ['stimLbRcR',
-        #             'stimLbLcR',
-        #             'stimRbLcL',
-        #             'stimRbRcL',
-        #             'sLbRchoiceR',
-        #             'sLbLchoiceR',
-        #             'sRbLchoiceL',
-        #             'sRbRchoiceL']
+        to_remove = ['stimLbRcR',
+                    'stimLbLcR',
+                    'stimRbLcL',
+                    'stimRbRcL',
+                    'sLbRchoiceR',
+                    'sLbLchoiceR',
+                    'sRbLchoiceL',
+                    'sRbRchoiceL']
     
         # Extract relevant information from the data
         # Initialize an empty list to store the indices to keep
@@ -3697,6 +3891,17 @@ def plot_rastermap(feat='concat_z', exa = False,
 
         r['isort'] = model.isort
 
+    if feat == 'only_cortical':
+        reg ='Isocortex'
+        assert mapping == 'Cosmos'
+        data = r['concat_z'][r['acs'] == reg, :]
+        r[feat] = data
+        print(f'embedding rastermap for {reg} cells only')
+        # Fit the Rastermap model
+        model = Rastermap(n_PCs=200, n_clusters=100,
+                      locality=0.75, time_lag_window=5, bin_size=1).fit(data)
+        r['isort'] = model.isort
+
     if exa:
         plot_cluster_mean_PETHs(r,mapping, feat)
 
@@ -3714,10 +3919,10 @@ def plot_rastermap(feat='concat_z', exa = False,
     im = ax.imshow(data, vmin=0, vmax=1.5, cmap="gray_r",
                 aspect="auto")
 
-    
-    for i, color in enumerate(row_colors):
-        ax.hlines(i, xmin=0, xmax=n_cols, colors=color, 
-        lw=.01, alpha=alpha)
+    if bg:   
+        for i, color in enumerate(row_colors):
+            ax.hlines(i, xmin=0, xmax=n_cols, colors=color, 
+            lw=.01, alpha=alpha)
 
     ax.set_xlabel('time [bins]')    
     ax.set_ylabel('cells')
