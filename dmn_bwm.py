@@ -598,7 +598,7 @@ def get_allen_info(rerun=False):
 _,pal = get_allen_info()
 
 
-def regional_group(mapping, algo, vers='concat', ephys=False,
+def regional_group(mapping, algo, vers='concat', ephys=True,
                    nclus = 13, rerun=False):
 
     '''
@@ -1198,7 +1198,7 @@ def get_all_PETHs(eids_plus=None, vers='concat'):
 
 
 def stack_concat(vers='concat', get_concat=False, get_tls=False, 
-                 ephys=False, n_neighbors=15):
+                 ephys=True, n_neighbors=15):
 
     '''
     stack concatenated PETHs; 
@@ -1304,8 +1304,7 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
 
     # r['concat'] = cs
 
-    cs_z = zscore(cs,axis=1)
-    r['concat_z'] = cs_z
+    r['concat_z'] = zscore(cs,axis=1)
 
     if get_concat:
         return cs
@@ -1375,7 +1374,8 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
             if len(r[key]) == l0:
                 r[key] = r[key][goodcells]
 
-        r['ephysTF'] = np.stack(r['ephysTF'], axis=0)
+        print('z-scoring ephys features')
+        r['ephysTF'] = zscore(np.stack(r['ephysTF'], axis=0),axis=1)
         print('hierarchical clustering of ephys ...')
         # dim reducing ephys features
         r['umap_e'] = umap.UMAP(
@@ -1391,21 +1391,23 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
 
 
     # various dim reduction of PETHs to 2 dims
-    print('embedding rastermap ...')
+    print(f'embedding rastermap on {vers}...')
 
     # Fit the Rastermap model
     model = Rastermap(n_PCs=200, n_clusters=100,
-                      locality=0.75, time_lag_window=5, bin_size=1).fit(cs_z)
+                      locality=0.75, time_lag_window=5, 
+                      bin_size=1).fit(r['concat_z'])
+
     r['isort'] = model.isort
 
     print(f'embedding umap on {vers}...')
     
 
     r['umap_z'] = umap.UMAP(n_components=ncomp, 
-        n_neighbors=n_neighbors).fit_transform(cs_z)
+        n_neighbors=n_neighbors).fit_transform(r['concat_z'])
 
     print('embedding pca...')
-    r['pca_z'] = PCA(n_components=ncomp).fit_transform(cs_z)
+    r['pca_z'] = PCA(n_components=ncomp).fit_transform(r['concat_z'])
     
 
     np.save(Path(pth_dmn, f'{vers}_ephys{ephys}.npy'),
@@ -1525,8 +1527,8 @@ def stack_simple(nmin=10):
 '''
         
 
-def plot_dim_reduction(algo='umap_z', mapping='Beryl',ephys=False, 
-                       means=False, exa=False, shuf=False,
+def plot_dim_reduction(algo='umap_z', mapping='Beryl',ephys=True,
+                       feat = 'concat_z', means=False, exa=False, shuf=False,
                        exa_squ=False, vers='concat', ax=None, ds=0.5,
                        axx=None, exa_kmeans=False, leg=False, restr=None,
                        nclus = 10, n_neighbors=15):
@@ -1544,9 +1546,7 @@ def plot_dim_reduction(algo='umap_z', mapping='Beryl',ephys=False,
     ds: marker size in main scatter
     restr: list of Beryl regions to restrict plot to
     '''
-    
-    feat = 'concat_z'
-    
+
     r = regional_group(mapping, algo, vers=vers, ephys=ephys, 
                        nclus=nclus)
     alone = False
@@ -1585,7 +1585,7 @@ def plot_dim_reduction(algo='umap_z', mapping='Beryl',ephys=False,
 #    ax.set_ylabel(f'{algo} dim2')
     zs = True if algo == 'umap_z' else False
     if alone:
-        ax.set_title(f'norm: {norm_}, z-score: {zs}')
+        ax.set_title(f'z-score: {zs}')
     ax.axis('off')
     ss = 'shuf' if shuf else ''
        
@@ -3831,7 +3831,7 @@ def compare_two_goups(vers='concat', filt = 'VISp'):
     fig.tight_layout()
 
 
-def plot_rastermap(feat='concat_z', exa = False, 
+def plot_rastermap(feat='concat_z', exa = False,
                    mapping='Beryl', alpha=0.5, bg=False):
     """
     Function to plot a rastermap with vertical segment boundaries 
@@ -3841,7 +3841,7 @@ def plot_rastermap(feat='concat_z', exa = False,
 
     """
 
-    r = regional_group(mapping, 'umap_z')
+    r = regional_group(mapping, 'umap_z' if feat!= 'ephysTF' else 'umap_e')
 
     if feat == 'concat_z_no_mistake':
 
@@ -3907,7 +3907,7 @@ def plot_rastermap(feat='concat_z', exa = False,
 
 
     spks = r[feat]
-    isort = r['isort']
+    isort = r['isort' if feat != 'ephysTF' else 'isort_e'] 
     data = spks[isort]
     row_colors = np.array(r['cols'])[isort]  # Reorder colors by sorted index
 
@@ -3915,9 +3915,29 @@ def plot_rastermap(feat='concat_z', exa = False,
     # Create a figure for the rastermap
     fig, ax = plt.subplots(figsize=(10, 8))
 
-    # plot in greys, then overlay color (good for big picture)
-    im = ax.imshow(data, vmin=0, vmax=1.5, cmap="gray_r",
-                aspect="auto")
+    if feat != 'ephysTF':
+        # plot in greys, then overlay color (good for big picture)
+        im = ax.imshow(data, vmin=0, vmax=1.5, cmap="gray_r",
+                    aspect="auto")
+
+        # Plot vertical boundaries and add text labels
+        ylim = ax.get_ylim()  
+        h = 0
+        for segment in r['len']:
+            xv = h + r['len'][segment]  # Cumulative position of the vertical line
+            ax.axvline(xv, linestyle='--', linewidth=1, color='grey')  # Draw vertical line
+            
+            # Add text label above the segment boundary
+            midpoint = h + r['len'][segment] / 2  # Midpoint of the segment
+            ax.text(midpoint, ylim[1] + 0.05 * (ylim[1] - ylim[0]), 
+                    segment, rotation=90, color='k', 
+                    fontsize=10, ha='center')  # Label positioned above the plot
+            
+            h += r['len'][segment]  # Update cumulative sum for the next segment        
+    else:
+        im = ax.imshow(data, cmap="gray_r", aspect="auto")
+        ax.set_xticks(range(data.shape[1]))
+        ax.set_xticklabels(r['fts'], rotation=90)       
 
     if bg:   
         for i, color in enumerate(row_colors):
@@ -3926,23 +3946,6 @@ def plot_rastermap(feat='concat_z', exa = False,
 
     ax.set_xlabel('time [bins]')    
     ax.set_ylabel('cells')
-
-    ylim = ax.get_ylim()  
-
-    # Plot vertical boundaries and add text labels
-    h = 0
-    for segment in r['len']:
-        xv = h + r['len'][segment]  # Cumulative position of the vertical line
-        ax.axvline(xv, linestyle='--', linewidth=1, color='grey')  # Draw vertical line
-        
-        # Add text label above the segment boundary
-        midpoint = h + r['len'][segment] / 2  # Midpoint of the segment
-        ax.text(midpoint, ylim[1] + 0.05 * (ylim[1] - ylim[0]), 
-                segment, rotation=90, color='k', 
-                fontsize=10, ha='center')  # Label positioned above the plot
-        
-        h += r['len'][segment]  # Update cumulative sum for the next segment
-
 
     # Remove top and right spines
     ax.spines['top'].set_visible(False)
