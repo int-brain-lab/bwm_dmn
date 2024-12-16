@@ -37,7 +37,7 @@ from sklearn.preprocessing import StandardScaler
 from random import shuffle
 from sklearn.linear_model import LogisticRegression
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-from sklearn.model_selection import KFold
+from sklearn.model_selection import StratifiedKFold
 from joblib import Parallel, delayed
 from sklearn.utils import parallel_backend
 
@@ -598,7 +598,7 @@ def get_allen_info(rerun=False):
 _,pal = get_allen_info()
 
 
-def regional_group(mapping, algo, vers='concat', ephys=True,
+def regional_group(mapping, vers='concat', ephys=True,
                    nclus = 13, rerun=False):
 
     '''
@@ -607,7 +607,7 @@ def regional_group(mapping, algo, vers='concat', ephys=True,
     mapping: [Allen, Beryl, Cosmos, layers, clusters, clusters_xyz, 'in tts__']
     '''
 
-    if (mapping == 'kmeans') and (algo == 'umap_z'):
+    if mapping == 'kmeans':
         pth__ = Path(one.cache_dir, 'dmn', 'kmeans_group.npy')
     
         if ((pth__.is_file()) and (not rerun)):
@@ -617,8 +617,7 @@ def regional_group(mapping, algo, vers='concat', ephys=True,
                  allow_pickle=True).flat[0]
 
     # add point names to dict
-    r['nums'] = range(len(r[algo][:,0]))
-                   
+    r['nums'] = range(len(r['xyz'][:,0]))
 
     if mapping == 'kmeans':
    
@@ -626,7 +625,6 @@ def regional_group(mapping, algo, vers='concat', ephys=True,
 
         nclus = nclus
         kmeans = KMeans(n_clusters=nclus, random_state=3)
-        # kmeans.fit(r[algo]) # use kmeans to cluster 2d points
         kmeans.fit(r[feat])  # kmeans in feature space
 
         clusters = kmeans.labels_
@@ -659,11 +657,6 @@ def regional_group(mapping, algo, vers='concat', ephys=True,
         cmap = mpl.cm.get_cmap('Spectral')
         cols = cmap(clusters/len(unique_labels))
         acs = clusters
-        # get average point and color per region
-        av = {clus: [np.mean(r[algo][clusters == clus], axis=0), 
-                    cols] 
-              for clus in range(1,len(unique_labels)+1)} 
-        
 
     elif mapping == 'layers':       
     
@@ -707,11 +700,6 @@ def regional_group(mapping, algo, vers='concat', ephys=True,
         r['els'] = [Line2D([0], [0], color=pa[reg], 
                lw=4, label=f'{reg} {regs[reg]}')
                for reg in regs]
-               
-        # get average points and color per region
-        av = {reg: [np.mean(r[algo][acs == reg], axis=0), pa[reg]] 
-              for reg in regs}
-               
 
     elif mapping == 'clusters_xyz':
    
@@ -722,11 +710,6 @@ def regional_group(mapping, algo, vers='concat', ephys=True,
         cmap = mpl.cm.get_cmap('Spectral')
         cols = cmap(clusters/nclus)
         acs = clusters   
-        # get average points per region
-        av = {reg: [np.mean(r[algo][clusters == clus], axis=0), 
-                    cmap(clus/nclus)] 
-              for clus in range(1,nclus+1)}      
-
 
     elif mapping in PETH_types_dict:
         # For a group of PETH types defined in PETH_types_dict,
@@ -774,11 +757,6 @@ def regional_group(mapping, algo, vers='concat', ephys=True,
 
         # Count the occurrence of each brain region acronym
         regs = Counter(acs)
-        
-        # Handle additional processing as necessary
-        av = None
-        
-
 
     elif mapping in tts__:
         # for a specific PETH type, 
@@ -812,9 +790,6 @@ def regional_group(mapping, algo, vers='concat', ephys=True,
         cmap = mpl.cm.get_cmap('Spectral')
         cols = cmap(r['rankings']/max(r['rankings'])) 
         regs = Counter(acs)  
-        av = None       
-        
-
 
     elif mapping == 'functional':
 
@@ -850,9 +825,7 @@ def regional_group(mapping, algo, vers='concat', ephys=True,
         cols = np.array([cols0[reg] for reg in acs])
 
         # get average points and color per region
-        regs = Counter(acs)  
-        av = {reg: [np.mean(r[algo][acs == reg], axis=0), cols0[reg]] 
-              for reg in regs}
+        regs = Counter(acs) 
 
     else:
         acs = np.array(br.id2acronym(r['ids'], 
@@ -864,8 +837,6 @@ def regional_group(mapping, algo, vers='concat', ephys=True,
         
         # get average points and color per region
         regs = Counter(acs)  
-        av = {reg: [np.mean(r[algo][acs == reg], axis=0), pa[reg]] 
-              for reg in regs}
         rmv_void_rt = True              
 
     if 'end' in r['len']:
@@ -873,9 +844,8 @@ def regional_group(mapping, algo, vers='concat', ephys=True,
               
     r['acs'] = np.array(acs)
     r['cols'] = np.array(cols)
-    r['av'] = av
 
-    if (mapping == 'kmeans') and (algo == 'umap_z'):
+    if mapping == 'kmeans':
         pth__ = Path(one.cache_dir, 'dmn', 'kmeans_group.npy')
         np.save(pth__, r, allow_pickle=True)
 
@@ -1001,12 +971,11 @@ def NN(x, y, decoder='LDA', CC=1.0, confusion=False,
     yt_test = []  
     
     folds = 5
-    kf = KFold(n_splits=folds, shuffle=True)
+    kf = StratifiedKFold(n_splits=folds, shuffle=True)
 
     if verb:
         print('input dimension:', np.shape(x))    
         print(f'# classes = {nclasses}')
-        print(f'uniform chance at 1 / {nclasses} = {np.round(1/nclasses,5)}')
         print('x.shape:', x.shape, 'y.shape:', y.shape)
         print(f'{folds}-fold cross validation')
         if shuf: 
@@ -1027,7 +996,8 @@ def NN(x, y, decoder='LDA', CC=1.0, confusion=False,
         test_y = y[test_index]
 
         if decoder == 'LR':
-            clf = LogisticRegression(C=CC, random_state=0, n_jobs=-1)
+            clf = LogisticRegression(C=CC, random_state=0, n_jobs=-1,
+                max_iter=1000)
         elif decoder == 'LDA':
             clf = LinearDiscriminantAnalysis()
         else:
@@ -1045,7 +1015,7 @@ def NN(x, y, decoder='LDA', CC=1.0, confusion=False,
     with parallel_backend('loky'):
         results = Parallel(n_jobs=-1)(
             delayed(process_fold)(train_index, test_index)
-            for train_index, test_index in kf.split(x)
+            for train_index, test_index in kf.split(x, y)
         )
 
     # Collect results from parallel processing
@@ -1069,7 +1039,8 @@ def NN(x, y, decoder='LDA', CC=1.0, confusion=False,
         
     if return_weights:
         if decoder == 'LR':
-            clf = LogisticRegression(C=CC, random_state=0, n_jobs=-1)
+            clf = LogisticRegression(C=CC, random_state=0, n_jobs=-1,
+                max_iter=1000)
         else:
             clf = LinearDiscriminantAnalysis()
 
@@ -1090,17 +1061,16 @@ def NN(x, y, decoder='LDA', CC=1.0, confusion=False,
     return np.array(acs)
 
 
-def decode(src='concat_z', mapping='Beryl', minreg=20, decoder='LDA', 
-           algo='umap_z', n_runs = 1, confusion=False):
+def decode(src='concat_z', mapping='Beryl', minreg=20, decoder='LR', 
+           algo='umap_z', n_runs = 1, confusion=False, apply_pca=True):
     
     '''
-    src in ['concat', 'concat_z', 'ephysTF']
-    '''
-    
+    src in ['concat_z', 'ephysTF']
+    ''' 
            
     print(src, mapping, f', minreg: {minreg},', decoder)
                                
-    r = regional_group(mapping, algo)
+    r = regional_group(mapping)
      
     # get average points and color per region
     regs = Counter(r['acs'])
@@ -1116,10 +1086,18 @@ def decode(src='concat_z', mapping='Beryl', minreg=20, decoder='LDA',
     y = y[mask]
     
     # remove void and root
-    mask = [False if ac in ['void', 'root'] else True for ac in y]
+    mask = [False if ac in ['void', 'root', 'Other'] else True for ac in y]
     x = x[mask]    
     y = y[mask]  
-    regs = Counter(y)  
+    regs = Counter(y)
+
+    print('x shape', x.shape, 'n classes', len(regs))
+
+    if apply_pca and x.shape[1] >= 100:
+        n_components=100
+        pca = PCA(n_components=n_components)
+        print(f'applying pca, reducing {x.shape[1]} to {n_components}')
+        x = pca.fit_transform(x)   
 
     if confusion:
         cm_train, cm_test, r_train, r_test = NN(x, y, 
@@ -1138,6 +1116,23 @@ def decode(src='concat_z', mapping='Beryl', minreg=20, decoder='LDA',
                       verb=False if n_runs > 1 else True))        
             
     return res, res_shuf
+
+
+def decode_bulk():
+    re = {}
+    sources = ['concat_z', 'ephysTF']
+    targets = ['kmeans', 'Beryl', 'Cosmos', 
+                        'layers', 'functional']
+
+    k = 0 
+    for src in sources:
+        for mapping in targets:
+
+            re[f'{src} {mapping}'] = decode(src=src, mapping=mapping)
+            k +=1
+            print(f'{k} out of {len(sources)*len(targets)}')
+
+    np.save(Path(pth_dmn,'decode.npy'), re, allow_pickle=True)
 
 
 '''
@@ -1531,7 +1526,7 @@ def plot_dim_reduction(algo='umap_z', mapping='Beryl',ephys=True,
                        feat = 'concat_z', means=False, exa=False, shuf=False,
                        exa_squ=False, vers='concat', ax=None, ds=0.5,
                        axx=None, exa_kmeans=False, leg=False, restr=None,
-                       nclus = 10, n_neighbors=15):
+                       nclus = 13, n_neighbors=15):
                        
     '''
     2 dims being pca on concat PETH; 
@@ -1547,8 +1542,8 @@ def plot_dim_reduction(algo='umap_z', mapping='Beryl',ephys=True,
     restr: list of Beryl regions to restrict plot to
     '''
 
-    r = regional_group(mapping, algo, vers=vers, ephys=ephys, 
-                       nclus=nclus)
+    r = regional_group(mapping, vers=vers, ephys=ephys)
+
     alone = False
     if not ax:
         alone = True
@@ -1560,7 +1555,6 @@ def plot_dim_reduction(algo='umap_z', mapping='Beryl',ephys=True,
     
     if restr:
         # restrict to certain Beryl regions
-        #r2 = regional_group('Beryl', algo, vers=vers)
         ff = np.bitwise_or.reduce([r['acs'] == reg for reg in restr]) 
     
     
@@ -1575,21 +1569,22 @@ def plot_dim_reduction(algo='umap_z', mapping='Beryl',ephys=True,
     
     if means:
         # show means
+        regs = list(Counter(r['acs']))
+        r['av'] = {reg: [np.mean(r[algo][acs == reg], axis=0), pa[reg]] 
+              for reg in regs}
+
         emb1 = [r['av'][reg][0][0] for reg in r['av']] 
         emb2 = [r['av'][reg][0][1] for reg in r['av']]
         cs = [r['av'][reg][1] for reg in r['av']]
         ax.scatter(emb1, emb2, marker='o', facecolors='none', 
                    edgecolors=cs, s=600, linewidths=4, rasterized=True)
     
-#    ax.set_xlabel(f'{algo} dim1')
-#    ax.set_ylabel(f'{algo} dim2')
     zs = True if algo == 'umap_z' else False
     if alone:
         ax.set_title(f'z-score: {zs}')
     ax.axis('off')
     ss = 'shuf' if shuf else ''
-       
-    
+         
     if mapping in ['layers', 'kmeans']:
         if leg:
             ax.legend(handles=r['els'], ncols=1,
@@ -1608,9 +1603,6 @@ def plot_dim_reduction(algo='umap_z', mapping='Beryl',ephys=True,
 
     if alone:
         fig.tight_layout()
-#    fig.savefig(Path(one.cache_dir,'dmn', 'figs',
-#        f'{algo}_{vers}_{mapping}.png'), dpi=150, bbox_inches='tight')
-
 
     if exa:
         # plot a cells' feature vector
@@ -1683,10 +1675,6 @@ def plot_dim_reduction(algo='umap_z', mapping='Beryl',ephys=True,
             # Add the square to the list of selected squares
             sqs.append(square)
             
-
-        
-        r['nums'] = range(len(r[algo][:,0]))
-        
         
         k = 0
         for s in sqs:
@@ -1838,10 +1826,15 @@ def smooth_dist(dim=2, algo='umap_z', mapping='Beryl', show_imgs=False, restr=Fa
     """
 
     assert 2 <= dim <= 5, "dim must be between 2 and 5."
+    feat = 'concat_z' if algo[-1] == 'z' else 'concat'
+    r = regional_group(mapping, vers=vers)
+    if algo == 'xyz':
+        dim =3
+        feat = 'xyz'
+        r[algo] = r[algo]*100000
+
     meshsize = 256 if dim == 2 else 64
 
-    r = regional_group(mapping, algo, vers=vers)
-    feat = 'concat_z' if algo[-1] == 'z' else 'concat'
     fontsize = 12
 
     # Define grid boundaries
@@ -1849,6 +1842,10 @@ def smooth_dist(dim=2, algo='umap_z', mapping='Beryl', show_imgs=False, restr=Fa
     for i in range(dim):
         mins.append(np.floor(np.min(r[algo][:, i])))
         maxs.append(np.ceil(np.max(r[algo][:, i])))
+
+    # deal with edge case, add 1% to each max value
+    for i in range(dim):
+        maxs[i] = maxs[i] * 0.01 + maxs[i]
 
     imgs = {}
     coords = {}
@@ -1902,14 +1899,23 @@ def smooth_dist(dim=2, algo='umap_z', mapping='Beryl', show_imgs=False, restr=Fa
             ax = axs[k]
 
             if dim == 2:
-                ax.scatter(coords[reg][0], coords[reg][1], color=regcol[reg], s=0.1)
+                ax.scatter(coords[reg][0], coords[reg][1], color=regcol[reg], 
+                           s=0.1)
                 ax.spines['right'].set_visible(False)
-                ax.spines['top'].set_visible(False)                   
+                ax.spines['top'].set_visible(False)
+                ax.set_xlim([0, 1])
+                ax.set_ylim([0, 1])
 
             elif dim == 3:
                 ax.axis('off')
                 ax = fig.add_subplot(3, len(regs), k + 1, projection='3d')
-                ax.scatter(coords[reg][0], coords[reg][1], coords[reg][2], s=0.1, c=regcol[reg])
+                ax.scatter(coords[reg][0], coords[reg][1], coords[reg][2], 
+                           s=0.1, c=regcol[reg])
+                ax.set_xlim([0, 1])
+                ax.set_ylim([0, 1])
+                ax.set_zlim([0, 1])                 
+
+
             ax.set_aspect('equal')    
             ax.set_title(f"{reg}, ({regs00[reg]})")
             
@@ -1933,6 +1939,7 @@ def smooth_dist(dim=2, algo='umap_z', mapping='Beryl', show_imgs=False, restr=Fa
         fig.text(0.02, 0.5, 'Smoothed 2d \n projected Density', fontsize=14, 
             rotation='vertical', va='center', ha='center')
 
+        k3 = k
         # Third row: Feature vectors
         for reg in regs:
             pts = np.arange(len(r['acs']))[r['acs'] == reg]
@@ -1944,23 +1951,30 @@ def smooth_dist(dim=2, algo='umap_z', mapping='Beryl', show_imgs=False, restr=Fa
             ax.fill_between(xss, yss - yss_err, yss + yss_err, 
                 alpha=0.2, color=regcol[reg])
             ax.plot(xss, yss, color='k', linewidth=0.5)
-            axs[k].set_xlabel('time [sec]')
-            axs[k].set_axis_off()      
-            # plot vertical boundaries for windows
-            h = 0
-            for i in r['len']:
-            
-                xv = r['len'][i] + h
-                axs[k].axvline(T_BIN * xv, linestyle='--',
-                            color='grey', linewidth=0.1)
-                            
-                axs[k].text(T_BIN * xv, 0.8 * np.max(maxys), 
-                         i, rotation=90, 
-                         fontsize=5, color='k')
-            
-                h += r['len'][i]
+            axs[k].set_xlabel('time [sec]' if algo != 'xyz' else 'xyz')
+
+            ax.axis('off')
+            if algo != 'xyz':     
+                # plot vertical boundaries for windows
+                h = 0
+                for i in r['len']:
+                
+                    xv = r['len'][i] + h
+                    axs[k].axvline(T_BIN * xv, linestyle='--',
+                                color='grey', linewidth=0.1)
+                                
+                    axs[k].text(T_BIN * xv, 0.8 * np.max(maxys), 
+                            i, rotation=90, 
+                            fontsize=5, color='k')
+                
+                    h += r['len'][i]
 
             k += 1
+
+        # shar x and y for last row of panels
+        for axx in axs[k3:]:
+            axx.sharex(axs[k3])
+            axx.sharey(axs[k3])
 
         fig.text(0.02, 0.25, 'Avg. Feature \n Vectors', 
             fontsize=14, rotation='vertical', va='center', ha='center')
@@ -1980,7 +1994,8 @@ def smooth_dist(dim=2, algo='umap_z', mapping='Beryl', show_imgs=False, restr=Fa
 
     # Plot similarity matrix and dendrogram
     if dendro:
-        fig0, axs = plt.subplots(1, 2, figsize=(10, 8), gridspec_kw={'width_ratios': [1, 11]})
+        fig0, axs = plt.subplots(1, 2, figsize=(4, 4), 
+            gridspec_kw={'width_ratios': [1, 11]})
         dist = np.max(res) - res
         np.fill_diagonal(dist, 0)
         cres = squareform(dist)
@@ -1994,10 +2009,11 @@ def smooth_dist(dim=2, algo='umap_z', mapping='Beryl', show_imgs=False, restr=Fa
 
         ax0 = axs[1]
     else:
-        fig0, ax0 = plt.subplots(figsize=(3, 3))
+        fig0, ax0 = plt.subplots(figsize=(4, 4))
 
     ax0.set_title(f'{algo}, {mapping}, {dim} dims')               
-    ims = ax0.imshow(res, origin='lower', interpolation=None)
+    ims = ax0.imshow(res, origin='lower', interpolation=None,
+                     vmin=0, vmax=1)
     ax0.set_xticks(np.arange(len(regs)), regs,
                    rotation=90, fontsize=fontsize)
     ax0.set_yticks(np.arange(len(regs)), regs, fontsize=fontsize)               
@@ -2185,7 +2201,7 @@ def plot_xyz(mapping='Beryl', vers='concat', add_cents=False,
     exa: show example average feature vectors
     '''
 
-    r = regional_group(mapping, 'umap_z', vers=vers)
+    r = regional_group(mapping, vers=vers)
 
     if ((mapping in tts__) or (mapping in PETH_types_dict)):
         cmap = mpl.cm.get_cmap('Spectral')
@@ -2910,7 +2926,7 @@ def swansons_all(metric='latency', minreg=10, annotate=True,
         
         
     else:
-        r = regional_group('Beryl', 'umap_z', vers=vers)    
+        r = regional_group('Beryl', vers=vers)    
 
         # get average z-scored PETHs per Beryl region 
         regs = Counter(r['acs'])
@@ -3065,7 +3081,7 @@ def swansons_means(minreg=10, annotate=True, nanno=5):
     and differences from concat
     '''
     
-    r = regional_group('Beryl', 'umap_z', vers='concat')
+    r = regional_group('Beryl', vers='concat')
      
     # get average z-scored PETHs per Beryl region 
     regs = Counter(r['acs'])
@@ -3425,7 +3441,7 @@ def plot_single_feature(algo='umap_z', vers='concat', mapping='Beryl',
     
     feat = 'concat_z' if algo[-1] == 'z'  else 'concat'
     
-    r = regional_group(mapping, algo, vers=vers)    
+    r = regional_group(mapping, vers=vers)    
     
     fig, ax = plt.subplots(figsize=(6.97, 3.01))
     
@@ -3479,7 +3495,7 @@ def var_expl(minreg=20):
     plot variance explained 
     '''
     
-    r = regional_group('Beryl', 'umap_z', vers='concat')
+    r = regional_group('Beryl', vers='concat')
     regs = Counter(r['acs'])
 
     # restrict to regions with minreg cells
@@ -3541,8 +3557,8 @@ def clus_freqs(foc='kmeans', nmin=50, nclus=13, vers='concat', get_res=False,
             return np.load(pthres, allow_pickle=True).flat[0]
 
     
-    r_a = regional_group('Beryl', 'umap_z', vers=vers, nclus=nclus)    
-    r_k = regional_group('kmeans', 'umap_z', vers=vers, nclus=nclus)
+    r_a = regional_group('Beryl', vers=vers, nclus=nclus)    
+    r_k = regional_group('kmeans', vers=vers, nclus=nclus)
 
     if foc == 'kmeans':
     
@@ -3776,7 +3792,7 @@ def compare_two_goups(vers='concat', filt = 'VISp'):
     compare average feature vecotr for two groups of cells
     '''
 
-    r = regional_group('Beryl', 'umap_z', vers=vers)        
+    r = regional_group('Beryl', vers=vers)        
     df = pd.DataFrame({'acs': r['acs'], 'x': r['xyz'][:,0]})    
     regs = np.unique(r['acs'])
     
@@ -3841,7 +3857,7 @@ def plot_rastermap(feat='concat_z', exa = False,
 
     """
 
-    r = regional_group(mapping, 'umap_z' if feat!= 'ephysTF' else 'umap_e')
+    r = regional_group(mapping)
 
     if feat == 'concat_z_no_mistake':
 
@@ -4211,7 +4227,7 @@ def plot_brain_region_counts(start=None, end=None, nmin=50):
     - Displays a bar chart with regions sorted by count.
     """
 
-    r = regional_group('Beryl', 'umap_z')
+    r = regional_group('Beryl')
 
     start = start if start is not None else 0
     end = end if end is not None else len(r['acs'])    
@@ -4281,3 +4297,65 @@ def embed_histograms_scatter(foc='dec', ax=None):
     ax.set_title(f'embed histograms of {foc}')
     ax.set_xlabel('umap dim 1')
     ax.set_ylabel('umap_dim 2')
+
+
+
+def plot_decoding_results():
+    re = np.load(Path(pth_dmn,'decode.npy'), allow_pickle=True).flat[0]
+    # Prepare the data for plotting
+    mappings = ['kmeans', 'Beryl', 'Cosmos', 'layers', 'functional']
+    sources = ['concat_z', 'ephysTF']
+    data = []
+
+    for source in sources:
+        for mapping in mappings:
+            key = f"{source} {mapping}"
+            if key not in re:
+                continue
+
+            normal_results, shuffled_results = re[key]  # Extract normal and shuffled results
+
+            # Process normal results
+            for split in normal_results:
+                train_results = split[:, 0]  # Train accuracy (1st column)
+                test_results = split[:, 1]  # Test accuracy (2nd column)
+
+                data.extend([{'Mapping': mapping, 'Source': source, 'Type': 'Train Normal', 'Accuracy': acc} for acc in train_results])
+                data.extend([{'Mapping': mapping, 'Source': source, 'Type': 'Test Normal', 'Accuracy': acc} for acc in test_results])
+
+            # Process shuffled results
+            for split in shuffled_results:
+                train_results = split[:, 0]  # Train accuracy (1st column)
+                test_results = split[:, 1]  # Test accuracy (2nd column)
+
+                data.extend([{'Mapping': mapping, 'Source': source, 'Type': 'Train Shuffled', 'Accuracy': acc} for acc in train_results])
+                data.extend([{'Mapping': mapping, 'Source': source, 'Type': 'Test Shuffled', 'Accuracy': acc} for acc in test_results])
+
+    # Convert the data to a DataFrame for seaborn
+    df = pd.DataFrame(data)
+
+    # Create the plot
+    fig, axes = plt.subplots(1, len(mappings), figsize=(8, 3), sharey=True)
+
+    for ax, mapping in zip(axes, mappings):
+        sns.stripplot(
+            data=df[df['Mapping'] == mapping],
+            x='Source', y='Accuracy', hue='Type',
+            dodge=True, jitter=True, ax=ax,
+            palette='Set2', legend=(ax == axes[0])
+        )
+        ax.set_title(mapping)
+        ax.set_xlabel('')
+
+        # Add vertical dotted line to separate the two input data types
+        ax.axvline(x=0.5, color='gray', linestyle='--', linewidth=1)
+
+    # Customize the legend in the first panel
+    handles, labels = axes[0].get_legend_handles_labels()
+    axes[0].legend(handles, labels, loc='best', 
+        frameon=False, ncols=4).set_draggable(True)
+
+    axes[0].set_ylabel('Decoding Accuracy')
+    plt.tight_layout()  # Adjust layout
+    plt.show()
+
