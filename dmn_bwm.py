@@ -14,7 +14,6 @@ import sys
 sys.path.append('Dropbox/scripts/IBL/')
 from granger import get_volume, get_centroids, get_res, get_structural, get_ari
 from state_space_bwm import get_cmap_bwm, pre_post
-from bwm_figs import variverb
 
 from scipy import signal
 import pandas as pd
@@ -54,6 +53,7 @@ from itertools import combinations, chain
 from datetime import datetime
 import scipy.ndimage as ndi
 import hdbscan
+import subprocess
 
 
 from matplotlib.axis import Axis
@@ -63,7 +63,6 @@ import seaborn as sns
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 from matplotlib.colors import ListedColormap, LinearSegmentedColormap   
 from matplotlib.gridspec import GridSpec   
-import mpldatacursor
 from matplotlib.lines import Line2D
 from matplotlib.colors import to_rgba
 from matplotlib.patches import Rectangle
@@ -514,7 +513,7 @@ def load_atlas_data():
      D['df_clusters'], 
      D['df_channels'], 
      D['df_probes']) = ephys_atlas.data.download_tables(
-                        label='latest', 
+                        label='2024_W50', 
                         local_path=LOCAL_DATA_PATH, 
                         one=one)                    
                     
@@ -598,7 +597,7 @@ def get_allen_info(rerun=False):
 _,pal = get_allen_info()
 
 
-def regional_group(mapping, vers='concat', ephys=True,
+def regional_group(mapping, vers='concat', ephys=False,
                    nclus = 13, rerun=False):
 
     '''
@@ -608,7 +607,7 @@ def regional_group(mapping, vers='concat', ephys=True,
     '''
 
     if mapping == 'kmeans':
-        pth__ = Path(one.cache_dir, 'dmn', 'kmeans_group.npy')
+        pth__ = Path(one.cache_dir, 'dmn', f'kmeans_group_ephys{ephys}.npy')
     
         if ((pth__.is_file()) and (not rerun)):
             return np.load(pth__,allow_pickle=True).flat[0] 
@@ -624,7 +623,7 @@ def regional_group(mapping, vers='concat', ephys=True,
         feat = 'concat_z'
 
         nclus = nclus
-        kmeans = KMeans(n_clusters=nclus, random_state=3)
+        kmeans = KMeans(n_clusters=nclus, random_state=0)
         kmeans.fit(r[feat])  # kmeans in feature space
 
         clusters = kmeans.labels_
@@ -1128,9 +1127,10 @@ def decode_bulk():
     for src in sources:
         for mapping in targets:
 
-            re[f'{src} {mapping}'] = decode(src=src, mapping=mapping)
+            re[f'{src} {mapping}'] = decode(src=src,n_runs=10,
+                 mapping=mapping)
             k +=1
-            print(f'{k} out of {len(sources)*len(targets)}')
+            print(f'{k} out of {len(sources)*len(targets)} done')
 
     np.save(Path(pth_dmn,'decode.npy'), re, allow_pickle=True)
 
@@ -1288,7 +1288,7 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
         r[ke] = r[ke][goodcells]       
     cs = cs[goodcells]
         
-    print(len(cs), 'good cells stacked')
+    print(len(cs), 'good cells stacked before ephys')
 
     ptypes = [x for x in D_['trial_names']
               if x in ttypes]
@@ -1371,7 +1371,7 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
 
         print('z-scoring ephys features')
         r['ephysTF'] = zscore(np.stack(r['ephysTF'], axis=0),axis=1)
-        print('hierarchical clustering of ephys ...')
+        print('umap of ephys ...')
         # dim reducing ephys features
         r['umap_e'] = umap.UMAP(
                         n_components=ncomp).fit_transform(r['ephysTF'])
@@ -1522,7 +1522,7 @@ def stack_simple(nmin=10):
 '''
         
 
-def plot_dim_reduction(algo='umap_z', mapping='Beryl',ephys=True,
+def plot_dim_reduction(algo='umap_z', mapping='Beryl',ephys=False,
                        feat = 'concat_z', means=False, exa=False, shuf=False,
                        exa_squ=False, vers='concat', ax=None, ds=0.5,
                        axx=None, exa_kmeans=False, leg=False, restr=None,
@@ -1646,7 +1646,7 @@ def plot_dim_reduction(algo='umap_z', mapping='Beryl',ephys=True,
 
     if exa_kmeans:
         plot_cluster_mean_PETHs(r, mapping, feat, 
-            vers='concat', axx=axx, alone=True, c_sec=1)
+            vers='concat', axx=axx, alone=True)
 
 
 
@@ -1735,7 +1735,7 @@ def plot_dim_reduction(algo='umap_z', mapping='Beryl',ephys=True,
 
 
 def plot_cluster_mean_PETHs(r, mapping, feat, vers='concat', 
-                         axx=None, alone=True, c_sec=1/T_BIN):
+                         axx=None, alone=True):
     """
     Plots the mean PETH for each k-means cluster.
 
@@ -1751,7 +1751,7 @@ def plot_cluster_mean_PETHs(r, mapping, feat, vers='concat',
     alone : bool, optional
         If True, creates a new figure for the plot (default is True).
     c_sec : int, optional
-        Conversion factor for time bins to seconds (default is 1).
+        Conversion factor for time bins to seconds.
     """
 
     if len(np.unique(r['acs'])) > 50:
@@ -2033,7 +2033,7 @@ def smooth_dist(dim=2, algo='umap_z', mapping='Beryl', show_imgs=False, restr=Fa
     return res, regs
 
 
-def plot_ave_PETHs(feat = 'concat', vers='concat', rerun=False):
+def plot_ave_PETHs(feat = 'concat_z', vers='concat', rerun=False):
 
     '''
     average PETHs across cells
@@ -2105,10 +2105,22 @@ def plot_ave_PETHs(feat = 'concat', vers='concat', rerun=False):
         
         diffs = []
         for eid in eids:
-            trials, mask = load_trials_and_mask(one, eid)    
-            trials = trials[mask][:-100]
-            diffs.append(np.mean(np.diff(
-                        trials[list(evs.keys())]),axis=0))
+            try:
+                trials, mask = load_trials_and_mask(one, eid, 
+                    revision='2024-07-10')
+                trials = trials[mask][:-100]
+
+                # trials = one.load_object(eid, 'trials')
+                # trials = pd.DataFrame({'stimOn_times': trials['stimOn_times'][:-100],
+                #                    'firstMovement_times': trials['firstMovement_times'][:-100],
+                #                    'feedback_times': trials['feedback_times'][:-100]})
+
+                diffs.append(np.mean(np.diff(
+                            trials[list(evs.keys())]),axis=0))
+            except:
+                print(f'error with {eid}')
+                continue
+                
         
         d = {}
         d['mean'] = np.nanmean(diffs,axis=0) 
@@ -2125,13 +2137,12 @@ def plot_ave_PETHs(feat = 'concat', vers='concat', rerun=False):
     d = np.load(pth_dmnm, allow_pickle=True).flat[0]
     
     fig, ax = plt.subplots(figsize=(8.57, 2.75))
-    r = np.load(Path(pth_dmn, 'concat_normTrue.npy'),allow_pickle=True).flat[0]
-    r['mean'] = np.mean(r['concat'],axis=0)
+    r = np.load(Path(pth_dmn, 'concat_ephysFalse.npy'),allow_pickle=True).flat[0]
+    r['mean'] = np.mean(r[feat],axis=0)
 
     # get alignment event per PETH type
     pid = '1a60a6e1-da99-4d4e-a734-39b1d4544fad'
     ttt =  concat_PETHs(pid = pid,get_tts=True)
-    
     # plot trial averages
     yys = []  # to find maxes for annotation
     st = 0
@@ -2192,7 +2203,7 @@ def plot_ave_PETHs(feat = 'concat', vers='concat', rerun=False):
 
 
 def plot_xyz(mapping='Beryl', vers='concat', add_cents=False,
-             restr=False, ax = None,
+             restr=False, ax = None, axoff=True,
              exa=True):
 
     '''
@@ -2267,6 +2278,10 @@ def plot_xyz(mapping='Beryl', vers='concat', add_cents=False,
     ax.xaxis.set_major_locator(MaxNLocator(nbins=nbins))
     ax.yaxis.set_major_locator(MaxNLocator(nbins=nbins))
     ax.zaxis.set_major_locator(MaxNLocator(nbins=nbins))
+
+    if axoff:
+        ax.axis('off')
+
 
     if ((mapping in tts__) or (mapping in PETH_types_dict)):
         # Create a colorbar based on the colormap and normalization
@@ -2355,8 +2370,6 @@ def plot_xyz(mapping='Beryl', vers='concat', add_cents=False,
 
         fg.suptitle(f'mapping: {mapping}, feat: {feat}')
         fg.tight_layout()
-    
-
 
 
 def clus_grid():
@@ -2366,7 +2379,8 @@ def clus_grid():
     axs = []
     for cl in range(13):
         axs.append(fig.add_subplot(3, 5, cl + 1, projection='3d'))
-        plot_xyz(mapping='kmeans',restr=[cl], ax=axs[-1])    
+        plot_xyz(mapping='kmeans',restr=[cl], ax=axs[-1],
+            axoff=False if cl == 0 else True)    
 
 
 
@@ -3041,7 +3055,7 @@ def swansons_all(metric='latency', minreg=10, annotate=True,
                        else 'fr [Hz]')
                        
         axs[k].axis('off')
-        axs[k].set_title(variverb[s.split('_')[0]])
+        axs[k].set_title(s.split('_')[0])
         
         # change annotation fontsize
         text_objects = axs[k].texts
@@ -3443,7 +3457,7 @@ def plot_single_feature(algo='umap_z', vers='concat', mapping='Beryl',
     
     r = regional_group(mapping, vers=vers)    
     
-    fig, ax = plt.subplots(figsize=(6.97, 3.01))
+    fig, ax = plt.subplots(figsize=(6, 3.01))
     
     xx = np.arange(len(r[feat][0])) /c_sec  # convert to sec
     
@@ -3483,10 +3497,7 @@ def plot_single_feature(algo='umap_z', vers='concat', mapping='Beryl',
     ax.set_ylabel('z-scored firing rate')    
     ax.set_xlabel('time [sec]')    
     fig.tight_layout()    
-   
-    fig.savefig(Path(one.cache_dir,'dmn', 'figs','ex_cells',
-        f'{reg}_{samp}.png'),
-        dpi=150, bbox_inches='tight')   
+     
     
     
 def var_expl(minreg=20):
@@ -3566,13 +3577,14 @@ def clus_freqs(foc='kmeans', nmin=50, nclus=13, vers='concat', get_res=False,
         cluss = sorted(Counter(r_k['acs']))
         fig, axs = plt.subplots(nrows = len(cluss), ncols = 1,
                                figsize=(18.79,  15),
-                               sharex=True, sharey=False)
+                               sharex=True, sharey=True if norm_ else False)
         
         fig.canvas.manager.set_window_title(
             f'Frequency of Beryl region label per'
             f' kmeans cluster ({nclus}); vers ={vers}')                      
                                
-        cols_dict = dict(list(Counter(zip(r_a['acs'], r_a['cols']))))
+        cols_dict = dict(list(Counter(zip(list(r_a['acs']),
+                    [tuple(color) for color in r_a['cols']]))))  
         
         # order regions by canonical list 
         p = (Path(iblatlas.__file__).parent / 'beryl.npy')
@@ -3616,9 +3628,15 @@ def clus_freqs(foc='kmeans', nmin=50, nclus=13, vers='concat', get_res=False,
                 ticklabel.set_color(bar.get_facecolor())        
 
             axs[k].set_xlim(-0.5, len(labels)-0.5)
+            axs[k].spines['top'].set_visible(False)
+            axs[k].spines['right'].set_visible(False)
 
             k += 1
-        
+
+        for ax in axs:
+            if not has_data(ax):
+                ax.set_visible(False) 
+
         fig.tight_layout()        
         fig.subplots_adjust(top=0.951,
                             bottom=0.059,
@@ -3687,15 +3705,21 @@ def clus_freqs(foc='kmeans', nmin=50, nclus=13, vers='concat', get_res=False,
             bars = axs[k].bar(labels, values, color=colors)
             axs[k].set_ylabel(reg, color=cols_dictr[reg])
             axs[k].set_xticks(labels)
-            axs[k].set_xticklabels(labels, fontsize=8)
+            axs[k].set_xticklabels(labels, fontsize=8, rotation=90)
             
             for ticklabel, bar in zip(axs[k].get_xticklabels(), bars):
                 ticklabel.set_color(bar.get_facecolor())        
 
             axs[k].set_xlim(-0.5, len(labels)-0.5)
+            axs[k].spines['top'].set_visible(False)
+            axs[k].spines['right'].set_visible(False)
 
             k += 1
-            
+
+        for ax in axs:
+            if not has_data(ax):
+                ax.set_visible(False) 
+
         fig.canvas.manager.set_window_title(
             f'Frequency of kmeans cluster ({nclus}) per'
             f' Beryl region label per; vers = {vers}')
@@ -3720,7 +3744,7 @@ def clus_freqs(foc='kmeans', nmin=50, nclus=13, vers='concat', get_res=False,
         nrows = (len(reg_ord) + ncols - 1) // ncols
 
         fig, axs = plt.subplots(nrows=nrows, ncols=ncols,
-                                figsize=(18.79, 15), sharex=True, sharey=True)
+                                figsize=(18.79,  15), sharex=True, sharey=True)
         axs = axs.flatten()
 
         rrcols = ['r', 'g', 'b', 'y', 'c', 'm', 'k', 'o', 'p']
@@ -3743,22 +3767,46 @@ def clus_freqs(foc='kmeans', nmin=50, nclus=13, vers='concat', get_res=False,
             bars = axs[k].bar(labels, values, color=colors)
             axs[k].set_ylabel(reg, color=cols_dictr[reg])
             axs[k].set_xticks(labels)
-            axs[k].set_xticklabels(labels, fontsize=8)
+            axs[k].set_xticklabels(labels, fontsize=8, rotation=90)
             
             for ticklabel, bar in zip(axs[k].get_xticklabels(), bars):
                 ticklabel.set_color(bar.get_facecolor())        
 
             axs[k].set_xlim(-0.5, len(labels)-0.5)
-            
+            axs[k].spines['top'].set_visible(False)
+            axs[k].spines['right'].set_visible(False)
+
+
+        for ax in axs:
+            if not has_data(ax):
+                ax.set_visible(False)    
+
         fig.canvas.manager.set_window_title(
             f'Values from get_dec_bwm per Beryl region; vers = {vers}')
         fig.tight_layout()
-    # fig.savefig(Path(pth_dmn.parent, 'imgs',
-    #                  f'{foc}_{nclus}_{vers}_nrm_{norm_}.png'))
-
+    fig.savefig(Path(pth_dmn.parent, 'imgs',
+                     f'{foc}_{nclus}_{vers}_nrm_{norm_}.svg'), dpi=150)
+    fig.savefig(Path(pth_dmn.parent, 'imgs',
+                     f'{foc}_{nclus}_{vers}_nrm_{norm_}.pdf'), dpi=150)
     np.save(pthres, d, allow_pickle=True)
     if get_res:
         return d
+
+def has_data(ax):
+    # Check if there are any plot lines
+    if len(ax.lines) > 0:
+        return True
+    # Check if there are any bar containers
+    if len(ax.containers) > 0:
+        return True
+    # Check if there are any collections (like scatter, bar, etc.)
+    if len(ax.collections) > 0:
+        return True
+    # Check for images, patches, and other data types if necessary
+    if len(ax.images) > 0 or len(ax.patches) > 0:
+        return True
+    return False
+
 
 def count_trials():
 
@@ -3847,15 +3895,19 @@ def compare_two_goups(vers='concat', filt = 'VISp'):
     fig.tight_layout()
 
 
-def plot_rastermap(feat='concat_z', exa = False,
-                   mapping='Beryl', alpha=0.5, bg=False):
+def plot_rastermap(feat='concat_z', regex='Isocortex', exa = False,
+                   mapping='kmeans', alpha=0.5, bg=True, img_only=False):
     """
     Function to plot a rastermap with vertical segment boundaries 
     and labels positioned above the segments.
 
     Extra panel with colors of mapping.
 
+    feat = 'single_reg' will show only cells in example region regex
+
     """
+    if feat == 'single_reg':
+        print('make sure mapping is Berylif regex in Beryl, else Cosmos')
 
     r = regional_group(mapping)
 
@@ -3907,12 +3959,10 @@ def plot_rastermap(feat='concat_z', exa = False,
 
         r['isort'] = model.isort
 
-    if feat == 'only_cortical':
-        reg ='Isocortex'
-        assert mapping == 'Cosmos'
-        data = r['concat_z'][r['acs'] == reg, :]
+    if feat == 'single_reg':        
+        data = r['concat_z'][r['acs'] == regex, :]
         r[feat] = data
-        print(f'embedding rastermap for {reg} cells only')
+        print(f'embedding rastermap for {regex} cells only')
         # Fit the Rastermap model
         model = Rastermap(n_PCs=200, n_clusters=100,
                       locality=0.75, time_lag_window=5, bin_size=1).fit(data)
@@ -3929,7 +3979,7 @@ def plot_rastermap(feat='concat_z', exa = False,
 
     n_rows, n_cols = data.shape
     # Create a figure for the rastermap
-    fig, ax = plt.subplots(figsize=(10, 8))
+    fig, ax = plt.subplots(figsize=(6, 8))
 
     if feat != 'ephysTF':
         # plot in greys, then overlay color (good for big picture)
@@ -3945,13 +3995,23 @@ def plot_rastermap(feat='concat_z', exa = False,
             
             # Add text label above the segment boundary
             midpoint = h + r['len'][segment] / 2  # Midpoint of the segment
-            ax.text(midpoint, ylim[1] + 0.05 * (ylim[1] - ylim[0]), 
-                    segment, rotation=90, color='k', 
-                    fontsize=10, ha='center')  # Label positioned above the plot
+
+            if not img_only:
+                # Label positioned above the plot
+                ax.text(midpoint, ylim[1] + 0.05 * (ylim[1] - ylim[0]), 
+                        segment, rotation=90, color='k', 
+                        fontsize=10, ha='center')  
             
-            h += r['len'][segment]  # Update cumulative sum for the next segment        
+            h += r['len'][segment]  # Update cumulative sum for the next segment
+
+        x_ticks = np.arange(0, n_cols, c_sec)
+        ax.set_xticks(x_ticks)
+        x_labels = [f"{int(tick / c_sec)}" for tick in x_ticks]
+        ax.set_xticklabels(x_labels)
+
     else:
         im = ax.imshow(data, cmap="gray_r", aspect="auto")
+
         ax.set_xticks(range(data.shape[1]))
         ax.set_xticklabels(r['fts'], rotation=90)       
 
@@ -3960,12 +4020,15 @@ def plot_rastermap(feat='concat_z', exa = False,
             ax.hlines(i, xmin=0, xmax=n_cols, colors=color, 
             lw=.01, alpha=alpha)
 
-    ax.set_xlabel('time [bins]')    
-    ax.set_ylabel('cells')
+    ax.set_xlabel('time [sec]')    
+    ax.set_ylabel(f'cells in {regex}' if feat == 'single_reg' else 'cells')
 
     # Remove top and right spines
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
+
+    if img_only:
+        ax.axis('off')
 
     plt.tight_layout()  # Adjust the layout to prevent clipping
     plt.show()
@@ -4135,7 +4198,7 @@ def get_dec_bwm(nscores=3):
     return combined_res
 
 
-def scat_dec_clus(norm_=True, ari=False):
+def scat_dec_clus(norm_=True, ari=False, harris=False):
     # Replace the example dictionaries with the processed scores
     be = non_flatness_score(clus_freqs(foc='Beryl', get_res=True), norm_=norm_) 
 
@@ -4149,22 +4212,35 @@ def scat_dec_clus(norm_=True, ari=False):
     else:                             
         de = non_flatness_score(clus_freqs(foc='dec', get_res=True), norm_=norm_)  
 
-    # Harris hierarchy scores
-    harris_hierarchy_scores = {region: idx for idx, region in enumerate(harris_hierarchy)}
+    if harris:
+        # Harris hierarchy scores
+        harris_hierarchy_scores = {region: idx for idx, region 
+            in enumerate(harris_hierarchy)}
 
-    # Merge scores for common regions
-    common_regions = set(be.keys()).intersection(de.keys()).intersection(harris_hierarchy_scores.keys())
-    merged_data = {region: (be[region], de[region], harris_hierarchy_scores[region]) for region in common_regions}
+        # Merge scores for common regions
+        common_regions = set(be.keys()).intersection(de.keys()).intersection(
+            harris_hierarchy_scores.keys())
+        merged_data = {region: (be[region], de[region], 
+            harris_hierarchy_scores[region]) for region in common_regions}
 
+    else:
+        # Merge scores for common regions
+        common_regions = set(be.keys()).intersection(de.keys())
+        merged_data = {region: (be[region], de[region]) 
+            for region in common_regions} 
+
+    print(f"Number of common regions: {len(merged_data)}")
     # Separate values for plotting
     x_be = [merged_data[region][0] for region in merged_data]
     y_de = [merged_data[region][1] for region in merged_data]
-    z_harris = [merged_data[region][2] for region in merged_data]
+    if harris:
+        z_harris = [merged_data[region][2] for region in merged_data]
     colors = [pal[region] for region in merged_data]
     labels = list(merged_data.keys())
 
     # Set up subplots
-    fig, axes = plt.subplots(1, 3, figsize=(15, 8))  # 3 rows, 1 column
+    fig, axes = plt.subplots(1, 3 if harris else 1, 
+        figsize=(15 if harris else 3, 3))  # 3 rows, 1 column
 
     # Define scatter plot function for reuse
     def scatter_panel(ax, x, y, xlabel, ylabel):
@@ -4177,7 +4253,7 @@ def scat_dec_clus(norm_=True, ari=False):
         # Scatter points with labels
         for i, region in enumerate(labels):
             ax.scatter(x[i], y[i], color=colors[i], label=region)
-            ax.text(x[i], y[i], region, color=colors[i], fontsize=8, ha='left')
+            #ax.text(x[i], y[i], region, color=colors[i], fontsize=8, ha='left')
 
         # Pearson correlation
         corr, p = pearsonr(x, y)
@@ -4186,34 +4262,118 @@ def scat_dec_clus(norm_=True, ari=False):
         # Set labels
         ax.set_xlabel(xlabel, fontsize=12)
         ax.set_ylabel(ylabel, fontsize=12)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
 
     # Panel 1: `be` vs `de`
     scatter_panel(
-        axes[0],
+        axes[0] if harris else axes,
         x_be, y_de,
         xlabel='Beryl_clusters (non_flatness_score(d_b))',
         ylabel='BWM dec (non_flatness_score(d_d))' if not ari else "ari's non-flatness-scores"
     )
 
-    # Panel 2: `be` vs `harris`
-    scatter_panel(
-        axes[1],
-        x_be, z_harris,
-        xlabel='Beryl_clusters (non_flatness_score(d_b))',
-        ylabel='Harris hierarchy score'
-    )
+    if harris:
+        # Panel 2: `be` vs `harris`
+        scatter_panel(
+            axes[1],
+            x_be, z_harris,
+            xlabel='Beryl_clusters (non_flatness_score(d_b))',
+            ylabel='Harris hierarchy score'
+        )
 
-    # Panel 3: `de` vs `harris`
-    scatter_panel(
-        axes[2],
-        y_de, z_harris,
-        xlabel='BWM dec (non_flatness_score(d_d))' if not ari else "ari's non-flatness-scores",
-        ylabel='Harris hierarchy score'
-    )
+        # Panel 3: `de` vs `harris`
+        scatter_panel(
+            axes[2],
+            y_de, z_harris,
+            xlabel='BWM dec (non_flatness_score(d_d))' if not ari else "ari's non-flatness-scores",
+            ylabel='Harris hierarchy score'
+        )
 
     # Adjust layout and show
     plt.tight_layout()
     plt.show()
+
+
+def scatter_harris_correlation(acronyms=False):
+
+    # File paths based on the image names
+
+    nets = ['concat', 'motor_init', 'pre-stim-prior', 
+        'stim_all', 'stim_surp_con', 'stim_surp_incon']
+
+    file_paths = [Path(one.cache_dir, 'dmn', 
+        f'wasserstein_fromflatdist_13_{net}_nd2.npy') for net in nets]
+
+
+    # Load Harris hierarchy scores
+    harris_hierarchy_scores = {region: idx for idx, region in enumerate(harris_hierarchy)}
+
+    # Prepare data for each file
+    datasets = []
+    for path in file_paths:
+        data = np.load(path, allow_pickle=True).flat[0]
+        de = {}
+        for k, reg in enumerate(data['regs']):
+            de[reg] = data['res'][k]
+        datasets.append(de)
+
+    # Identify common regions across all datasets and Harris scores
+    common_regions = set.intersection(*(set(dataset.keys()) for dataset in datasets), set(harris_hierarchy_scores.keys()))
+
+    # Extract merged data for scatter plots
+    merged_data = []
+    for dataset in datasets:
+        merged_data.append({region: (dataset[region], harris_hierarchy_scores[region]) for region in common_regions})
+
+    # Set up subplots (1 row, 6 columns)
+    fig, axes = plt.subplots(1, 6, figsize=(15, 3),sharey=True)
+
+    # Define scatter plot function for reuse
+    def scatter_panel(ax, x, y, labels, colors, xlabel, ylabel, title):
+        # Fit regression line
+        slope, intercept, r_value, _, _ = linregress(x, y)
+        xx = np.linspace(min(x), max(x), 100)
+        yy = slope * xx + intercept
+        ax.plot(xx, yy, color='black', linestyle='--', label=f'Fit: y={slope:.2f}x+{intercept:.2f}')
+
+        # Scatter points with region-specific colors and labels
+        for i, region in enumerate(labels):
+            ax.scatter(x[i], y[i], color=colors[i])
+            if acronyms:
+                ax.text(x[i], y[i], region, color=colors[i], fontsize=8, ha='left')
+
+        # Pearson correlation
+        corr, p = pearsonr(x, y)
+        ax.annotate(f"Pearson r,p = {corr:.2f},{p:.4f}", xy=(0.5, 1.05), xycoords='axes fraction', 
+                    fontsize=8, ha='center', verticalalignment='bottom')
+
+        # Set labels and title
+        ax.set_xlabel(xlabel, fontsize=10)
+        ax.set_ylabel(ylabel, fontsize=10)
+        ax.set_title(f"{title}\n", fontsize=10)  # Add extra line for spacing
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    # Generate scatter plots for each dataset
+    for i, data in enumerate(merged_data):
+        x = [data[region][0] for region in data]
+        y = [data[region][1] for region in data]
+        labels = list(data.keys())
+        colors = [pal[region] for region in labels]  # Assume `pal` maps regions to colors
+        scatter_panel(
+            axes[i], x, y, labels, colors,
+            xlabel='specialization',
+            ylabel='Hierarchy score',
+            title=f'{nets[i].replace("_", " ").title()}'
+        )
+        if i != 0:
+           axes[i].set_ylabel('')
+
+    # Adjust layout and show
+    plt.tight_layout()
+    plt.show()
+
 
 
 def plot_brain_region_counts(start=None, end=None, nmin=50):
@@ -4299,63 +4459,102 @@ def embed_histograms_scatter(foc='dec', ax=None):
     ax.set_ylabel('umap_dim 2')
 
 
-
 def plot_decoding_results():
     re = np.load(Path(pth_dmn,'decode.npy'), allow_pickle=True).flat[0]
     # Prepare the data for plotting
-    mappings = ['kmeans', 'Beryl', 'Cosmos', 'layers', 'functional']
-    sources = ['concat_z', 'ephysTF']
+    sources, mappings = [], []
+    [[sources.append(k.split(' ')[0]), mappings.append(k.split(' ')[1])] for k in re]
+
+    mappings = np.unique(mappings) 
+    sources = np.unique(sources) 
+
     data = []
 
     for source in sources:
-        for mapping in mappings:
-            key = f"{source} {mapping}"
+        for mapp in mappings:
+            key = f"{source} {mapp}"
             if key not in re:
                 continue
-
-            normal_results, shuffled_results = re[key]  # Extract normal and shuffled results
-
-            # Process normal results
+            normal_results, shuffled_results = re[key]  
             for split in normal_results:
-                train_results = split[:, 0]  # Train accuracy (1st column)
-                test_results = split[:, 1]  # Test accuracy (2nd column)
-
-                data.extend([{'Mapping': mapping, 'Source': source, 'Type': 'Train Normal', 'Accuracy': acc} for acc in train_results])
-                data.extend([{'Mapping': mapping, 'Source': source, 'Type': 'Test Normal', 'Accuracy': acc} for acc in test_results])
-
-            # Process shuffled results
+                test_results = split[:, 1]
+                data.extend([{'Mapping': mapp, 'Source': source, 'Type': 'Test Normal', 'Accuracy': acc} for acc in test_results])
             for split in shuffled_results:
-                train_results = split[:, 0]  # Train accuracy (1st column)
-                test_results = split[:, 1]  # Test accuracy (2nd column)
+                test_results = split[:, 1]
+                data.extend([{'Mapping': mapp, 'Source': source, 'Type': 'Test Shuffled', 'Accuracy': acc} for acc in test_results])
 
-                data.extend([{'Mapping': mapping, 'Source': source, 'Type': 'Train Shuffled', 'Accuracy': acc} for acc in train_results])
-                data.extend([{'Mapping': mapping, 'Source': source, 'Type': 'Test Shuffled', 'Accuracy': acc} for acc in test_results])
-
-    # Convert the data to a DataFrame for seaborn
     df = pd.DataFrame(data)
 
-    # Create the plot
-    fig, axes = plt.subplots(1, len(mappings), figsize=(8, 3), sharey=True)
-
-    for ax, mapping in zip(axes, mappings):
+    fig, ax = plt.subplots(figsize=(3, 3))
+    mapping_colors = sns.color_palette("tab10", len(mappings))
+    mapping_palette = {str(mapp): color for mapp, 
+        color in zip(mappings, mapping_colors)}
+    expanded_palette = {
+        mapp: {'Test Normal': color, 'Test Shuffled': color}
+        for mapp, color in mapping_palette.items()
+    }
+    for mapp in mappings:    
         sns.stripplot(
-            data=df[df['Mapping'] == mapping],
+            data=df[df['Mapping'] == mapp],
             x='Source', y='Accuracy', hue='Type',
             dodge=True, jitter=True, ax=ax,
-            palette='Set2', legend=(ax == axes[0])
+            palette=expanded_palette[mapp] ,  # Use the defined color palette
+            size=3
         )
-        ax.set_title(mapping)
-        ax.set_xlabel('')
+    
+    ax.axvline(x=0.5, color='k', linestyle='-', linewidth=1)
+    ax.axvline(x=0, color='k', linestyle='--', linewidth=1)
+    ax.axvline(x=1, color='k', linestyle='--', linewidth=1)
 
-        # Add vertical dotted line to separate the two input data types
-        ax.axvline(x=0.5, color='gray', linestyle='--', linewidth=1)
 
-    # Customize the legend in the first panel
-    handles, labels = axes[0].get_legend_handles_labels()
-    axes[0].legend(handles, labels, loc='best', 
-        frameon=False, ncols=4).set_draggable(True)
 
-    axes[0].set_ylabel('Decoding Accuracy')
-    plt.tight_layout()  # Adjust layout
-    plt.show()
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
 
+    plt.tight_layout()
+    custom_handles = [plt.Line2D([0], [0], color=palette, marker='o', 
+                        linestyle='', markersize=5)
+                      for palette in mapping_colors]
+    ax.legend(custom_handles, mappings, title='Targets', loc='best', 
+         frameon=False).set_draggable(True)
+
+    ax.set_xticks([-0.25,  0.25, 0.75, 1.25])
+    ax.set_xticklabels(['test','shuffle', 'test','shuffle'], rotation=90)
+    ax.set_xlabel('concat_z | ephysTF')
+    ax.set_ylabel('Decoding Accuracy')
+     
+
+def ghostscript_compress_pdf(level='/printer'):
+
+    '''
+    Compress figs (inkscape pdfs)
+    
+    levels in [/screen, /ebook,  /printer]
+    '''
+
+    input_path = input("Please enter pdf input_path: ")
+    print(f"Received input path: {input_path}")
+
+    output_path = input("Please enter pdf output_path: ")
+    print(f"Received output path: {output_path}")
+    
+    input_path = Path(input_path.strip("'\""))
+    output_path = Path(output_path.strip("'\""))
+    
+    print('input_path', input_path)
+    print('output_path', output_path)                 
+
+    # Ghostscript command to compress PDF
+    command = [
+        'gs', '-sDEVICE=pdfwrite', '-dCompatibilityLevel=1.4',
+        '-dAutoRotatePages=/None',
+        f'-dPDFSETTINGS={level}', '-dNOPAUSE', '-dQUIET', '-dBATCH',
+        f'-sOutputFile={output_path}', input_path
+    ]
+
+    # Execute the command
+    try:
+        subprocess.run(command, check=True)
+        print(f"PDF successfully compressed and saved to {output_path}")
+    except subprocess.CalledProcessError as e:
+        print(f"An error occurred: {e}")
