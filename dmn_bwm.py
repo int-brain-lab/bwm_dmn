@@ -70,6 +70,8 @@ from matplotlib.ticker import ScalarFormatter
 from matplotlib.ticker import MaxNLocator
 from matplotlib.pyplot import cm
 from venny4py.venny4py import *
+import matplotlib.colors as mcolors
+from ibl_style.style import figure_style
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -80,6 +82,9 @@ plt.ion()
 
 
 np.set_printoptions(threshold=sys.maxsize)
+
+
+figure_style()
 
 plt.rcParams.update(plt.rcParamsDefault)
 plt.ion()
@@ -123,6 +128,38 @@ tts__ = ['inter_trial', 'blockL', 'blockR', 'block50',
          'sRbRchoiceR', 'sRbLchoiceR', 'choiceL', 'choiceR',  
          'fback1', 'fback0']
      
+peth_ila = [
+    r"$\mathrm{rest}$",
+    r"$\mathrm{L_b}$",
+    r"$\mathrm{R_b}$",
+    r"$\mathrm{50_b}$",
+    r"$\mathrm{quies}$",
+    r"$\mathrm{L_sL_cL_b, s}$",
+    r"$\mathrm{L_sL_cR_b, s}$",
+    r"$\mathrm{L_sR_cR_b, s}$",
+    r"$\mathrm{L_sR_cL_b, s}$",
+    r"$\mathrm{R_sL_cL_b, s}$",
+    r"$\mathrm{R_sL_cR_b, s}$",
+    r"$\mathrm{R_sR_cR_b, s}$",
+    r"$\mathrm{R_sR_cL_b, s}$",
+    r"$\mathrm{move}$",
+    r"$\mathrm{L_sL_cL_b, m}$",
+    r"$\mathrm{L_sL_cR_b, m}$",
+    r"$\mathrm{L_sR_cR_b, m}$",
+    r"$\mathrm{L_sR_cL_b, m}$",
+    r"$\mathrm{R_sL_cL_b, m}$",
+    r"$\mathrm{R_sL_cR_b, m}$",
+    r"$\mathrm{R_sR_cR_b, m}$",
+    r"$\mathrm{R_sR_cL_b, m}$",
+    r"$\mathrm{L_c}$",
+    r"$\mathrm{R_c}$",
+    r"$\mathrm{feedbk1}$",
+    r"$\mathrm{feedbk0}$"
+]
+
+
+peth_dict = dict(zip(tts__, peth_ila))
+
 
 PETH_types_dict = {
     'concat': [item for item in tts__],
@@ -137,13 +174,19 @@ PETH_types_dict = {
     'fback1': ['fback1'],
     'fback0': ['fback0']}      
 
-# https://github.com/XY-DIng/mouse_dist_wm/blob/main/results/area_list.csv
+# https://www.nature.com/articles/s41586-019-1716-z/figures/6
 harris_hierarchy = [
-    "VISp", "AUDp", "SSp-ll", "AUDd", "SSp-n", "SSp-ul", "AIp", "SSp-m", 
-    "SSp-un", "SSp-bfd", "VISl", "AUDv", "SSs", "VISC", "SSp-tr", "VISli", 
-    "MOp", "VISrl", "VISpl", "RSPv", "RSPd", "GU", "RSPagl", "PERI", "ECT", 
-    "VISal", "ILA", "ORBl", "AId", "VISpm", "ORBm", "PL", "VISpor", "FRP", 
-    "AUDpo", "TEa", "VISa", "VISam"
+    "VPM", "VPL", "PCN", "LGd", "CL", "IAD",
+    "VISp", "MG", "AM", "IMD", "AUDp", "SSp-n",
+    "SSp-ll", "AUDd", "MD", "SSp-ul", "SSp-m", "PT",
+    "SSp-bfd", "SSs", "AIp", "VISl", "VISrl", "RSPd",
+    "LD", "MOp", "VISli", "PO", "VISpl", "RSPagl",
+    "RSPv", "VISal", "PVT", "CM", "VISpm", "AId",
+    "SSp-tr", "AV", "VAL", "SMT", "LP", "ORBi",
+    "AUDpo", "PL", "ORBm", "ILA", "FRP", "VISpor",
+    "ACAv", "VISam", "VISa", "MOs", "TEa", "AIv",
+    "ACAd", "ORBl", "PIL", "PF", "RE", "VM",
+    "POL"
 ]
 
 
@@ -583,9 +626,12 @@ def get_allen_info(rerun=False):
         #add layer colors
         bc = ['b', 'g', 'r', 'c', 'm', 'y', 'brown', 'pink']
         for i in range(7):
-            palette[str(i)] = bc[i]
+            palette[str(i)] = mcolors.to_rgba(bc[i])
         
-        palette['thal'] = 'k'    
+        palette['thal'] = mcolors.to_rgba('k') 
+        palette['~layer'] = (0, 0, 0, 0)
+
+
         r = {}
         r['dfa'] = dfa
         r['palette'] = palette    
@@ -679,14 +725,14 @@ def regional_group(mapping, vers='concat', ephys=False,
             acs[acs == reg] = 'thal'       
         
         mask = np.array([(x.isdigit() or x == 'thal') for x in acs])
-        acs[~mask] = '0'
+        acs[~mask] = '~layer'
         
-        remove_0 = True
+        remove_0 = False
         
         if remove_0:
             # also remove layer 6, as there are only 20 neurons 
             zeros = np.arange(len(acs))[
-                        np.bitwise_or(acs == '0', acs == '6')]
+                        np.bitwise_or(acs == '~layer', acs == '6')]
             for key in r:
                 if len(r[key]) == len(acs):
                     r[key] = np.delete(r[key], zeros, axis=0)
@@ -3488,7 +3534,7 @@ def plot_single_feature(algo='umap_z', vers='concat', mapping='Beryl',
         
         # place text in middle of interval
         ax.text(xv/c_sec - d2[i]/(2*c_sec), max(yy),
-                 '   '+i, rotation=90, color='k', 
+                 '   '+peth_dict[i], rotation=90, color='k', 
                  fontsize=10, ha='center')
     
         h += d2[i] 
@@ -4327,31 +4373,42 @@ def scatter_harris_correlation(acronyms=False):
         merged_data.append({region: (dataset[region], harris_hierarchy_scores[region]) for region in common_regions})
 
     # Set up subplots (1 row, 6 columns)
-    fig, axes = plt.subplots(1, 6, figsize=(15, 3),sharey=True)
+    fig, axes = plt.subplots(3, 2, figsize=(7, 10),sharey=True)
+    axes = axes.flatten()
 
     # Define scatter plot function for reuse
     def scatter_panel(ax, x, y, labels, colors, xlabel, ylabel, title):
+
+        # Pearson correlation
+        corr, p = pearsonr(x, y)
+
+
+
+        # ax.annotate(f"Pearson r,p = {corr:.2f},{p:.4f}", xy=(0.5, 1.05), xycoords='axes fraction', 
+        #             fontsize=8, ha='center', verticalalignment='bottom')
+
         # Fit regression line
         slope, intercept, r_value, _, _ = linregress(x, y)
         xx = np.linspace(min(x), max(x), 100)
         yy = slope * xx + intercept
-        ax.plot(xx, yy, color='black', linestyle='--', label=f'Fit: y={slope:.2f}x+{intercept:.2f}')
+        ax.plot(xx, yy, color='black', linestyle='--',linewidth=0.5 if p > 0.05 else 1, 
+            label=f'Fit: y={slope:.2f}x+{intercept:.2f}')
+
+        if p < 0.05:
+            # put an astreics at the end of lie plot    
+            ax.text(0.95, 0.95, '*', transform=ax.transAxes, fontsize=20, verticalalignment='top')
 
         # Scatter points with region-specific colors and labels
         for i, region in enumerate(labels):
-            ax.scatter(x[i], y[i], color=colors[i])
+            ax.scatter(x[i], y[i], color=colors[i], s=10)
             if acronyms:
                 ax.text(x[i], y[i], region, color=colors[i], fontsize=8, ha='left')
-
-        # Pearson correlation
-        corr, p = pearsonr(x, y)
-        ax.annotate(f"Pearson r,p = {corr:.2f},{p:.4f}", xy=(0.5, 1.05), xycoords='axes fraction', 
-                    fontsize=8, ha='center', verticalalignment='bottom')
 
         # Set labels and title
         ax.set_xlabel(xlabel, fontsize=10)
         ax.set_ylabel(ylabel, fontsize=10)
-        ax.set_title(f"{title}\n", fontsize=10)  # Add extra line for spacing
+        # put tile left
+        ax.set_title(f"{title}", fontsize=10, loc="left")  
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
 
@@ -4363,8 +4420,8 @@ def scatter_harris_correlation(acronyms=False):
         colors = [pal[region] for region in labels]  # Assume `pal` maps regions to colors
         scatter_panel(
             axes[i], x, y, labels, colors,
-            xlabel='specialization',
-            ylabel='Hierarchy score',
+            xlabel='specialization' if i == 0 else '',
+            ylabel='hierarchy score',
             title=f'{nets[i].replace("_", " ").title()}'
         )
         if i != 0:
