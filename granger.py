@@ -925,7 +925,6 @@ def get_res(nmin=10, metric='granger', combine_=False, c_mc =False,
                         d[f'{regs[i]} --> {regs[j]}'].append(
                             [m[j, i], p_c[i,j], 
                             D['regsd'][regs[i]], D['regsd'][regs[j]], eid])
-                        
 
                     else:
                         d[f'{regs[i]} --> {regs[j]}'] = []
@@ -970,15 +969,19 @@ def get_res(nmin=10, metric='granger', combine_=False, c_mc =False,
 
     if combine_:
         # take mean score across measurements
-        dd = {k: [np.mean(np.array(d[k])[:,0], dtype=float), 
-                 p_fisher(np.array(np.array(d[k])[:,1], dtype=float))] 
-                 for k in d if (len(d[k]) >= sessmin)}
+        dd = {
+            k: np.array([
+                np.mean(np.array(d[k])[:, 0].astype(float)), 
+                p_fisher(np.array(d[k])[:, 1].astype(float))
+            ], dtype=float)  # Ensure dtype is float for the array
+            for k in d if len(d[k]) >= sessmin
+        }
         
         if sig_only:
             ddd = {}
             for pair in dd:
                 if dd[pair][1] < sigl:
-                    ddd[pair] = dd[pair][0]  
+                    ddd[pair] = float(dd[pair][0])
 
             dd = ddd
 
@@ -986,7 +989,7 @@ def get_res(nmin=10, metric='granger', combine_=False, c_mc =False,
         if sig_only:
             dd = {}
             for pair in d:
-                l = [x[0] for x in d[pair] if x[1] < sigl]    
+                l = [float(x[0]) for x in d[pair] if x[1] < sigl]    
                 if l == []:
                     continue
                 else:
@@ -1300,7 +1303,9 @@ def plot_gc(eid, segl=10, shuf=False,
     
     metric = 'pairwise_spectral_granger_prediction'
     or 'coherence_magnitude'
-    
+
+    For SI:
+    plot_gc('af55d16f-0e31-4073-bdb5-26da54914aa2', single_pair=True)
     '''
     time00 = time.perf_counter()
     
@@ -1388,8 +1393,8 @@ def plot_gc(eid, segl=10, shuf=False,
         s += np.max(y)
         i +=1
               
-    axs[0].set_xlabel('time [sec]')
-    axs[0].set_ylabel('firing rate [Hz]')
+    axs[0].set_xlabel('Time (s)')
+    axs[0].set_ylabel('Firing rate (Hz)')
     axs[0].spines['top'].set_visible(False)
     axs[0].spines['right'].set_visible(False)
     axs[0].set_title('example segment')
@@ -1410,7 +1415,10 @@ def plot_gc(eid, segl=10, shuf=False,
 
         axs[1].legend(handlelength=1, handletextpad=0.4)
         axs[1].set_xlabel('frequency [Hz]')
-        axs[1].set_ylabel(metric)
+        if metric == 'pairwise_spectral_granger_prediction':
+            axs[1].set_ylabel('Pairwise spectral \n granger prediction')
+        else:
+            axs[1].set_ylabel(metric)
         axs[1].spines['top'].set_visible(False)
         axs[1].spines['right'].set_visible(False)  
         # axs[1].set_title(f'top {j} tuples') 
@@ -1903,7 +1911,7 @@ def scatter_direction(sig_only=True, annotate=True, ax=None):
         for i in random.sample(range(len(pairs)),20):
             ax.annotate('  ' + pairs0[i], 
                 (dir0[i], dir1[i]),
-                fontsize=5,color='k')  
+                fontsize=10,color='k')  
 
             
     ax.set_xlabel('A --> B')
@@ -1972,7 +1980,8 @@ def get_ari():
 
 
 def plot_graph(metric='granger', restrict='', ax=None, win='whole_session',
-               direction='both', sa = 1.5, sessmin=2, sig_only=False, ari=False):
+               direction='both', sa = 1.5, sessmin=2, 
+               ari=False, sig_only=False, ews = 50):
 
     '''
     circular graph
@@ -1989,12 +1998,12 @@ def plot_graph(metric='granger', restrict='', ax=None, win='whole_session',
     alone = False
     if ax == None:
         alone = True
-        fig, ax = plt.subplots(figsize=(7.23,7.33), label=win)
+        fig, ax = plt.subplots(figsize=(4,4), label=win)
 
     if metric == 'cartesian':
         d = trans_(get_centroids(dist_=True))
     elif metric == 'granger':
-        d = get_res(metric=metric, sessmin=sessmin, win=win)   
+        d = get_res(metric=metric, sessmin=sessmin, win=win, combine_=True)   
     elif metric == 'pw':
         d = trans_(get_pw_dist(vers='concat'))   
     elif metric == 'umap_z':     
@@ -2002,21 +2011,20 @@ def plot_graph(metric='granger', restrict='', ax=None, win='whole_session',
     else:
         print('what metric?')
         return
-
-    # ew was 80
-    ews = 10 if metric == 'granger' else 8
+   
+    # ews was 80
+    ews = ews if metric == 'granger' else ews/10  # edge width
     fontsize = 11 if alone else 1
     
-
     # scale symbols for multi-panel graphs
     node_size = 30 if alone else 3
-
+    
     # non-significant edge width
     if sig_only:
         nsw = 0
     else:
         nsw = 0.02 if metric == 'coherence' else 0.005
-    ews = ews/sa
+    ews = ews/sa  # edge width
     node_size = node_size/sa
     fontsize = fontsize/sa
        
@@ -2030,6 +2038,7 @@ def plot_graph(metric='granger', restrict='', ax=None, win='whole_session',
                      
     _, pa = get_allen_info()
             
+
     G = nx.DiGraph()
     for edge, weight in d.items():
         source, target = edge.split(' --> ')
@@ -2037,11 +2046,11 @@ def plot_graph(metric='granger', restrict='', ax=None, win='whole_session',
             continue
         
         if metric in ['granger', 'coherence']:
-            w = weight[0][0] if (weight[0][1] < sigl) else nsw
+            w = weight[0] if (weight[1] < sigl) else nsw
             w = w*ews
             G.add_edge(source, target, 
                        weight=w, 
-                       color='k' if weight[0][1] < sigl else 'cyan')
+                       color='k' if weight[1] < sigl else 'cyan')
         else:
             w = weight[0]
             w = w*ews
@@ -2157,7 +2166,7 @@ def plot_multi_graph(sessmin=2, win='whole_session', sa=1.5, sig_only=False, axs
     for creg in cregs: 
         for direction in directions:
             plot_graph(metric='granger', restrict=creg, sessmin = sessmin, 
-                       ax=axs[k], sa = sa, sig_only=sig_only, direction=direction, win=win)
+                       ax=axs[k], sa = sa, direction=direction, win=win, sig_only=sig_only)     
             axs[k].set_title(f'{creg} {direction}')
             k += 1
 
@@ -2223,7 +2232,7 @@ def make_table():
 
 def heatmap_adjacency(ax=None, ms=1):
 
-    data = get_res(c_mc=True, sig_only=True)
+    data = get_res(c_mc=True, sig_only=True, combine_=True, sessmin=1)
 
     # Step 1: Extract unique brain regions
     regions = set()
@@ -2316,7 +2325,7 @@ def scatter_similarity(ranks=False, hexbin_=False, anno=False, axs=None):
 
 
     D['cartesian']= trans_(get_centroids(dist_=True))
-    D['granger'] = get_res(metric='granger', sig_only=True)
+    D['granger'] = get_res(metric='granger', sig_only=True, combine_=True, sessmin=1)
     D['axonal'] = get_structural(fign=3)
 
 
