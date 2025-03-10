@@ -1461,7 +1461,7 @@ def plot_gc(eid, segl=10, shuf=False,
     
     
     
-def plot_strip_pairs(metric='granger', sessmin = 3, 
+def plot_strip_pairs(metric='granger', sessmin = 3,
              ptype='strip', shuf=False, expo=1, sig_only=True, markersize=2, axs=None):
 
     '''
@@ -1501,7 +1501,8 @@ def plot_strip_pairs(metric='granger', sessmin = 3,
         exs = list(dm_sorted.keys())
         nrows = 3
         fs = 5
-        per_row = len(exs)//nrows
+        # per_row = len(exs)//nrows
+        per_row = int(np.ceil(len(exs) / nrows))
            
         d_exs = {x:d[x] for x in exs}
 
@@ -1981,7 +1982,7 @@ def get_ari():
 
 def plot_graph(metric='granger', restrict='', ax=None, win='whole_session',
                direction='both', sa = 1.5, sessmin=2, 
-               ari=False, sig_only=False, ews = 50):
+               ari=False, sig_only=False, ews = 50, alone=True):
 
     '''
     circular graph
@@ -1995,10 +1996,11 @@ def plot_graph(metric='granger', restrict='', ax=None, win='whole_session',
     
     '''
     from dmn_bwm import trans_, get_umap_dist, get_pw_dist
-    alone = False
-    if ax == None:
-        alone = True
+    if ax is None:
+        tight = True
         fig, ax = plt.subplots(figsize=(4,4), label=win)
+    else:
+        tight = False
 
     if metric == 'cartesian':
         d = trans_(get_centroids(dist_=True))
@@ -2072,7 +2074,8 @@ def plot_graph(metric='granger', restrict='', ax=None, win='whole_session',
     
     else:        
         # order regions by canonical list 
-        p = (Path(iblatlas.__file__).parent / 'beryl.npy')
+        #p = (Path(iblatlas.__file__).parent / 'beryl.npy')
+        p = Path('/Users/admin/int-brain-lab/iblatlas/iblatlas/beryl.npy')
         regs = br.id2acronym(np.load(p), mapping='Beryl')
 
 
@@ -2136,7 +2139,7 @@ def plot_graph(metric='granger', restrict='', ax=None, win='whole_session',
     ax.set_aspect('equal')
     ax.set_axis_off()
         
-    if alone:
+    if tight:
         #ax.set_title(f'{metric}, black edges significant; restrict {restrict}')
         fig.tight_layout()
         
@@ -2147,7 +2150,7 @@ def plot_graph(metric='granger', restrict='', ax=None, win='whole_session',
 #                        'granger_single_graph.svg'))
 
 
-def plot_multi_graph(sessmin=2, win='whole_session', sa=1.5, sig_only=False, axs=None):
+def plot_multi_graph(sessmin=2, win='whole_session', sa=2, sig_only=False, axs=None):
 
     cregs = ['CB', 'TH', 'HPF', 'Isocortex', 
              'OLF', 'CTXsp', 'CNU', 'HY', 'HB', 'MB']
@@ -2155,19 +2158,35 @@ def plot_multi_graph(sessmin=2, win='whole_session', sa=1.5, sig_only=False, axs
     directions = ['source', 'target']
     if axs is None:
         tight = True
-        fig, axs = plt.subplots(nrows=5, ncols=4, figsize=(8.5,14), label=win)
+        nrows = 5
+        ncols = 4
+        fig, axs = plt.subplots(nrows=nrows, ncols=ncols, figsize=(8.5,14), label=win)
+        dir = 'row'
     else:
         tight = False
         fig = axs[0,0].get_figure()
+        nrows, ncols = axs.shape
+        dir = 'row' if nrows > ncols else 'col'
 
-    axs = axs.T.flatten()
-    
+    row = 0
+    col = 0
     k = 0
-    for creg in cregs: 
+    for creg in cregs:
+
         for direction in directions:
-            plot_graph(metric='granger', restrict=creg, sessmin = sessmin, 
-                       ax=axs[k], sa = sa, direction=direction, win=win, sig_only=sig_only)     
-            axs[k].set_title(f'{creg} {direction}')
+            if dir == 'row':
+                col = np.mod(k, ncols)
+                if k != 0 and col == 0:
+                    row += 1
+            else:
+                row = np.mod(k, nrows)
+                if k != 0 and row == 0:
+                    col += 1
+            ax = axs[row, col]
+            plot_graph(metric='granger', restrict=creg, sessmin = sessmin,
+                       ax=ax, sa = sa, direction=direction, win=win, sig_only=sig_only,
+                       alone=False)
+            ax.set_title(f'{creg} {direction}')
             k += 1
 
     if tight:
@@ -2244,7 +2263,8 @@ def heatmap_adjacency(ax=None, ms=1):
     # Sort regions for consistency
 
     # order by canonical order
-    p = (Path(iblatlas.__file__).parent / 'beryl.npy')
+    #p = (Path(iblatlas.__file__).parent / 'beryl.npy')
+    p = Path('/Users/admin/int-brain-lab/iblatlas/iblatlas/beryl.npy')
     regs_ = br.id2acronym(np.load(p), mapping='Beryl')
 
     regsC = [reg for reg in regs_ if reg in regions]
