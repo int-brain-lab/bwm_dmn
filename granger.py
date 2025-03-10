@@ -1888,15 +1888,15 @@ def scatter_direction(sig_only=True, annotate=True):
         pairs0.append(', '.join([a,b]))
           
             
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(figsize=(3,3))
     ax.scatter(dir0, dir1, color='k', s=0.5)
     ax.plot([0, 1], [0, 1], linestyle='--', color='grey')
     
     if annotate:
-        for i in random.sample(range(len(pairs)),20):
+        for i in random.sample(range(len(pairs)),3):
             ax.annotate('  ' + pairs0[i], 
                 (dir0[i], dir1[i]),
-                fontsize=10,color='k')  
+                fontsize=10,color='k', fontweight='bold')  
 
             
     ax.set_xlabel('A --> B')       
@@ -2372,8 +2372,8 @@ def scatter_similarity(ranks=False, hexbin_=False, anno=False):
         cc = 'k'
 
         a = 'ranks' if ranks else ''
-        ax[k].set_xlabel(f'{metrics[nf[k][0]]} ' + a, color=cc)       
-        ax[k].set_ylabel(f'{metrics[nf[k][1]]} ' + a, color=cc)
+        ax[k].set_xlabel(f'{metrics[nf[k][0]]} '.capitalize() + a, color=cc)       
+        ax[k].set_ylabel(f'{metrics[nf[k][1]]} '.capitalize() + a, color=cc)
         ax[k].spines['right'].set_visible(False)
         ax[k].spines['top'].set_visible(False)
         ss = (f"{np.round(corp,2) if pp<0.05 else '_'}, "
