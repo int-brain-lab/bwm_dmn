@@ -981,7 +981,7 @@ def get_res(nmin=10, metric='granger', combine_=False, c_mc =False,
             ddd = {}
             for pair in dd:
                 if dd[pair][1] < sigl:
-                    ddd[pair] = dd[pair][0]  
+                    ddd[pair] = float(dd[pair][0])
 
             dd = ddd
 
@@ -2126,7 +2126,7 @@ def plot_graph(metric='granger', restrict='', ax=None, win='whole_session',
 #                        'granger_single_graph.svg'))
 
 
-def plot_multi_graph(sessmin=2, win='whole_session', sig_only=True, sa=2):
+def plot_multi_graph(sessmin=2, win='whole_session', sig_only=False, sa=2):
 
     cregs = ['CB', 'TH', 'HPF', 'Isocortex', 
              'OLF', 'CTXsp', 'CNU', 'HY', 'HB', 'MB']
@@ -2292,7 +2292,7 @@ def scatter_similarity(ranks=False, hexbin_=False, anno=False):
 
 
     D['cartesian']= trans_(get_centroids(dist_=True))
-    D['granger'] = get_res(metric='granger', sig_only=True)
+    D['granger'] = get_res(metric='granger', sig_only=True, combine_=True, sessmin=1)
     D['axonal'] = get_structural(fign=3)
 
 
