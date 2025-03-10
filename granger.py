@@ -1389,8 +1389,8 @@ def plot_gc(eid, segl=10, shuf=False,
         s += np.max(y)
         i +=1
               
-    axs[0].set_xlabel('time [sec]')
-    axs[0].set_ylabel('firing rate [Hz]')
+    axs[0].set_xlabel('Time (s)')
+    axs[0].set_ylabel('Firing rate (Hz)')
     axs[0].spines['top'].set_visible(False)
     axs[0].spines['right'].set_visible(False)
     axs[0].set_title('example segment')
@@ -1411,7 +1411,10 @@ def plot_gc(eid, segl=10, shuf=False,
 
         axs[1].legend()
         axs[1].set_xlabel('frequency [Hz]')
-        axs[1].set_ylabel(metric)
+        if metric == 'pairwise_spectral_granger_prediction':
+            axs[1].set_ylabel('Pairwise spectral \n granger prediction')
+        else:
+            axs[1].set_ylabel(metric)
         axs[1].spines['top'].set_visible(False)
         axs[1].spines['right'].set_visible(False)  
         # axs[1].set_title(f'top {j} tuples') 
