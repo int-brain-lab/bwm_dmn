@@ -1893,7 +1893,7 @@ def scatter_direction(sig_only=True, annotate=True):
         for i in random.sample(range(len(pairs)),20):
             ax.annotate('  ' + pairs0[i], 
                 (dir0[i], dir1[i]),
-                fontsize=5,color='k')  
+                fontsize=10,color='k')  
 
             
     ax.set_xlabel('A --> B')       
