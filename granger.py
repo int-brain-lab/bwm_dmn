@@ -989,7 +989,7 @@ def get_res(nmin=10, metric='granger', combine_=False, c_mc =False,
         if sig_only:
             dd = {}
             for pair in d:
-                l = [x[0] for x in d[pair] if x[1] < sigl]    
+                l = [float(x[0]) for x in d[pair] if x[1] < sigl]    
                 if l == []:
                     continue
                 else:
@@ -1303,7 +1303,9 @@ def plot_gc(eid, segl=10, shuf=False,
     
     metric = 'pairwise_spectral_granger_prediction'
     or 'coherence_magnitude'
-    
+
+    For SI:
+    plot_gc('af55d16f-0e31-4073-bdb5-26da54914aa2', single_pair=True)
     '''
     time00 = time.perf_counter()
     
@@ -2204,7 +2206,7 @@ def make_table():
 
 def heatmap_adjacency():
 
-    data = get_res(c_mc=True, sig_only=True)
+    data = get_res(c_mc=True, sig_only=True, combine_=True, sessmin=1)
 
     # Step 1: Extract unique brain regions
     regions = set()
