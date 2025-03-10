@@ -1981,7 +1981,7 @@ def get_ari():
 
 
 def plot_graph(metric='granger', restrict='', ax=None, win='whole_session',
-               direction='both', sa = 1.5, sessmin=2, 
+               direction='both', sa = 1.5, sessmin=2, rrad=0.6, acronym_ring=True,
                ari=False, sig_only=False, ews = 50, alone=True):
 
     '''
@@ -2116,24 +2116,25 @@ def plot_graph(metric='granger', restrict='', ax=None, win='whole_session',
         nx.draw_networkx_edges(G, pos, edgelist=[(edge[0],edge[1])], 
         arrowsize=w*10, width=w, 
         edge_color=G[edge[0]][edge[1]]['color'],
-        connectionstyle='arc3,rad=0.6', ax=ax)
+        connectionstyle=f'arc3,rad={rrad}', ax=ax)
         
-    for node, (x, y) in pos.items():
-        angle = np.arctan2(y, x)
-        angle = np.degrees(angle)
-        # Radial shift factor (adjust as needed)
-        r_shift = 1.3 #1.12
-            
-        # Calculate new positions
-        x_new = r_shift * np.cos(np.radians(angle))
-        y_new = r_shift * np.sin(np.radians(angle))
+    if acronym_ring:    
+        for node, (x, y) in pos.items():
+            angle = np.arctan2(y, x)
+            angle = np.degrees(angle)
+            # Radial shift factor (adjust as needed)
+            r_shift = 1.3 #1.12
+                
+            # Calculate new positions
+            x_new = r_shift * np.cos(np.radians(angle))
+            y_new = r_shift * np.sin(np.radians(angle))
 
-        q = (' ---- ' if cosregs[node] == restrict 
-             and restrict != '' else '')              
-        ax.text(x_new, y_new, node + q if x < 0 else q + node,
-                fontsize=fontsize, ha='center', 
-                va='center', rotation=angle if x > 0 else angle + 180,
-                color=pa[node])
+            q = (' ---- ' if cosregs[node] == restrict 
+                and restrict != '' else '')              
+            ax.text(x_new, y_new, node + q if x < 0 else q + node,
+                    fontsize=fontsize, ha='center', 
+                    va='center', rotation=angle if x > 0 else angle + 180,
+                    color=pa[node])
     
         
     ax.set_aspect('equal')
@@ -2150,7 +2151,8 @@ def plot_graph(metric='granger', restrict='', ax=None, win='whole_session',
 #                        'granger_single_graph.svg'))
 
 
-def plot_multi_graph(sessmin=2, win='whole_session', sa=2, sig_only=False, axs=None):
+def plot_multi_graph(sessmin=2, win='whole_session', sa=2, sig_only=False, axs=None, 
+                     acronym_ring=False, rrad=0.1):
 
     cregs = ['CB', 'TH', 'HPF', 'Isocortex', 
              'OLF', 'CTXsp', 'CNU', 'HY', 'HB', 'MB']
@@ -2185,7 +2187,7 @@ def plot_multi_graph(sessmin=2, win='whole_session', sa=2, sig_only=False, axs=N
             ax = axs[row, col]
             plot_graph(metric='granger', restrict=creg, sessmin = sessmin,
                        ax=ax, sa = sa, direction=direction, win=win, sig_only=sig_only,
-                       alone=False)
+                       alone=False, acronym_ring=acronym_ring, rrad=rrad)
             ax.set_title(f'{creg} {direction}')
             k += 1
 
