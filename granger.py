@@ -12,7 +12,7 @@ import timeit
 from itertools import combinations
 from scipy.stats import norm
 import pandas as pd
-import umap, os
+#import umap, os
 from copy import copy
 #from sklearn.manifold import MDS
 from scipy.stats import pearsonr, spearmanr, norm, chi2, zscore
@@ -29,7 +29,7 @@ from iblatlas.regions import BrainRegions
 from iblatlas.atlas import AllenAtlas
 import iblatlas
 import sys
-sys.path.append('Dropbox/scripts/IBL/')
+#sys.path.append('Dropbox/scripts/IBL/')
 
 import logging
 import seaborn as sns
@@ -1292,7 +1292,7 @@ def plot_strip_fr_perf(corrtype='pears'):
 def plot_gc(eid, segl=10, shuf=False,
             metric0='granger', vers='oscil', 
             peak_freq_factor0=0.55, peak_freq_factor1=0.2,
-            phase_lag_factor=0.2, single_pair=False, T=300000):
+            phase_lag_factor=0.2, single_pair=False, T=300000, axs=None):
 
     '''
     For all regions, plot example segment time series, psg,
@@ -1357,9 +1357,13 @@ def plot_gc(eid, segl=10, shuf=False,
         
         # mean score across frequencies
         m = np.mean(psg, axis=0)
-    
-    fig, axs = plt.subplots(nrows=1, ncols=2, figsize=(6.19,3),
-                            label = eid)
+
+    if axs is None:
+        tight = True
+        fig, axs = plt.subplots(nrows=1, ncols=2, figsize=(6.19,3), label = eid)
+    else:
+        tight = False
+        fig = axs[0].get_figure()
     
     # plot example time series, first segment
     exdat = r[:,:int(segl/T_BIN)]/T_BIN
@@ -1402,9 +1406,9 @@ def plot_gc(eid, segl=10, shuf=False,
             yy = psg[:,tup[0],tup[1]]
             # Order is inversed! Result is:   
             axs[1].plot(c.frequencies, yy, 
-                        label =f'{regs[tup[1]]} --> {regs[tup[0]]}') 
+                        label =f'{regs[tup[1]]} --> {regs[tup[0]]}')
 
-        axs[1].legend()
+        axs[1].legend(handlelength=1, handletextpad=0.4)
         axs[1].set_xlabel('frequency [Hz]')
         axs[1].set_ylabel(metric)
         axs[1].spines['top'].set_visible(False)
@@ -1441,15 +1445,16 @@ def plot_gc(eid, segl=10, shuf=False,
     #              f'peak_freq_factor1 = {peak_freq_factor1}, ' 
     #              f'phase_lag_factor={phase_lag_factor},'
     #              if eid == 'sim' else 
-    #              f'eid = {eid} {"shuffled" if shuf else ""} ')   
-    fig.tight_layout()
+    #              f'eid = {eid} {"shuffled" if shuf else ""} ')
+    if tight:
+        fig.tight_layout()
     time11 = time.perf_counter()
     print('runtime [sec]: ', time11 - time00)     
     
     
     
 def plot_strip_pairs(metric='granger', sessmin = 3, 
-             ptype='strip', shuf=False, expo=1, sig_only=True):
+             ptype='strip', shuf=False, expo=1, sig_only=True, markersize=2, axs=None):
 
     '''
     for spectral Granger, metric in ['granger', coherence']
@@ -1486,14 +1491,18 @@ def plot_strip_pairs(metric='granger', sessmin = 3,
         dm_sorted = dict(sorted(dm.items(), key=lambda item: item[1]))
                       
         exs = list(dm_sorted.keys())
-        nrows = 5
+        nrows = 3
         fs = 5
         per_row = len(exs)//nrows
            
         d_exs = {x:d[x] for x in exs}
-    
-        fig, axs = plt.subplots(nrows=nrows, 
-                                ncols=1, figsize=(9,6.76), sharey=True)
+
+        if axs is None:
+            tight = True
+            fig, axs = plt.subplots(nrows=nrows, ncols=1, figsize=(9,6.76), sharey=True)
+        else:
+            tight = False
+            fig = axs[0].get_figure()
 
         for row in range(nrows):
             
@@ -1507,7 +1516,7 @@ def plot_strip_pairs(metric='granger', sessmin = 3,
             
             data = pd.DataFrame.from_dict({x:d[x] for x in pairs},
                 orient='index').transpose()             
-            sns.stripplot(data=data, ax=axs[row], color='k', size=2)
+            sns.stripplot(data=data, ax=axs[row], color='k', size=markersize)
 
             
             axs[row].set_xticklabels([x.split(sep)[0] for x in pairs], 
@@ -1528,8 +1537,8 @@ def plot_strip_pairs(metric='granger', sessmin = 3,
             
             axs[row].set_ylabel(metric)
                    
-
-        fig.tight_layout()
+        if tight:
+            fig.tight_layout()
         print(f'sessmin={sessmin}; sig_only={sig_only};'
               f'#reg pairs {len(dm)}')        
         
@@ -1846,7 +1855,7 @@ def freq_maxs_hists(perc = 95, freqlow=10):
     fig.tight_layout()
     
 
-def scatter_direction(sig_only=True, annotate=True):
+def scatter_direction(sig_only=True, annotate=True, ax=None):
 
     '''
     scatter plot for region pairs 
@@ -1879,8 +1888,14 @@ def scatter_direction(sig_only=True, annotate=True):
         dir1.append(np.mean(dg[sep.join([b,a])]))
         pairs0.append(', '.join([a,b]))
           
-            
-    fig, ax = plt.subplots()
+
+    if ax is None:
+        tight = True
+        fig, ax = plt.subplots()
+    else:
+        tight = False
+        fig = ax.get_figure()
+
     ax.scatter(dir0, dir1, color='k', s=0.5)
     ax.plot([0, 1], [0, 1], linestyle='--', color='grey')
     
@@ -1891,7 +1906,7 @@ def scatter_direction(sig_only=True, annotate=True):
                 fontsize=5,color='k')  
 
             
-    ax.set_xlabel('A --> B')       
+    ax.set_xlabel('A --> B')
     ax.set_ylabel('B --> A')
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
@@ -1899,13 +1914,14 @@ def scatter_direction(sig_only=True, annotate=True):
     cors,ps = spearmanr(dir0, dir1)
     corp,pp = pearsonr(dir0, dir1)
 
-    ax.set_title(f'pearson: (r,p)=({np.round(corp,2)},{np.round(pp,2)}) \n'
-                 f'spearman: (r,p)=({np.round(cors,2)},{np.round(ps,2)})')
+    ax.set_title(f'Pearson: (r,p)=({np.round(corp,2)},{np.round(pp,2)}) \n'
+                 f'Spearman: (r,p)=({np.round(cors,2)},{np.round(ps,2)})')
                  
     ax.set_xscale('log')
     ax.set_yscale('log') 
-       
-    fig.tight_layout()    
+
+    if tight:
+        fig.tight_layout()
 
 
 def get_ari():
@@ -1956,7 +1972,7 @@ def get_ari():
 
 
 def plot_graph(metric='granger', restrict='', ax=None, win='whole_session',
-               direction='both', sa = 1.5, sessmin=2, ari=False):
+               direction='both', sa = 1.5, sessmin=2, sig_only=False, ari=False):
 
     '''
     circular graph
@@ -1986,15 +2002,20 @@ def plot_graph(metric='granger', restrict='', ax=None, win='whole_session',
     else:
         print('what metric?')
         return
-   
-    ews = 80 if metric == 'granger' else 8
+
+    # ew was 80
+    ews = 10 if metric == 'granger' else 8
     fontsize = 11 if alone else 1
     
 
     # scale symbols for multi-panel graphs
     node_size = 30 if alone else 3
-    
-    nsw = 0.02 if metric == 'coherence' else 0.005
+
+    # non-significant edge width
+    if sig_only:
+        nsw = 0
+    else:
+        nsw = 0.02 if metric == 'coherence' else 0.005
     ews = ews/sa
     node_size = node_size/sa
     fontsize = fontsize/sa
@@ -2117,24 +2138,31 @@ def plot_graph(metric='granger', restrict='', ax=None, win='whole_session',
 #                        'granger_single_graph.svg'))
 
 
-def plot_multi_graph(sessmin=2, win='whole_session'):
+def plot_multi_graph(sessmin=2, win='whole_session', sa=1.5, sig_only=False, axs=None):
 
     cregs = ['CB', 'TH', 'HPF', 'Isocortex', 
              'OLF', 'CTXsp', 'CNU', 'HY', 'HB', 'MB']
  
     directions = ['source', 'target']
-    fig, axs = plt.subplots(nrows=5, ncols=4, figsize=(8.5,14), label=win)
-    axs = axs.flatten()
+    if axs is None:
+        tight = True
+        fig, axs = plt.subplots(nrows=5, ncols=4, figsize=(8.5,14), label=win)
+    else:
+        tight = False
+        fig = axs[0,0].get_figure()
+
+    axs = axs.T.flatten()
     
     k = 0
     for creg in cregs: 
         for direction in directions:
             plot_graph(metric='granger', restrict=creg, sessmin = sessmin, 
-                       ax=axs[k], sa = 1.5, direction=direction, win=win)     
+                       ax=axs[k], sa = sa, sig_only=sig_only, direction=direction, win=win)
             axs[k].set_title(f'{creg} {direction}')
             k += 1
-  
-    fig.tight_layout()
+
+    if tight:
+        fig.tight_layout()
 #    fig.savefig(Path(one.cache_dir,
 #                    'bwm_res/bwm_figs_imgs/si/granger/',
 #                    f'granger_multi_graph_{win}.svg'))
@@ -2193,7 +2221,7 @@ def make_table():
 
 
 
-def heatmap_adjacency():
+def heatmap_adjacency(ax=None, ms=1):
 
     data = get_res(c_mc=True, sig_only=True)
 
@@ -2235,12 +2263,17 @@ def heatmap_adjacency():
 
     _, palette = get_allen_info()
     # Step 7: Create a heatmap with colored region labels
-    fig, ax = plt.subplots(figsize=(3, 3))
+    if ax is None:
+        tight = True
+        fig, ax = plt.subplots(figsize=(3, 3))
+    else:
+        tight = False
+        fig = ax.get_figure()
 
     # Plot the heatmap
     #sns.heatmap(adj_matrix_df, cmap='viridis', ax=ax, cbar=True, square=True)
     sparse_matrix = csr_matrix(adj_matrix_df)
-    ax.spy(sparse_matrix, markersize=1, color='k')
+    ax.spy(sparse_matrix, markersize=ms, color='k')
 
 
     # Set tick label colors and ensure all ticks are shown
@@ -2265,14 +2298,14 @@ def heatmap_adjacency():
     for spine in ax.spines.values():
         spine.set_visible(False)
 
-    fig.tight_layout()
-
-    # Save or show the figure
-    plt.show()
+    if tight:
+        fig.tight_layout()
+        # Save or show the figure
+        plt.show()
 
   
   
-def scatter_similarity(ranks=False, hexbin_=False, anno=False):
+def scatter_similarity(ranks=False, hexbin_=False, anno=False, axs=None):
 
     '''
     for pairs of 3 similarity metrics, 
@@ -2304,9 +2337,15 @@ def scatter_similarity(ranks=False, hexbin_=False, anno=False):
     nrows = 3
     ncols = 1    
         
-     
-    fig, ax = plt.subplots(ncols=ncols, nrows=nrows,
-                           figsize=[2.57, 5.51])     
+    if axs is None:
+        tight = True
+        fig, ax = plt.subplots(ncols=ncols, nrows=nrows,
+                           figsize=[2.57, 5.51])
+    else:
+        tight = False
+        fig = axs[0].get_figure()
+        ax = axs
+
     ax = np.array(ax).flatten()
     
     metrics = list(D.keys())   
@@ -2373,5 +2412,5 @@ def scatter_similarity(ranks=False, hexbin_=False, anno=False):
     # Check if axes is taken, if not, switch axes off
     [a.axis('off') for a in ax if not a.title.get_text()]
 
-
-    fig.tight_layout()
+    if tight:
+        fig.tight_layout()
