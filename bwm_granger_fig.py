@@ -109,7 +109,7 @@ xlabels = axs['c'].get_xticklabels()
 axs['c'].xaxis.set_tick_params(labelsize=f_size_xs)
 axs['c'].yaxis.set_tick_params(labelsize=f_size_xs)
 
-scatter_direction(ax=axs['d'], annotate=True)
+scatter_direction(ax=axs['d'], annotate=False)
 title = axs['d'].get_title()
 axs['d'].set_title(title, fontsize=f_size_s)
 xlabel = axs['d'].get_xlabel()
