@@ -26,7 +26,7 @@ from scipy.cluster.hierarchy import linkage, fcluster, dendrogram
 from statsmodels.stats.multitest import multipletests
 from numpy.linalg import norm
 from scipy.stats import (gaussian_kde, f_oneway, 
-    pearsonr, spearmanr, kruskal, rankdata, linregress)
+    pearsonr, spearmanr, kruskal, rankdata, linregress, entropy)
 from scipy.spatial import distance
 from scipy.cluster import hierarchy
 from scipy.spatial.distance import squareform, cdist
@@ -54,8 +54,9 @@ from datetime import datetime
 import scipy.ndimage as ndi
 import hdbscan
 import subprocess
+from PIL import Image
 
-
+from venny4py.venny4py import *
 from matplotlib.axis import Axis
 import matplotlib.pyplot as plt
 import matplotlib as mpl
@@ -69,9 +70,12 @@ from matplotlib.patches import Rectangle
 from matplotlib.ticker import ScalarFormatter
 from matplotlib.ticker import MaxNLocator
 from matplotlib.pyplot import cm
-from venny4py.venny4py import *
 import matplotlib.colors as mcolors
 from ibl_style.style import figure_style
+from ibl_style.utils import get_coords, add_label, MM_TO_INCH
+import figrid as fg
+import matplotlib.ticker as ticker
+from matplotlib import cm
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -80,11 +84,47 @@ warnings.filterwarnings("ignore")
 plt.ion() 
 
 
-
 np.set_printoptions(threshold=sys.maxsize)
 
-
 figure_style()
+f_size = mpl.rcParams['font.size']
+f_size_s = mpl.rcParams['xtick.labelsize']
+
+title_size = 7
+label_size = 7
+text_size = 6
+f_size_l = title_size
+f_size = label_size
+f_size_s = text_size
+f_size_xs = 5
+
+mpl.rcParams['xtick.minor.visible'] = False
+mpl.rcParams['ytick.minor.visible'] = False
+
+mpl.rcParams['pdf.fonttype']=42
+
+handle_length = 1
+handle_pad = 0.5
+
+
+def set_max_ticks(ax, num_ticks=4):
+    x_ticks = len(ax.get_xticks())
+    ax.xaxis.set_major_locator(ticker.MaxNLocator(nbins=np.min([x_ticks, num_ticks])))
+    y_ticks = len(ax.get_yticks())
+    ax.yaxis.set_major_locator(ticker.MaxNLocator(nbins=np.min([y_ticks, num_ticks])))
+
+# -------------------------------------------------------------------------------------------------
+# Plotting utils
+# -------------------------------------------------------------------------------------------------
+
+def adjust_subplots(fig, adjust=5, extra=2):
+    width, height = fig.get_size_inches() / MM_TO_INCH
+    if not isinstance(adjust, int):
+        assert len(adjust) == 4
+    else:
+        adjust = [adjust] *  4
+    fig.subplots_adjust(top=1 - adjust[0] / height, bottom=(adjust[1] + extra) / height,
+                        left=adjust[2] / width, right=1 - adjust[3] / width)
 
 plt.rcParams.update(plt.rcParamsDefault)
 plt.ion()
@@ -100,7 +140,7 @@ sts = 0.002  # stride size in [sec] for overlapping bins
 ntravis = 30  # #trajectories for vis, first 2 real, rest pseudo
 
 # conversion divident to get bins in seconds 
-# (taking strinding into account)
+# (taking striding into account)
 c_sec =  int(T_BIN // sts) / T_BIN
 
 one = ONE()
@@ -117,6 +157,7 @@ pth_dmn = Path(one.cache_dir, 'dmn', 'res')
 pth_dmn.mkdir(parents=True, exist_ok=True)
 
 sigl = 0.05  # significance level (for stacking, plotting, fdr)
+
 
 
 # order sensitive: must be tts__ = concat_PETHs(pid, get_tts=True).keys()
@@ -142,7 +183,7 @@ peth_ila = [
     r"$\mathrm{R_sL_cR_b, s}$",
     r"$\mathrm{R_sR_cR_b, s}$",
     r"$\mathrm{R_sR_cL_b, s}$",
-    r"$\mathrm{move}$",
+    r"$\mathrm{m}$",
     r"$\mathrm{L_sL_cL_b, m}$",
     r"$\mathrm{L_sL_cR_b, m}$",
     r"$\mathrm{L_sR_cR_b, m}$",
@@ -151,8 +192,8 @@ peth_ila = [
     r"$\mathrm{R_sL_cR_b, m}$",
     r"$\mathrm{R_sR_cR_b, m}$",
     r"$\mathrm{R_sR_cL_b, m}$",
-    r"$\mathrm{L_c}$",
-    r"$\mathrm{R_c}$",
+    r"$\mathrm{L_{move}}$",
+    r"$\mathrm{R_{move}}$",
     r"$\mathrm{feedbk1}$",
     r"$\mathrm{feedbk0}$"
 ]
@@ -163,16 +204,21 @@ peth_dict = dict(zip(tts__, peth_ila))
 
 PETH_types_dict = {
     'concat': [item for item in tts__],
-    'resting': ['inter_trial'],
-    'quiescence': ['quiescence'],
-    'pre-stim-prior': ['blockL', 'blockR'],
-    'block50': ['block50'],
-    'stim_surp_incon': ['stimLbRcL','stimRbLcR'],
-    'stim_surp_con': ['stimLbLcL', 'stimRbRcR'],
-    'stim_all': ['stimLbRcL','stimRbLcR','stimLbLcL', 'stimRbRcR'],
-    'motor_init': ['motor_init'],
-    'fback1': ['fback1'],
-    'fback0': ['fback0']}      
+    'Resting': ['inter_trial'],
+    'Quiescence': ['quiescence'],
+    'Pre-stim prior': ['blockL', 'blockR'],
+    # 'Block 50': ['block50'],
+    'Stim surprise': ['stimLbRcL', 'stimRbLcR'],
+    'Stim congruent': ['stimLbLcL', 'stimRbRcR'],
+    # 'stim_all': ['stimLbRcL', 'stimRbLcR', 'stimLbLcL', 'stimRbRcR'],
+    'Mistake': ['stimLbRcR', 'stimLbLcR', 'stimRbLcL', 'stimRbRcL',
+                'sLbRchoiceR', 'sLbLchoiceR', 'sRbLchoiceL', 'sRbRchoiceL'],
+    'Motor initiation': ['motor_init'],
+    'Movement': ['choiceL', 'choiceR'],
+    'Feedback correct': ['fback1'],
+    'Feedback incorrect': ['fback0']
+}
+    
 
 # https://www.nature.com/articles/s41586-019-1716-z/figures/6
 harris_hierarchy = [
@@ -195,6 +241,12 @@ def put_panel_label(ax, k):
                 xycoords='axes fraction',
                 fontsize=f_size * 1.5, va='top',
                 ha='right', weight='bold')
+
+
+def beryl_to_cosmos(beryl_acronym, br):
+    beryl_id = br.id[br.acronym==beryl_acronym]
+    return br.get(ids=br.remap(beryl_id, source_map='Beryl', 
+        target_map='Cosmos'))['acronym'][0]
 
 
 def grad(c, nobs, fr=1):
@@ -538,8 +590,8 @@ def concat_PETHs(pid, get_tts=False, vers='concat'):
         for ts in range(st):
             ar[:, :, ts::st] = bis[ts]
 
-        # average squared firing rates across trials
-        ws.append(np.mean(ar**2, axis=0))        
+        # average firing rates across trials
+        ws.append(np.mean(a, axis=0))        
 
     D['tls'] = tls
     D['trial_names'] = list(tts.keys())
@@ -652,8 +704,8 @@ def regional_group(mapping, vers='concat', ephys=False,
     mapping: [Allen, Beryl, Cosmos, layers, clusters, clusters_xyz, 'in tts__']
     '''
 
-    if mapping == 'kmeans':
-        pth__ = Path(one.cache_dir, 'dmn', f'kmeans_group_ephys{ephys}.npy')
+    if all([mapping == 'kmeans', rerun == False, nclus == 13]):
+        pth__ = Path(one.cache_dir, 'dmn', f'kmeans_{vers}_ephys{ephys}.npy')
     
         if ((pth__.is_file()) and (not rerun)):
             return np.load(pth__,allow_pickle=True).flat[0] 
@@ -665,10 +717,10 @@ def regional_group(mapping, vers='concat', ephys=False,
     r['nums'] = range(len(r['xyz'][:,0]))
 
     if mapping == 'kmeans':
-   
+        print('computing k-means')
+
         feat = 'concat_z'
 
-        nclus = nclus
         kmeans = KMeans(n_clusters=nclus, random_state=0)
         kmeans.fit(r[feat])  # kmeans in feature space
 
@@ -676,14 +728,16 @@ def regional_group(mapping, vers='concat', ephys=False,
         
         cmap = mpl.cm.get_cmap('Spectral')
         cols = cmap(clusters/nclus)
-        acs = clusters
+        acs = [int(x) for x in clusters]
         regs = np.unique(clusters)
         
         color_map = dict(zip(list(acs), list(cols)))
         r['els'] = [Line2D([0], [0], color=color_map[reg], 
                     lw=4, label=f'{reg + 1}')
                     for reg in regs]
-        
+
+        r['Beryl'] = np.array(br.id2acronym(r['ids'], 
+                                     mapping='Beryl'))
         av = None
               
 
@@ -697,7 +751,7 @@ def regional_group(mapping, vers='concat', ephys=False,
         mapping = {old_label: new_label 
                       for new_label, old_label in 
                       enumerate(unique_labels)}
-        clusters = np.array([mapping[label] for label in labels])
+        clusters = labels
 
         cmap = mpl.cm.get_cmap('Spectral')
         cols = cmap(clusters/len(unique_labels))
@@ -739,10 +793,10 @@ def regional_group(mapping, vers='concat', ephys=False,
                        
             acs = np.delete(acs, zeros)        
         
-        _,pa = get_allen_info()
-        cols = np.array([pa[reg] for reg in acs])
+
+        cols = np.array([pal[reg] for reg in acs])
         regs = Counter(acs)      
-        r['els'] = [Line2D([0], [0], color=pa[reg], 
+        r['els'] = [Line2D([0], [0], color=pal[reg], 
                lw=4, label=f'{reg} {regs[reg]}')
                for reg in regs]
 
@@ -756,52 +810,52 @@ def regional_group(mapping, vers='concat', ephys=False,
         cols = cmap(clusters/nclus)
         acs = clusters   
 
-    elif mapping in PETH_types_dict:
-        # For a group of PETH types defined in PETH_types_dict,
-        # concatenate the defined PETH segments and rank cells by mean score
-        feat = 'concat_z'  # was _bd
-        assert vers == 'concat', 'vers needs to be concat for this'
-        assert feat == 'concat_z'
+    # elif mapping in PETH_types_dict:
+    #     # For a group of PETH types defined in PETH_types_dict,
+    #     # concatenate the defined PETH segments and rank cells by mean score
+    #     feat = 'concat_z'  # was _bd
+    #     assert vers == 'concat', 'vers needs to be concat for this'
+    #     assert feat == 'concat_z'
 
-        # Retrieve the list of PETH types to concatenate from PETH_types_dict
-        peth_types_to_concat = PETH_types_dict[mapping]
+    #     # Retrieve the list of PETH types to concatenate from PETH_types_dict
+    #     peth_types_to_concat = PETH_types_dict[mapping]
 
-        # Initialize a list to store the concatenated segments
-        concatenated_data = []
+    #     # Initialize a list to store the concatenated segments
+    #     concatenated_data = []
 
-        # Iterate through each PETH type in the list and concatenate the data
-        for peth_type in peth_types_to_concat:
-            # Extract relevant information from the data
-            # Get the start and end indices of the PETH segment
-            segment_names = list(r['len'].keys())
-            segment_lengths = list(r['len'].values())
-            start_idx = sum(segment_lengths[:segment_names.index(peth_type)])
-            end_idx = start_idx + r['len'][peth_type]
+    #     # Iterate through each PETH type in the list and concatenate the data
+    #     for peth_type in peth_types_to_concat:
+    #         # Extract relevant information from the data
+    #         # Get the start and end indices of the PETH segment
+    #         segment_names = list(r['len'].keys())
+    #         segment_lengths = list(r['len'].values())
+    #         start_idx = sum(segment_lengths[:segment_names.index(peth_type)])
+    #         end_idx = start_idx + r['len'][peth_type]
 
-            # Extract the segment of interest and append to concatenated_data
-            segment_data = r[feat][:, start_idx:end_idx]
-            concatenated_data.append(segment_data)
+    #         # Extract the segment of interest and append to concatenated_data
+    #         segment_data = r[feat][:, start_idx:end_idx]
+    #         concatenated_data.append(segment_data)
 
-        # Concatenate all the segments along the column axis
-        concatenated_data = np.concatenate(concatenated_data, axis=1)
+    #     # Concatenate all the segments along the column axis
+    #     concatenated_data = np.concatenate(concatenated_data, axis=1)
 
-        # Compute the mean (max) for each neuron across the concatenated segment
-        means = np.mean(abs(concatenated_data), axis=1)
+    #     # Compute the mean (max) for each neuron across the concatenated segment
+    #     means = np.mean(abs(concatenated_data), axis=1)
 
-        # Rank neurons based on their mean values
-        df = pd.DataFrame({'means': means})
-        df['rankings'] = df['means'].rank(method='min', ascending=False).astype(int)
-        r['rankings'] = df['rankings'].values
+    #     # Rank neurons based on their mean values
+    #     df = pd.DataFrame({'means': means})
+    #     df['rankings'] = df['means'].rank(method='min', ascending=False).astype(int)
+    #     r['rankings'] = df['rankings'].values
 
-        # Map neuron IDs to brain region acronyms (if needed)
-        acs = np.array(br.id2acronym(r['ids'], mapping='Beryl'))
+    #     # Map neuron IDs to brain region acronyms (if needed)
+    #     acs = np.array(br.id2acronym(r['ids'], mapping='Beryl'))
 
-        # Apply a color map based on the rankings
-        cmap = mpl.cm.get_cmap('Spectral')
-        cols = cmap(r['rankings'] / max(r['rankings']))
+    #     # Apply a color map based on the rankings
+    #     cmap = mpl.cm.get_cmap('Spectral')
+    #     cols = cmap(r['rankings'] / max(r['rankings']))
 
-        # Count the occurrence of each brain region acronym
-        regs = Counter(acs)
+    #     # Count the occurrence of each brain region acronym
+    #     regs = Counter(acs)
 
     elif mapping in tts__:
         # for a specific PETH type, 
@@ -875,23 +929,20 @@ def regional_group(mapping, vers='concat', ephys=False,
     else:
         acs = np.array(br.id2acronym(r['ids'], 
                                      mapping=mapping))
-                                                                                   
-        _,pa = get_allen_info()
+                                                                                 
+        # get color per region
+        cols = np.array([pal[reg] for reg in acs])
+        regs = Counter(acs)
 
-        cols = np.array([pa[reg] for reg in acs])
-        
-        # get average points and color per region
-        regs = Counter(acs)  
-        rmv_void_rt = True              
-
+              
     if 'end' in r['len']:
         del r['len']['end']
               
-    r['acs'] = np.array(acs)
-    r['cols'] = np.array(cols)
+    r['acs'] = acs
+    r['cols'] = cols
 
-    if mapping == 'kmeans':
-        pth__ = Path(one.cache_dir, 'dmn', 'kmeans_group.npy')
+    if mapping == 'kmeans' and nclus == 13:
+        pth__ = Path(one.cache_dir, 'dmn', f'kmeans_{vers}_ephys{ephys}.npy')
         np.save(pth__, r, allow_pickle=True)
 
     return r
@@ -913,197 +964,197 @@ def get_umap_dist(rerun=False, algo='umap_z',
     return d     
 
 
-def get_pw_dist(rerun=False, mapping='Beryl', vers='concat', 
-                nclus=7, norm_=False, zscore_=True, nmin=20):
+# def get_pw_dist(rerun=False, mapping='Beryl', vers='concat', 
+#                 nclus=7, norm_=False, zscore_=True, nmin=20):
 
-    '''
-    get distance for all region pairs by computing
-    the Euclidean distance of the feature vectors 
-    for all pairs of neurons in the two regions and then 
-    average that score 
-    '''
+#     '''
+#     get distance for all region pairs by computing
+#     the Euclidean distance of the feature vectors 
+#     for all pairs of neurons in the two regions and then 
+#     average that score 
+#     '''
 
-    pth_ = Path(one.cache_dir, 'dmn', 
-                f'{mapping}_{vers}_zscore_{zscore_}_pw.npy')
+#     pth_ = Path(one.cache_dir, 'dmn', 
+#                 f'{mapping}_{vers}_zscore_{zscore_}_pw.npy')
                 
-    if (not pth_.is_file() or rerun):
-        r = np.load(Path(pth_dmn, f'{vers}_norm{norm_}.npy'),
-                     allow_pickle=True).flat[0] 
+#     if (not pth_.is_file() or rerun):
+#         r = np.load(Path(pth_dmn, f'{vers}_norm{norm_}.npy'),
+#                      allow_pickle=True).flat[0] 
         
-        vecs = 'concat_z' if zscore_ else 'concat'
+#         vecs = 'concat_z' if zscore_ else 'concat'
                      
-        if mapping == 'kmeans':
-            # use kmeans to cluster high-dim points
+#         if mapping == 'kmeans':
+#             # use kmeans to cluster high-dim points
              
-            nclus = nclus
-            kmeans = KMeans(n_clusters=nclus, random_state=0)
-            kmeans.fit(r[vecs])
-            acs = kmeans.labels_
-            print('kmeans done')
+#             nclus = nclus
+#             kmeans = KMeans(n_clusters=nclus, random_state=0)
+#             kmeans.fit(r[vecs])
+#             acs = kmeans.labels_
+#             print('kmeans done')
             
-        else:
-            acs = np.array(br.id2acronym(r['ids'], 
-                                         mapping=mapping))
+#         else:
+#             acs = np.array(br.id2acronym(r['ids'], 
+#                                          mapping=mapping))
 
-        assert len(r[vecs]) == len(acs), 'mismatch, data != acs'
+#         assert len(r[vecs]) == len(acs), 'mismatch, data != acs'
         
-        regs0 = Counter(acs)
-        regs = [x for x in regs0 if regs0[x] > nmin]
-        res = np.zeros((len(regs),len(regs)))
-        print(len(regs), 'regions')
+#         regs0 = Counter(acs)
+#         regs = [x for x in regs0 if regs0[x] > nmin]
+#         res = np.zeros((len(regs),len(regs)))
+#         print(len(regs), 'regions')
         
-        k = 0
-        for i in range(len(regs)):
-            for j in range(i, len(regs)):
+#         k = 0
+#         for i in range(len(regs)):
+#             for j in range(i, len(regs)):
          
-                # group of cells a and b
-                g_a = r[vecs][acs == regs[i]]
-                g_b = r[vecs][acs == regs[j]]
+#                 # group of cells a and b
+#                 g_a = r[vecs][acs == regs[i]]
+#                 g_b = r[vecs][acs == regs[j]]
 
-                # compute pairwise distance
-                M = cdist(g_a, g_b)
-                rows, cols = M.shape
+#                 # compute pairwise distance
+#                 M = cdist(g_a, g_b)
+#                 rows, cols = M.shape
                 
-                # remove duplicate counts
-                mask = np.ones_like(M, dtype=bool)
-                min_dim = min(rows, cols)
-                mask[:min_dim, :min_dim] = np.triu(
-                    np.ones((min_dim, min_dim), dtype=bool), k=1)
+#                 # remove duplicate counts
+#                 mask = np.ones_like(M, dtype=bool)
+#                 min_dim = min(rows, cols)
+#                 mask[:min_dim, :min_dim] = np.triu(
+#                     np.ones((min_dim, min_dim), dtype=bool), k=1)
                     
-                # average across all pairwise scores    
-                res[i,j] = np.mean(M[mask])
-                res[j,i] = res[i,j]
+#                 # average across all pairwise scores    
+#                 res[i,j] = np.mean(M[mask])
+#                 res[j,i] = res[i,j]
                 
-                if np.isnan(res[i,j]):
-                    print(regs[i], regs[j],  len(g_a), len(g_b))
-                    return
+#                 if np.isnan(res[i,j]):
+#                     print(regs[i], regs[j],  len(g_a), len(g_b))
+#                     return
                     
-                #res[i,j] = np.mean(M)    
-                k += 1
-                print(k, 'of', 0.5*(len(regs)**2), 'done')
+#                 #res[i,j] = np.mean(M)    
+#                 k += 1
+#                 print(k, 'of', 0.5*(len(regs)**2), 'done')
 
-        d = {'res': res, 'regs' : regs}
-        np.save(pth_, d, allow_pickle=True)
-    else:
-        d = np.load(pth_, allow_pickle=True).flat[0]        
+#         d = {'res': res, 'regs' : regs}
+#         np.save(pth_, d, allow_pickle=True)
+#     else:
+#         d = np.load(pth_, allow_pickle=True).flat[0]        
         
-    return d
+#     return d
 
 
-def NN(x, y, decoder='LDA', CC=1.0, confusion=False,
-       return_weights=False, shuf=False, verb=True):
-    '''
-    Decode region label y from activity x with parallelized cross-validation.
-    '''
+# def NN(x, y, decoder='LDA', CC=1.0, confusion=False,
+#        return_weights=False, shuf=False, verb=True):
+#     '''
+#     Decode region label y from activity x with parallelized cross-validation.
+#     '''
     
-    nclasses = len(Counter(y))
-    startTime = datetime.now()
+#     nclasses = len(Counter(y))
+#     startTime = datetime.now()
     
-    if shuf:
-        np.random.shuffle(y)
+#     if shuf:
+#         np.random.shuffle(y)
 
-    if len(x.shape) == 1:
-        x = x.reshape(-1, 1)
+#     if len(x.shape) == 1:
+#         x = x.reshape(-1, 1)
 
-    acs = []
+#     acs = []
 
-    # predicted labels for train/test
-    yp_train = []  
-    yp_test = []
+#     # predicted labels for train/test
+#     yp_train = []  
+#     yp_test = []
     
-    # true labels for train/test
-    yt_train = []  
-    yt_test = []  
+#     # true labels for train/test
+#     yt_train = []  
+#     yt_test = []  
     
-    folds = 5
-    kf = StratifiedKFold(n_splits=folds, shuffle=True)
+#     folds = 5
+#     kf = StratifiedKFold(n_splits=folds, shuffle=True)
 
-    if verb:
-        print('input dimension:', np.shape(x))    
-        print(f'# classes = {nclasses}')
-        print('x.shape:', x.shape, 'y.shape:', y.shape)
-        print(f'{folds}-fold cross validation')
-        if shuf: 
-            print('labels are SHUFFLED')
+#     if verb:
+#         print('input dimension:', np.shape(x))    
+#         print(f'# classes = {nclasses}')
+#         print('x.shape:', x.shape, 'y.shape:', y.shape)
+#         print(f'{folds}-fold cross validation')
+#         if shuf: 
+#             print('labels are SHUFFLED')
 
-    def process_fold(train_index, test_index):
-        """
-        Process a single fold of cross-validation.
-        """
-        sc = StandardScaler()
-        train_X = sc.fit_transform(x[train_index])
-        test_X = sc.fit_transform(x[test_index])
+#     def process_fold(train_index, test_index):
+#         """
+#         Process a single fold of cross-validation.
+#         """
+#         sc = StandardScaler()
+#         train_X = sc.fit_transform(x[train_index])
+#         test_X = sc.fit_transform(x[test_index])
 
-        train_X = x[train_index]
-        test_X = x[test_index]
+#         train_X = x[train_index]
+#         test_X = x[test_index]
 
-        train_y = y[train_index]
-        test_y = y[test_index]
+#         train_y = y[train_index]
+#         test_y = y[test_index]
 
-        if decoder == 'LR':
-            clf = LogisticRegression(C=CC, random_state=0, n_jobs=-1,
-                max_iter=1000)
-        elif decoder == 'LDA':
-            clf = LinearDiscriminantAnalysis()
-        else:
-            raise ValueError('Unsupported model type. Use "LR" or "LDA".')
+#         if decoder == 'LR':
+#             clf = LogisticRegression(C=CC, random_state=0, n_jobs=-1,
+#                 max_iter=1000)
+#         elif decoder == 'LDA':
+#             clf = LinearDiscriminantAnalysis()
+#         else:
+#             raise ValueError('Unsupported model type. Use "LR" or "LDA".')
 
-        clf.fit(train_X, train_y)
-        y_pred_test = clf.predict(test_X)
-        y_pred_train = clf.predict(train_X)
+#         clf.fit(train_X, train_y)
+#         y_pred_test = clf.predict(test_X)
+#         y_pred_train = clf.predict(train_X)
 
-        res_test = np.mean(test_y == y_pred_test)
-        res_train = np.mean(train_y == y_pred_train)
+#         res_test = np.mean(test_y == y_pred_test)
+#         res_train = np.mean(train_y == y_pred_train)
 
-        return (res_train, res_test, y_pred_train, y_pred_test, train_y, test_y)
+#         return (res_train, res_test, y_pred_train, y_pred_test, train_y, test_y)
 
-    with parallel_backend('loky'):
-        results = Parallel(n_jobs=-1)(
-            delayed(process_fold)(train_index, test_index)
-            for train_index, test_index in kf.split(x, y)
-        )
+#     with parallel_backend('loky'):
+#         results = Parallel(n_jobs=-1)(
+#             delayed(process_fold)(train_index, test_index)
+#             for train_index, test_index in kf.split(x, y)
+#         )
 
-    # Collect results from parallel processing
-    for res_train, res_test, y_pred_train, y_pred_test, train_y, test_y in results:
-        acs.append([res_train, res_test])
-        yp_train.append(y_pred_train)
-        yp_test.append(y_pred_test)
-        yt_train.append(train_y)
-        yt_test.append(test_y)
+#     # Collect results from parallel processing
+#     for res_train, res_test, y_pred_train, y_pred_test, train_y, test_y in results:
+#         acs.append([res_train, res_test])
+#         yp_train.append(y_pred_train)
+#         yp_test.append(y_pred_test)
+#         yt_train.append(train_y)
+#         yt_test.append(test_y)
 
-    r_train = round(np.mean(np.array(acs)[:, 0]), 3)
-    r_test = round(np.mean(np.array(acs)[:, 1]), 3)
+#     r_train = round(np.mean(np.array(acs)[:, 0]), 3)
+#     r_test = round(np.mean(np.array(acs)[:, 1]), 3)
     
-    if verb:
-        print('')
-        print('Mean train accuracy:', r_train)
-        print('Mean test accuracy:', r_test)
-        print('')
-        print('time to compute:', datetime.now() - startTime)
-        print('')
+#     if verb:
+#         print('')
+#         print('Mean train accuracy:', r_train)
+#         print('Mean test accuracy:', r_test)
+#         print('')
+#         print('time to compute:', datetime.now() - startTime)
+#         print('')
         
-    if return_weights:
-        if decoder == 'LR':
-            clf = LogisticRegression(C=CC, random_state=0, n_jobs=-1,
-                max_iter=1000)
-        else:
-            clf = LinearDiscriminantAnalysis()
+#     if return_weights:
+#         if decoder == 'LR':
+#             clf = LogisticRegression(C=CC, random_state=0, n_jobs=-1,
+#                 max_iter=1000)
+#         else:
+#             clf = LinearDiscriminantAnalysis()
 
-        clf.fit(x, y)
-        return clf.coef_
+#         clf.fit(x, y)
+#         return clf.coef_
 
-    if confusion:
-        yt_train = np.concatenate(yt_train)
-        yp_train = np.concatenate(yp_train)
-        yt_test = np.concatenate(yt_test)
-        yp_test = np.concatenate(yp_test)
+#     if confusion:
+#         yt_train = np.concatenate(yt_train)
+#         yp_train = np.concatenate(yp_train)
+#         yt_test = np.concatenate(yt_test)
+#         yp_test = np.concatenate(yp_test)
         
-        cm_train = confusion_matrix(yt_train, yp_train, normalize='pred')
-        cm_test = confusion_matrix(yt_test, yp_test, normalize='pred')
+#         cm_train = confusion_matrix(yt_train, yp_train, normalize='pred')
+#         cm_test = confusion_matrix(yt_test, yp_test, normalize='pred')
                    
-        return cm_train, cm_test, r_train, r_test                              
+#         return cm_train, cm_test, r_train, r_test                              
 
-    return np.array(acs)
+#     return np.array(acs)
 
 
 def decode(src='concat_z', mapping='Beryl', minreg=20, decoder='LR', 
@@ -1239,7 +1290,7 @@ def get_all_PETHs(eids_plus=None, vers='concat'):
 
 
 def stack_concat(vers='concat', get_concat=False, get_tls=False, 
-                 ephys=True, n_neighbors=15):
+                 ephys=False, n_neighbors=15, concat_only=False):
 
     '''
     stack concatenated PETHs; 
@@ -1298,7 +1349,7 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
                             list(D_['tls'].values())) == 0)[0])
                     
         # remove insertions where a peth is missing (beyond two fbacks)
-        if n_zero_trials > 2:
+        if n_zero_trials > 0:
             continue
        
         # pick PETHs to concatenate
@@ -1343,7 +1394,12 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
     r['len'] = dict(zip(ptypes,
                     [D_['ws'][x].shape[1] for x in idc]))
 
-    # r['concat'] = cs
+    if concat_only:  
+        r['concat'] = cs              
+        np.save(Path(pth_dmn, f'concat.npy'),
+                r, allow_pickle=True)
+        return  
+        
 
     r['concat_z'] = zscore(cs,axis=1)
 
@@ -1434,20 +1490,25 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
     # various dim reduction of PETHs to 2 dims
     print(f'embedding rastermap on {vers}...')
 
-    # Fit the Rastermap model
-    model = Rastermap(n_PCs=200, n_clusters=100,
-                      locality=0.75, time_lag_window=5, 
-                      bin_size=1).fit(r['concat_z'])
+    try:
+        # Fit the Rastermap model
+        model = Rastermap(n_PCs=200, n_clusters=100,
+                        locality=0.75, time_lag_window=5, 
+                        bin_size=1).fit(r['concat_z'])
 
-    r['isort'] = model.isort
+        r['isort'] = model.isort
+    except:
+        print('Rastermap failed')
+        
+
 
     print(f'embedding umap on {vers}...')
     
 
-    r['umap_z'] = umap.UMAP(n_components=ncomp, 
+    r['umap_z'] = umap.UMAP(n_components=ncomp, random_state=0, 
         n_neighbors=n_neighbors).fit_transform(r['concat_z'])
 
-    print('embedding pca...')
+    print(f'embedding pca on {vers}...')
     r['pca_z'] = PCA(n_components=ncomp).fit_transform(r['concat_z'])
     
 
@@ -1568,7 +1629,7 @@ def stack_simple(nmin=10):
 '''
         
 
-def plot_dim_reduction(algo='umap_z', mapping='Beryl',ephys=False,
+def plot_dim_reduction(algo='umap_z', mapping='Beryl',ephys=True,
                        feat = 'concat_z', means=False, exa=False, shuf=False,
                        exa_squ=False, vers='concat', ax=None, ds=0.5,
                        axx=None, exa_kmeans=False, leg=False, restr=None,
@@ -1588,7 +1649,10 @@ def plot_dim_reduction(algo='umap_z', mapping='Beryl',ephys=False,
     restr: list of Beryl regions to restrict plot to
     '''
 
-    r = regional_group(mapping, vers=vers, ephys=ephys)
+    r = regional_group(mapping, vers=vers, ephys=ephys, nclus=nclus)
+
+    print(len(r['concat_z']), 'cells in', mapping, vers)
+    
 
     alone = False
     if not ax:
@@ -1616,7 +1680,7 @@ def plot_dim_reduction(algo='umap_z', mapping='Beryl',ephys=False,
     if means:
         # show means
         regs = list(Counter(r['acs']))
-        r['av'] = {reg: [np.mean(r[algo][acs == reg], axis=0), pa[reg]] 
+        r['av'] = {reg: [np.mean(r[algo][acs == reg], axis=0), pal[reg]] 
               for reg in regs}
 
         emb1 = [r['av'][reg][0][0] for reg in r['av']] 
@@ -1649,6 +1713,9 @@ def plot_dim_reduction(algo='umap_z', mapping='Beryl',ephys=False,
 
     if alone:
         fig.tight_layout()
+        fff = plt.gcf()
+        fff.savefig(Path(one.cache_dir, 'dmn',  'imgs',
+            f'{nclus}_kmeans_umap.png'), dpi=150)
 
     if exa:
         # plot a cells' feature vector
@@ -1693,7 +1760,9 @@ def plot_dim_reduction(algo='umap_z', mapping='Beryl',ephys=False,
     if exa_kmeans:
         plot_cluster_mean_PETHs(r, mapping, feat, 
             vers='concat', axx=axx, alone=True)
-
+        ff = plt.gcf()
+        ff.savefig(Path(one.cache_dir, 'dmn', 'imgs',
+            f'{nclus}_kmeans_lines.svg'), dpi=150)
 
 
     if exa_squ:
@@ -1835,7 +1904,7 @@ def plot_cluster_mean_PETHs(r, mapping, feat, vers='concat',
 
         d2 = {}
         for sec in PETH_types_dict[vers]:
-            d2[sec] = r['len'][sec]
+            d2[sec] =  r['len'][sec]
 
         # Plot vertical boundaries for windows
         h = 0
@@ -1845,7 +1914,7 @@ def plot_cluster_mean_PETHs(r, mapping, feat, vers='concat',
 
             if kk == 0:
                 axx[kk].text(xv / c_sec - d2[i] / (2 * c_sec), max(yy),
-                             '   ' + i, rotation=90, color='k',
+                             '   ' + peth_dict[i], rotation=90, color='k',
                              fontsize=10, ha='center')
 
             h += d2[i]
@@ -1857,7 +1926,8 @@ def plot_cluster_mean_PETHs(r, mapping, feat, vers='concat',
         fg.tight_layout()
 
 
-def smooth_dist(dim=2, algo='umap_z', mapping='Beryl', show_imgs=False, restr=False,
+def smooth_dist(dim=2, algo='umap_z', mapping='Beryl', 
+                show_imgs=False, restr=False,
                 norm_=True, dendro=True, nmin=50, vers='concat'):
     """
     Generalized smoothing and analysis of N-dimensional point clouds.
@@ -2079,7 +2149,8 @@ def smooth_dist(dim=2, algo='umap_z', mapping='Beryl', show_imgs=False, restr=Fa
     return res, regs
 
 
-def plot_ave_PETHs(feat = 'concat_z', vers='concat', rerun=False):
+def plot_ave_PETHs(feat = 'concat', vers='concat',
+                   rerun=False, anno=True):
 
     '''
     average PETHs across cells
@@ -2087,37 +2158,6 @@ def plot_ave_PETHs(feat = 'concat_z', vers='concat', rerun=False):
     '''   
     evs = {'stimOn_times':'gray', 'firstMovement_times':'cyan',
            'feedback_times':'orange'}
-    
-    # needs update; do via if in dict else grey       
-    win_cols = {'inter_trial': 'grey',
-                 'stimL': [0.13850039, 0.41331206, 0.74052025],
-                 'stimR': [0.66080672, 0.21526712, 0.23069468],
-                 'blockL': [0.13850039, 0.41331206, 0.74052025],
-                 'blockR': [0.66080672, 0.21526712, 0.23069468],
-                 'choiceL': [0.13850039, 0.41331206, 0.74052025],
-                 'choiceR': [0.66080672, 0.21526712, 0.23069468],
-                 'fback1': 'g',
-                 'fback0': 'k',
-                 'block50': 'grey',
-                 'stimLbLcL': 'grey',
-                 'stimLbRcL': 'grey',
-                 'stimLbRcR': 'grey',
-                 'stimLbLcR': 'grey',
-                 'stimRbLcL': 'grey',
-                 'stimRbRcL': 'grey',
-                 'stimRbRcR': 'grey',
-                 'stimRbLcR': 'grey',
-                 'sLbLchoiceL': 'grey',
-                 'sLbRchoiceL': 'grey',
-                 'sLbRchoiceR': 'grey',
-                 'sLbLchoiceR': 'grey',
-                 'sRbLchoiceL': 'grey',
-                 'sRbRchoiceL': 'grey',
-                 'sRbRchoiceR': 'grey',
-                 'sRbLchoiceR': 'grey',
-                 'quiescence': 'grey',
-                 'motor_init': 'grey'}
-
 
     # trial split types, with string to define alignment
     def align(win):
@@ -2156,11 +2196,6 @@ def plot_ave_PETHs(feat = 'concat_z', vers='concat', rerun=False):
                     revision='2024-07-10')
                 trials = trials[mask][:-100]
 
-                # trials = one.load_object(eid, 'trials')
-                # trials = pd.DataFrame({'stimOn_times': trials['stimOn_times'][:-100],
-                #                    'firstMovement_times': trials['firstMovement_times'][:-100],
-                #                    'feedback_times': trials['feedback_times'][:-100]})
-
                 diffs.append(np.mean(np.diff(
                             trials[list(evs.keys())]),axis=0))
             except:
@@ -2182,13 +2217,14 @@ def plot_ave_PETHs(feat = 'concat_z', vers='concat', rerun=False):
 
     d = np.load(pth_dmnm, allow_pickle=True).flat[0]
     
-    fig, ax = plt.subplots(figsize=(8.57, 2.75))
-    r = np.load(Path(pth_dmn, 'concat_ephysFalse.npy'),allow_pickle=True).flat[0]
+    fig, ax = plt.subplots(figsize=(7, 2.75))
+    r = np.load(Path(pth_dmn, 'concat.npy'),allow_pickle=True).flat[0]
     r['mean'] = np.mean(r[feat],axis=0)
 
     # get alignment event per PETH type
     pid = '1a60a6e1-da99-4d4e-a734-39b1d4544fad'
-    ttt =  concat_PETHs(pid = pid,get_tts=True)
+    ttt =  concat_PETHs(pid, get_tts=True, vers=vers)
+
     # plot trial averages
     yys = []  # to find maxes for annotation
     st = 0
@@ -2204,8 +2240,9 @@ def plot_ave_PETHs(feat = 'concat_z', vers='concat', rerun=False):
         st += r['len'][tt]
 
 
-        ax.plot(xx, yy, label=tt, color=win_cols[tt])
-        ax.annotate(tt, (xx[-1], yy[-1]), color=win_cols[tt])
+        ax.plot(xx, yy, label=tt, color='k')
+        if anno:
+            ax.annotate(tt, (xx[-1], yy[-1]), color='k')
         
     
     for ev in d['av_times']:
@@ -2213,35 +2250,22 @@ def plot_ave_PETHs(feat = 'concat_z', vers='concat', rerun=False):
             continue
         ax.axvline(x=d['av_times'][ev][0], label=ev,
                    color=evs[ev], linestyle='-')
-        ax.annotate(ev, (d['av_times'][ev][0], 0.8*max(yys)), 
-                    color=evs[ev], rotation=90, 
-                    textcoords='offset points', xytext=(-15, 0))
+
+        if anno:           
+            ax.annotate(ev, (d['av_times'][ev][0], 0.8*max(yys)), 
+                        color=evs[ev], rotation=90, 
+                        textcoords='offset points', xytext=(-15, 0))
     
                    
     d['av_tr_times'] = [np.cumsum([0]+ list(x)) 
                         for x in d['diffs']]
-
-#    for s in d['av_tr_times']:
-#        k = 0
-#        for t in s:
-#            ax.axvline(x=t, color=evs[list(evs)[k]], 
-#                       linestyle='-', linewidth=0.01)
-#            k +=1 
-    # Use KDE instead of vertical lines
-#    k=0
-#    for t in d['av_tr_times']:
-#        
-#        kde = gaussian_kde(t)
-#        ax.plot(t, kde(t), color=evs[list(evs)[k]], alpha=0.5)
-#        k += 1            
-            
-                       
+                 
     ax.spines['right'].set_visible(False)
     ax.spines['top'].set_visible(False)    
     ax.set_xlabel('time [sec]')
     ax.set_ylabel('trial averaged fr [Hz]')
-    ax.set_title('PETHs averaged across all BWM cells')
-    ax.set_xlim(-1.15,3)
+    fig.canvas.manager.set_window_title('PETHs averaged across all BWM cells')
+    #ax.set_xlim(-1.15,3)
     fig.tight_layout()
 #    fig.savefig(Path(one.cache_dir,'dmn', 'figs',
 #                'intro', 'avg_PETHs.svg'))
@@ -2299,8 +2323,7 @@ def plot_xyz(mapping='Beryl', vers='concat', add_cents=False,
             scale = 5000
             vols = scale * np.array(vols)/np.max(vols)
             
-            _,pa = get_allen_info()
-            cols = [pa[reg] for reg in regs]
+            cols = [pal[reg] for reg in regs]
             ax.scatter(cents[:,0], cents[:,1], cents[:,2], 
                        marker='*', s = vols, color=cols, depthshade=False)
                        
@@ -3137,7 +3160,7 @@ def swansons_all(metric='latency', minreg=10, annotate=True,
 def swansons_means(minreg=10, annotate=True, nanno=5):
 
     '''
-    Plot on swansons mean PETH for 5 types
+    Plot on Swanson's mean PETH for 11 types
     and differences from concat
     '''
     
@@ -3145,7 +3168,7 @@ def swansons_means(minreg=10, annotate=True, nanno=5):
      
     # get average z-scored PETHs per Beryl region 
     regs = Counter(r['acs'])
-    regs2 = [reg for reg in regs if regs[reg]>minreg]
+    regs2 = [reg for reg in regs if regs[reg] > minreg]
 
     # average all PETHs per region, then z-score and get latency
     # plot latency in swanson; put average peths on top
@@ -3154,7 +3177,7 @@ def swansons_means(minreg=10, annotate=True, nanno=5):
     for reg in regs2:
     
         # average across neurons per region
-        orgl = np.mean(r['concat'][r['acs'] == reg],axis=0)   
+        orgl = np.mean(r['concat_z'][r['acs'] == reg], axis=0)   
 
         rd = {}
 
@@ -3166,154 +3189,99 @@ def swansons_means(minreg=10, annotate=True, nanno=5):
         for key, length in r['len'].items():
             end_idx = start_idx + length 
             start_end[key] = [start_idx, end_idx]
-            # Update the start index for the next segment
             start_idx += length
 
         for subset, segments in PETH_types_dict.items():
-            # Calculate start and end indices for the current subset
             ranges = []
             for seg in segments:
-                ranges.append(np.arange(start_end[seg][0], 
-                                        start_end[seg][1]))
+                ranges.append(np.arange(start_end[seg][0], start_end[seg][1]))
                                         
             # take mean of subset PETHs (average across time bins)
             rd[subset] = np.mean(orgl[np.concatenate(ranges)])
             
         avs[reg] = rd
 
-    # add for each condition the difference to "concat"
+    # Compute differences from concat
     conds = list(avs[reg].keys())
     avs_d = {}
     for reg in avs:
-        dd = {}
-        for c in conds:
-            dd[f'concat-{c}'] = abs(avs[reg]['concat'] - avs[reg][c])
-        avs_d[reg] = dd
-     
-    nrows = 2
-    ncols = len(avs[reg].keys())
+        avs_d[reg] = {f'concat-{c}': abs(avs[reg]['concat'] - avs[reg][c]) for c in conds}
+
+    # New structure: 4 rows
+    first_6 = list(PETH_types_dict.keys())[:6]
+    last_5 = list(PETH_types_dict.keys())[6:]
+
+    nrows = 4
+    ncols = max(len(first_6), len(last_5))
         
-    fig, axs = plt.subplots(nrows=nrows, ncols=ncols, 
-                            figsize=[8.33, 8.61])
+    fig, axs = plt.subplots(nrows=nrows, ncols=ncols, figsize=[7.09, 8.61])
 
     cmap_ = 'viridis_r'
     
+    # Determine global min/max for color scaling
+    lats_all = np.array([avs[x][s] for s in conds for x in avs]).flatten()
+    lats_all_d = np.array([avs_d[x][f'concat-{s}'] for s in conds for x in avs_d]).flatten()
 
-    lats_all = np.array([np.array([avs[x][s] for x in avs]) 
-                for s in avs[reg].keys()]).flatten()
-    lats_all_d = np.array([np.array([avs_d[x][s] for x in avs_d]) 
-                for s in avs_d[reg].keys()]).flatten()
-                
-    vmin, vmax = (np.nanmin(lats_all), np.nanmax(lats_all))
-    vmin_d, vmax_d = (np.nanmin(lats_all_d), np.nanmax(lats_all_d))
-    
-    # loop through PETH subset types
-    k = 0  
-    for s in avs[reg].keys():     
-        
-        print('means')
-        
-        aord = np.argsort(np.array([avs[x][s] for x in avs]))
-        print(s, list(reversed(
-                    np.array(list(avs.keys()))[aord][-nanno:])))
-        
-        plot_swanson_vector(np.array(list(avs.keys())),
-                            np.array([avs[x][s] for x in avs]), 
-                            cmap=cmap_, 
-                            ax=axs[0,k], br=br, 
-                            orientation='portrait',
-                            vmin=vmin, 
-                            vmax=vmax,
-                            thres=20000,
-                            annotate= annotate,
-                            annotate_n=nanno,
-                            annotate_order='top')
-                            
-        norm = mpl.colors.Normalize(vmin=vmin, 
-                                    vmax=vmax)        
+    vmin, vmax = np.nanmin(lats_all), np.nanmax(lats_all)
+    vmin_d, vmax_d = np.nanmin(lats_all_d), np.nanmax(lats_all_d)
 
-        num_ticks = 3  # Adjust as needed
+    def plot_row(subset_keys, row_idx, is_diff=False):
+        for k, s in enumerate(subset_keys):
+            if is_diff:
+                aord = np.argsort([avs_d[x][f'concat-{s}'] for x in avs_d])
+                values = np.array([avs_d[x][f'concat-{s}'] for x in avs_d])
+                vmin_, vmax_ = vmin_d, vmax_d
+            else:
+                aord = np.argsort([avs[x][s] for x in avs])
+                values = np.array([avs[x][s] for x in avs])
+                vmin_, vmax_ = vmin, vmax
+            
+            print(s, list(reversed(np.array(list(avs.keys()))[aord][-nanno:])))
 
-        # Use MaxNLocator to select a suitable number of ticks
-        locator = MaxNLocator(nbins=num_ticks)
-                   
-        norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
-        cbar = fig.colorbar(
-                   mpl.cm.ScalarMappable(norm=norm,cmap=cmap_),
-                   ax=axs[0,k],shrink=0.8,aspect=12,pad=.025,
-                   orientation="horizontal", ticks=locator)
-                   
-        cbar.ax.tick_params(axis='both', which='major', size=6)
-        cbar.outline.set_visible(False)
-        cbar.ax.tick_params(size=2)
-        cbar.ax.xaxis.set_tick_params(pad=5)
-        #cbar.set_label('firing rate (Hz)') 
+            plot_swanson_vector(
+                np.array(list(avs.keys()) if not is_diff else list(avs_d.keys())),
+                values, cmap=cmap_, ax=axs[row_idx, k], br=br,
+                orientation='portrait', vmin=vmin_, vmax=vmax_,
+                annotate=annotate, annotate_n=nanno,
+                annotate_order='top')
 
+            norm = mpl.colors.Normalize(vmin=vmin_, vmax=vmax_)
+            locator = MaxNLocator(nbins=3)
 
-        print('diffs')
-        aord_d = np.argsort(np.array([avs_d[x][f'concat-{s}'] 
-                                for x in avs_d]))
-        print(s, list(reversed(
-                    np.array(list(avs_d.keys()))[aord_d][-nanno:])))
-        
-        # same for differences                           
-        plot_swanson_vector(np.array(list(avs_d.keys())),
-                            np.array([avs_d[x][f'concat-{s}'] 
-                                for x in avs_d]), 
-                            cmap=cmap_, 
-                            ax=axs[1,k], br=br, 
-                            orientation='portrait',
-                            vmin=vmin_d, 
-                            vmax=vmax_d,
-                            thres=20000,
-                            annotate= annotate,
-                            annotate_n=nanno,
-                            annotate_order='top')                            
-                            
-                            
+            cbar = fig.colorbar(
+                mpl.cm.ScalarMappable(norm=norm, cmap=cmap_),
+                ax=axs[row_idx, k], shrink=0.8, aspect=12, pad=.025,
+                orientation="horizontal", ticks=locator)
 
-        norm = mpl.colors.Normalize(vmin=vmin_d, 
-                                    vmax=vmax_d)        
+            cbar.ax.tick_params(axis='both', which='major', size=6)
+            cbar.outline.set_visible(False)
+            cbar.ax.tick_params(size=2)
+            cbar.ax.xaxis.set_tick_params(pad=5)
 
-        num_ticks = 3  # Adjust as needed
+            if is_diff:
+                cbar.set_label('firing rate (Hz)')
 
-        # Use MaxNLocator to select a suitable number of ticks
-        locator = MaxNLocator(nbins=num_ticks)
-                   
-        norm = mpl.colors.Normalize(vmin=vmin_d, vmax=vmax_d)
-        cbar = fig.colorbar(
-                   mpl.cm.ScalarMappable(norm=norm,cmap=cmap_),
-                   ax=axs[1,k],shrink=0.8,aspect=12,pad=.025,
-                   orientation="horizontal", ticks=locator)
-                   
-        cbar.ax.tick_params(axis='both', which='major', size=6)
-        cbar.outline.set_visible(False)
-        cbar.ax.tick_params(size=2)
-        cbar.ax.xaxis.set_tick_params(pad=5)
-        cbar.set_label('firing rate (Hz)')
+            axs[row_idx, k].set_title(s)
+            axs[row_idx, k].axis('off')
 
-        
-        axs[0,k].set_title(s)
- 
-           
- 
-        [axs[row,k].axis('off') for row in range(nrows)]    
+    # First row: First 6 items
+    plot_row(first_6, row_idx=0, is_diff=False)
 
+    # Second row: Differences of first 6 items
+    plot_row(first_6, row_idx=1, is_diff=True)
 
-        #put_panel_label(axs[k], k)
-        k+=1
-    
-    fig.subplots_adjust(top=0.963,
-                        bottom=0.001,
-                        left=0.018,
-                        right=0.982,
-                        hspace=0.0,
-                        wspace=0.035)
-    
-    
-    fig.savefig(Path(one.cache_dir,'dmn', 'figs','swansons.svg'))
-    fig.savefig(Path(one.cache_dir,'dmn', 'figs','swansons.pdf'),
-                dpi=150, bbox_inches='tight')
+    # Third row: Remaining 5 items
+    plot_row(last_5, row_idx=2, is_diff=False)
+
+    # Fourth row: Differences of last 5 items
+    plot_row(last_5, row_idx=3, is_diff=True)
+
+    fig.subplots_adjust(
+        top=0.963, bottom=0.001, left=0.018, right=0.982,
+        hspace=0.0, wspace=0.035)
+
+    fig.savefig(Path(one.cache_dir, 'dmn', 'imgs', 'swansons.svg'))
+    fig.savefig(Path(one.cache_dir, 'dmn', 'imgs', 'swansons.pdf'), dpi=150, bbox_inches='tight')
 
 
 def plot_multi_umap_cell(ds=0.1):
@@ -3378,6 +3346,7 @@ def plot_peth():
     for 4 simple trial types, plot PETH for all regions;
     indicate latency also
     '''
+
     _,pal = get_allen_info()   
     d = np.load(Path(one.cache_dir, 'dmn', 'stack_simple.npy'),
                 allow_pickle=True).flat[0]
@@ -3457,7 +3426,6 @@ def plot_dist_clusters(anno=True, axs=None):
         alone = True
         fig, axs = plt.subplots(nrows=1, ncols=len(verss), 
                                 layout="constrained", figsize=(17,4))
-    _, pa =get_allen_info()
     
     D = plot_multi_matrices(get_matrices=True)
     
@@ -3474,7 +3442,7 @@ def plot_dist_clusters(anno=True, axs=None):
         reducer = umap.UMAP(metric='precomputed')
         emb = reducer.fit_transform(dist)
 
-        cols = [pa[reg] for reg in D['regs']]
+        cols = [pal[reg] for reg in D['regs']]
         
         axs[k].scatter(emb[:,0], emb[:,1], 
                  color=cols, s=5, rasterized=True)
@@ -3597,7 +3565,8 @@ def var_expl(minreg=20):
 
     
 def clus_freqs(foc='kmeans', nmin=50, nclus=13, vers='concat', get_res=False,
-               rerun=False, norm_=False):
+               rerun=False, norm_=True, save_=False, single_regions=[],
+               axs = None):
 
     '''
     For each k-means cluster, show an Allen region bar plot of frequencies,
@@ -3605,8 +3574,14 @@ def clus_freqs(foc='kmeans', nmin=50, nclus=13, vers='concat', get_res=False,
     foc: focus, either kmeans or Allen
     get_res: return results
     norm_: normalize distribution so they all sum up to 1
+    save_: save results to file
+    single_regions: list of regions to plot separately
+
+    single_regions=['PA','SIM','MOB','SCm', 'MS','MRN', 
+                    'VISpor','PRNr']
     '''
-    
+    alone = True if axs is None else False
+
     pthres = Path(pth_dmn.parent, f'nclus{nclus}_{foc}_nrm_{norm_}.npy')
 
     if get_res and not rerun:
@@ -3695,29 +3670,36 @@ def clus_freqs(foc='kmeans', nmin=50, nclus=13, vers='concat', get_res=False,
 
         # show frequency of clusters for all regions
 
-        # order regions by canonical list 
+        # Load canonical region order
         p = (Path(iblatlas.__file__).parent / 'beryl.npy')
         regs_can = br.id2acronym(np.load(p), mapping='Beryl')
-        regs_ = Counter(r_a['acs'])
-        reg_ord = []
-        for reg in regs_can:
-            if reg in regs_ and regs_[reg] >= nmin:
-                reg_ord.append(reg)        
 
-        print(len(reg_ord), f'regions with at least {nmin} cells')
+        # Determine which regions to plot
+        if single_regions:
+            reg_ord = [reg for reg in single_regions if reg in r_a['acs']]
+            print(f'Plotting {len(reg_ord)} selected regions (single_regions)')
+        else:
+            regs_ = Counter(r_a['acs'])
+            reg_ord = [reg for reg in regs_can if reg in regs_ and regs_[reg] >= nmin]
+            print(f'{len(reg_ord)} regions with at least {nmin} cells')
+
         ncols = int((len(reg_ord) ** 0.5) + 0.999)
         nrows = (len(reg_ord) + ncols - 1) // ncols
 
-        fig, axs = plt.subplots(nrows = nrows, 
-                                ncols = ncols,
-                                figsize=(18.79,  15),
-                                sharex=True,
-                                sharey=True if norm_ else False)
-        
-        axs = axs.flatten()
+        if axs is None:
+            fig, axs = plt.subplots(nrows=nrows, 
+                                    ncols=ncols,
+                                    figsize=(18.79,  15),
+                                    sharex=True,
+                                    sharey=True if norm_ else False)
+            
+            axs = axs.flatten()
                                
-        cols_dict = dict(list(Counter(zip(list(r_k['acs']),
-                    [tuple(color) for color in r_k['cols']]))))
+        cols_dict = {}
+        for lab, col in zip(r_k['acs'], r_k['cols']):
+            lab_int = int(lab)  # Convert np.int32 → int
+            if lab_int not in cols_dict:
+                cols_dict[lab_int] = col
                     
         cols_dictr = dict(list(Counter(zip(list(r_a['acs']),
                     [tuple(color) for color in r_a['cols']]))))  
@@ -3726,115 +3708,121 @@ def clus_freqs(foc='kmeans', nmin=50, nclus=13, vers='concat', get_res=False,
         
         # keep results for output
         d = {}
-
-        k = 0                       
-        for reg in reg_ord:                       
-            counts = Counter(r_k['acs'][r_a['acs'] == reg])
+        for k, reg in enumerate(reg_ord):
+            counts = Counter(np.array(r_k['acs'])[r_a['acs'] == reg])
             clus_order = {clus: 0 for clus in cluss}
-            for clus in clus_order:
-                if clus in counts:
-                    clus_order[clus] = counts[clus]
+            for clus in cluss:
+                clus_order[clus] = counts.get(clus, 0)
 
             values = list(clus_order.values())
             if norm_:
-               values = np.array(values)/float(sum(values))    
+                values = np.array(values)/float(sum(values))    
 
-            # Preparing data for plotting
             labels = list(clus_order.keys())
-            values = list(values)        
-            colors = [cols_dict[label] for label in labels]                
 
+            if single_regions:
+                colors = ['k'] * len(labels)
+            else:
+                colors = [cols_dict[label] for label in labels]
 
             d[reg] = values          
 
-            # Creating the bar chart
             bars = axs[k].bar(labels, values, color=colors)
-            axs[k].set_ylabel(reg, color=cols_dictr[reg])
+            axs[k].set_ylabel(reg, color = pal[reg])
             axs[k].set_xticks(labels)
             axs[k].set_xticklabels(labels, fontsize=8, rotation=90)
-            
-            for ticklabel, bar in zip(axs[k].get_xticklabels(), bars):
-                ticklabel.set_color(bar.get_facecolor())        
+
+            if not single_regions:
+                for ticklabel, bar in zip(axs[k].get_xticklabels(), bars):
+                    ticklabel.set_color(bar.get_facecolor())        
 
             axs[k].set_xlim(-0.5, len(labels)-0.5)
             axs[k].spines['top'].set_visible(False)
             axs[k].spines['right'].set_visible(False)
 
-            k += 1
-
         for ax in axs:
             if not has_data(ax):
-                ax.set_visible(False) 
+                ax.set_visible(False)
 
-        fig.canvas.manager.set_window_title(
-            f'Frequency of kmeans cluster ({nclus}) per'
-            f' Beryl region label per; vers = {vers}')
-                     
-        fig.tight_layout()
+        if alone:
+            fig.canvas.manager.set_window_title(
+                f'Frequency of kmeans cluster ({nclus}) per'
+                f' Beryl region label; vers = {vers}')
+            fig.tight_layout()
 
     elif foc == 'dec':
         # Get data from get_dec_bwm()
         d = get_dec_bwm()
 
-        # Order regions by canonical list 
+        # Load canonical region order
         p = (Path(iblatlas.__file__).parent / 'beryl.npy')
         regs_can = br.id2acronym(np.load(p), mapping='Beryl')
-        regs_ = list(d.keys())
-        reg_ord = []
-        for reg in regs_can:
-            if reg in regs_ :
-                reg_ord.append(reg)
 
-        print(len(reg_ord), f'regions')
+        # Determine which regions to plot
+        if single_regions:
+            reg_ord = [reg for reg in single_regions if reg in d]
+            print(f'Plotting {len(reg_ord)} selected regions (single_regions)')
+        else:
+            reg_ord = [reg for reg in regs_can if reg in d]
+            print(f'{len(reg_ord)} regions')
+
         ncols = int((len(reg_ord) ** 0.5) + 0.999)
         nrows = (len(reg_ord) + ncols - 1) // ncols
 
-        fig, axs = plt.subplots(nrows=nrows, ncols=ncols,
-                                figsize=(18.79,  15), sharex=True, sharey=True)
-        axs = axs.flatten()
+        if axs is None:
+            alone = False
+            fig, axs = plt.subplots(nrows=nrows, 
+                                    ncols=ncols,
+                                    figsize=(18.79,  15),
+                                    sharex=True,
+                                    sharey=True if norm_ else False)
+            
+            axs = axs.flatten()
 
         rrcols = ['r', 'g', 'b', 'y', 'c', 'm', 'k', 'o', 'p']
-        cols_dictr = dict(list(Counter(zip(list(r_a['acs']),
-                    [tuple(color) for color in r_a['cols']]))))
-        # Iterate over regions
+        cols_dictr = dict(Counter(zip(list(r_a['acs']),
+                                      [tuple(color) for color in r_a['cols']])))
+
         for k, reg in enumerate(reg_ord):
-            if reg not in d:
-                continue
-            
-            # Prepare data
             values = d[reg]
-            labels = range(len(values))  # Assuming `d[reg]` is a list of scores
-            colors = rrcols[:len(values)]
+            labels = list(range(len(values)))
 
             if norm_:
-                values = np.array(values) / float(sum(values))    
+                values = np.array(values) / float(sum(values))
 
-            # Create the bar chart
+            if single_regions:
+                colors = ['k'] * len(labels)
+            else:
+                colors = rrcols[:len(labels)]
+
             bars = axs[k].bar(labels, values, color=colors)
-            axs[k].set_ylabel(reg, color=cols_dictr[reg])
+            axs[k].set_ylabel(reg, color = pal[reg])
             axs[k].set_xticks(labels)
             axs[k].set_xticklabels(labels, fontsize=8, rotation=90)
-            
-            for ticklabel, bar in zip(axs[k].get_xticklabels(), bars):
-                ticklabel.set_color(bar.get_facecolor())        
 
-            axs[k].set_xlim(-0.5, len(labels)-0.5)
+            if not single_regions:
+                for ticklabel, bar in zip(axs[k].get_xticklabels(), bars):
+                    ticklabel.set_color(bar.get_facecolor())
+
+            axs[k].set_xlim(-0.5, len(labels) - 0.5)
             axs[k].spines['top'].set_visible(False)
             axs[k].spines['right'].set_visible(False)
 
-
         for ax in axs:
             if not has_data(ax):
-                ax.set_visible(False)    
+                ax.set_visible(False)
 
-        fig.canvas.manager.set_window_title(
-            f'Values from get_dec_bwm per Beryl region; vers = {vers}')
-        fig.tight_layout()
-    fig.savefig(Path(pth_dmn.parent, 'imgs',
-                     f'{foc}_{nclus}_{vers}_nrm_{norm_}.svg'), dpi=150)
-    fig.savefig(Path(pth_dmn.parent, 'imgs',
-                     f'{foc}_{nclus}_{vers}_nrm_{norm_}.pdf'), dpi=150)
-    np.save(pthres, d, allow_pickle=True)
+        if alone:
+            fig.canvas.manager.set_window_title(
+                f'Values from get_dec_bwm per Beryl region; vers = {vers}')
+            fig.tight_layout()
+
+    if save_:    
+        fig.savefig(Path(pth_dmn.parent, 'imgs',
+                        f'{foc}_{nclus}_{vers}_nrm_{norm_}.svg'), dpi=150)
+        fig.savefig(Path(pth_dmn.parent, 'imgs',
+                        f'{foc}_{nclus}_{vers}_nrm_{norm_}.pdf'), dpi=150)
+        np.save(pthres, d, allow_pickle=True)
     if get_res:
         return d
 
@@ -3941,8 +3929,9 @@ def compare_two_goups(vers='concat', filt = 'VISp'):
     fig.tight_layout()
 
 
-def plot_rastermap(feat='concat_z', regex='Isocortex', exa = False,
-                   mapping='kmeans', alpha=0.5, bg=True, img_only=False):
+def plot_rastermap(vers='concat', feat='concat_z', regex='Isocortex', 
+                   exa = False, mapping='kmeans', bg=True, img_only=False,
+                   interp='antialiased', single_reg=False):
     """
     Function to plot a rastermap with vertical segment boundaries 
     and labels positioned above the segments.
@@ -3952,85 +3941,41 @@ def plot_rastermap(feat='concat_z', regex='Isocortex', exa = False,
     feat = 'single_reg' will show only cells in example region regex
 
     """
-    if feat == 'single_reg':
-        print('make sure mapping is Berylif regex in Beryl, else Cosmos')
-
-    r = regional_group(mapping)
-
-    if feat == 'concat_z_no_mistake':
-
-        # remove all mistake PETHs
-
-        to_remove = ['stimLbRcR',
-                    'stimLbLcR',
-                    'stimRbLcL',
-                    'stimRbRcL',
-                    'sLbRchoiceR',
-                    'sLbLchoiceR',
-                    'sRbLchoiceL',
-                    'sRbRchoiceL']
-    
-        # Extract relevant information from the data
-        # Initialize an empty list to store the indices to keep
-        keep_indices = []
-
-        # Get segment names and lengths
-        segment_names = list(r['len'].keys())
-        segment_lengths = list(r['len'].values())
-
-        # Track the current start index
-        current_idx = 0
-
-        # Identify indices to keep
-        for i, segment in enumerate(segment_names):
-            segment_length = segment_lengths[i]
-            if segment not in to_remove:
-                # Add indices of this segment to the keep list
-                keep_indices.extend(range(current_idx, 
-                                    current_idx + segment_length))
-            # Update the current index for the next segment
-            current_idx += segment_length
-
-        # Filter the data to keep only the desired indices
-        
-
-        data = r['concat_z'][:, keep_indices]
-        r[feat] = data
-        # Update r['len'] to reflect the new structure
-        r['len'] = {k: v for k, v in r['len'].items() if k not in to_remove}
-        print('embedding rastermap ...')
-
-        # Fit the Rastermap model
-        model = Rastermap(bin_size=1).fit(data)
-
-        r['isort'] = model.isort
-
-    if feat == 'single_reg':        
-        data = r['concat_z'][r['acs'] == regex, :]
-        r[feat] = data
-        print(f'embedding rastermap for {regex} cells only')
-        # Fit the Rastermap model
-        model = Rastermap(n_PCs=200, n_clusters=100,
-                      locality=0.75, time_lag_window=5, bin_size=1).fit(data)
-        r['isort'] = model.isort
+    r = regional_group(mapping, vers=vers)
 
     if exa:
         plot_cluster_mean_PETHs(r,mapping, feat)
-
 
     spks = r[feat]
     isort = r['isort' if feat != 'ephysTF' else 'isort_e'] 
     data = spks[isort]
     row_colors = np.array(r['cols'])[isort]  # Reorder colors by sorted index
+    alpha = 0.3
+    lw =.01
+
+    if single_reg:
+        
+        acs = np.array(r['Beryl'])[isort]
+
+        # adjust background line width according to example region size
+        n = len(acs)
+        n_ex = sum(acs == regex)
+        print('number of cells in example region:', n_ex)
+
+        lw = n / (n_ex * 100)
+
+        data = data[acs == regex]
+        row_colors = row_colors[acs == regex]
+        print(f'filtering rastermap for {regex} cells only')
 
     n_rows, n_cols = data.shape
     # Create a figure for the rastermap
     fig, ax = plt.subplots(figsize=(6, 8))
 
     if feat != 'ephysTF':
-        # plot in greys, then overlay color (good for big picture)
-        im = ax.imshow(data, vmin=0, vmax=1.5, cmap="gray_r",
-                    aspect="auto")
+        # plot in greys, then overlay color (good for big picture); 
+        im = ax.imshow(data,  cmap="gray_r", vmin=0, vmax=5,
+                    aspect="auto", interpolation=interp)#
 
         # Plot vertical boundaries and add text labels
         ylim = ax.get_ylim()  
@@ -4045,7 +3990,7 @@ def plot_rastermap(feat='concat_z', regex='Isocortex', exa = False,
             if not img_only:
                 # Label positioned above the plot
                 ax.text(midpoint, ylim[1] + 0.05 * (ylim[1] - ylim[0]), 
-                        segment, rotation=90, color='k', 
+                        peth_dict[segment], rotation=90, color='k', 
                         fontsize=10, ha='center')  
             
             h += r['len'][segment]  # Update cumulative sum for the next segment
@@ -4064,7 +4009,7 @@ def plot_rastermap(feat='concat_z', regex='Isocortex', exa = False,
     if bg:   
         for i, color in enumerate(row_colors):
             ax.hlines(i, xmin=0, xmax=n_cols, colors=color, 
-            lw=.01, alpha=alpha)
+            lw=lw, alpha=alpha)
 
     ax.set_xlabel('time [sec]')    
     ax.set_ylabel(f'cells in {regex}' if feat == 'single_reg' else 'cells')
@@ -4108,6 +4053,29 @@ def non_flatness_score(d, get_cells=False, norm_=True):
     return dict(sorted(scores.items(), key=lambda item: item[1]))
 
 
+def flatness_entropy_score(d, get_cells=False):
+    '''
+    Measures how close the distribution is to uniform using normalized entropy.
+    1 = perfectly flat (uniform), 0 = most peaked (Dirac delta-like).
+    '''
+    scores = {}
+    for reg in d:
+        p = np.array(d[reg])
+        p = p / p.sum()  # normalize to probability
+        n_bins = len(p)
+        H = entropy(p)  # in nats
+        max_H = np.log(n_bins)
+        score = H / max_H if max_H > 0 else 0  # normalize to [0, 1]
+        score = 1 - score
+        if get_cells:
+            scores[reg] = [np.sum(d[reg]), score]
+        else:
+            scores[reg] = score
+
+    return dict(sorted(scores.items(), key=lambda item: item[1], reverse=True))
+
+
+
 def plot_xyz_cents(foc='Beryl', ax=None, norm_=True):
 
     '''
@@ -4147,8 +4115,7 @@ def plot_xyz_cents(foc='Beryl', ax=None, norm_=True):
     vols = scale * np.array(vols)/np.max(vols)
     
 
-    _,pa = get_allen_info()
-    colsB = [pa[reg] for reg in regs]
+    colsB = [pal[reg] for reg in regs]
 
 
     cmap = plt.cm.Blues
@@ -4244,9 +4211,10 @@ def get_dec_bwm(nscores=3):
     return combined_res
 
 
-def scat_dec_clus(norm_=True, ari=False, harris=False):
+def scat_dec_clus(norm_=True, ari=False, harris=False, 
+                  log_scale=True, axs=None):
     # Replace the example dictionaries with the processed scores
-    be = non_flatness_score(clus_freqs(foc='Beryl', get_res=True), norm_=norm_) 
+    be = flatness_entropy_score(clus_freqs(foc='Beryl', get_res=True)) 
 
     if ari:
         d0 = np.load('/home/mic/wasserstein_fromflatdist_13_concat_nd2.npy', allow_pickle=True).flat[0]
@@ -4256,7 +4224,7 @@ def scat_dec_clus(norm_=True, ari=False, harris=False):
             de[reg] = d0['res'][k]
             k += 1
     else:                             
-        de = non_flatness_score(clus_freqs(foc='dec', get_res=True), norm_=norm_)  
+        de = flatness_entropy_score(clus_freqs(foc='dec', get_res=True))  
 
     if harris:
         # Harris hierarchy scores
@@ -4279,74 +4247,86 @@ def scat_dec_clus(norm_=True, ari=False, harris=False):
     # Separate values for plotting
     x_be = [merged_data[region][0] for region in merged_data]
     y_de = [merged_data[region][1] for region in merged_data]
+
     if harris:
         z_harris = [merged_data[region][2] for region in merged_data]
     colors = [pal[region] for region in merged_data]
     labels = list(merged_data.keys())
 
     # Set up subplots
-    fig, axes = plt.subplots(1, 3 if harris else 1, 
-        figsize=(15 if harris else 3, 3))  # 3 rows, 1 column
+    if axs is None:
+        fig, axs = plt.subplots(1, 1, 
+            figsize=(3, 3)) 
 
     # Define scatter plot function for reuse
     def scatter_panel(ax, x, y, xlabel, ylabel):
-        # Fit regression line
-        slope, intercept, r_value, _, _ = linregress(x, y)
-        xx = np.linspace(min(x), max(x), 100)
-        yy = slope * xx + intercept
-        ax.plot(xx, yy, color='black', linestyle='--', label=f'Fit: y={slope:.2f}x+{intercept:.2f}')
+        
+        # Pearson correlation
+        corr, p = pearsonr(x, y)
+        print(f"Pearson r,p = {corr:.2f},{p:.4f}")
+        if p < 0.05:
+
+            # ax.text(0.95, 0.95, '*', transform=ax.transAxes, fontsize=20, verticalalignment='top')
+
+            # Fit regression line
+            slope, intercept, r_value, _, _ = linregress(x, y)
+            xx = np.linspace(min(x), max(x), 100)
+            yy = slope * xx + intercept
+            ax.plot(xx, yy, color='black', linestyle='--', 
+                label=f'Fit: y={slope:.2f}x+{intercept:.2f}')
 
         # Scatter points with labels
         for i, region in enumerate(labels):
             ax.scatter(x[i], y[i], color=colors[i], label=region)
             #ax.text(x[i], y[i], region, color=colors[i], fontsize=8, ha='left')
 
-        # Pearson correlation
-        corr, p = pearsonr(x, y)
-        ax.text(0.05, 0.95, f"Pearson r,p = {corr:.2f},{p:.4f}", transform=ax.transAxes, fontsize=12, verticalalignment='top')
-
+        if log_scale:
+            ax.set_xscale('log')
+            ax.set_yscale('log')
         # Set labels
         ax.set_xlabel(xlabel, fontsize=12)
         ax.set_ylabel(ylabel, fontsize=12)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
 
-    # Panel 1: `be` vs `de`
-    scatter_panel(
-        axes[0] if harris else axes,
-        x_be, y_de,
-        xlabel='Beryl_clusters (non_flatness_score(d_b))',
-        ylabel='BWM dec (non_flatness_score(d_d))' if not ari else "ari's non-flatness-scores"
-    )
 
     if harris:
         # Panel 2: `be` vs `harris`
         scatter_panel(
-            axes[1],
+            axs,
             x_be, z_harris,
-            xlabel='Beryl_clusters (non_flatness_score(d_b))',
+            xlabel='specialization (clu)',
             ylabel='Harris hierarchy score'
         )
 
-        # Panel 3: `de` vs `harris`
+    else:    
+        # Panel 1: `be` vs `de`
         scatter_panel(
-            axes[2],
-            y_de, z_harris,
-            xlabel='BWM dec (non_flatness_score(d_d))' if not ari else "ari's non-flatness-scores",
-            ylabel='Harris hierarchy score'
+            axs,
+            x_be, y_de,
+            xlabel='specialization (clu)',
+            ylabel='specialization (dec)' if not ari else "ari's non-flatness-scores"
         )
+        # # Panel 3: `de` vs `harris`
+        # scatter_panel(
+        #     axes[2],
+        #     y_de, z_harris,
+        #     xlabel='BWM dec (non_flatness_score(d_d))' if not ari else "ari's non-flatness-scores",
+        #     ylabel='Harris hierarchy score'
+        # )
 
     # Adjust layout and show
     plt.tight_layout()
     plt.show()
 
 
-def scatter_harris_correlation(acronyms=False):
+def scatter_harris_correlation(acronyms=False, axs=None):
 
     # File paths based on the image names
 
-    nets = ['concat', 'motor_init', 'pre-stim-prior', 
-        'stim_all', 'stim_surp_con', 'stim_surp_incon']
+    nets = ['concat']
+    # , 'motor_init', 'pre-stim-prior', 
+    #     'stim_all', 'stim_surp_con', 'stim_surp_incon']
 
     file_paths = [Path(one.cache_dir, 'dmn', 
         f'wasserstein_fromflatdist_13_{net}_nd2.npy') for net in nets]
@@ -4372,20 +4352,18 @@ def scatter_harris_correlation(acronyms=False):
     for dataset in datasets:
         merged_data.append({region: (dataset[region], harris_hierarchy_scores[region]) for region in common_regions})
 
-    # Set up subplots (1 row, 6 columns)
-    fig, axes = plt.subplots(3, 2, figsize=(7, 10),sharey=True)
-    axes = axes.flatten()
+    alone = False
+    if axs is None:
+        alone = True
+        # Set up subplots (1 row, 6 columns)
+        fig, axs = plt.subplots(3, 2, figsize=(7, 10),sharey=True)
+        axes = axs.flatten()
 
     # Define scatter plot function for reuse
     def scatter_panel(ax, x, y, labels, colors, xlabel, ylabel, title):
 
         # Pearson correlation
         corr, p = pearsonr(x, y)
-
-
-
-        # ax.annotate(f"Pearson r,p = {corr:.2f},{p:.4f}", xy=(0.5, 1.05), xycoords='axes fraction', 
-        #             fontsize=8, ha='center', verticalalignment='bottom')
 
         # Fit regression line
         slope, intercept, r_value, _, _ = linregress(x, y)
@@ -4394,21 +4372,21 @@ def scatter_harris_correlation(acronyms=False):
         ax.plot(xx, yy, color='black', linestyle='--',linewidth=0.5 if p > 0.05 else 1, 
             label=f'Fit: y={slope:.2f}x+{intercept:.2f}')
 
-        if p < 0.05:
-            # put an astreics at the end of lie plot    
-            ax.text(0.95, 0.95, '*', transform=ax.transAxes, fontsize=20, verticalalignment='top')
+        # if p < 0.05:
+        #     # put an astreics at the end of lie plot    
+        #     ax.text(0.95, 0.95, '*', transform=ax.transAxes, fontsize=20, verticalalignment='top')
 
         # Scatter points with region-specific colors and labels
         for i, region in enumerate(labels):
-            ax.scatter(x[i], y[i], color=colors[i], s=10)
+            ax.scatter(x[i], y[i], color=colors[i])
             if acronyms:
-                ax.text(x[i], y[i], region, color=colors[i], fontsize=8, ha='left')
+                ax.text(x[i], y[i], region, color=colors[i], ha='left')
 
         # Set labels and title
-        ax.set_xlabel(xlabel, fontsize=10)
-        ax.set_ylabel(ylabel, fontsize=10)
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
         # put tile left
-        ax.set_title(f"{title}", fontsize=10, loc="left")  
+        #ax.set_title(f"{title}", fontsize=10, loc="left")  
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
 
@@ -4418,18 +4396,20 @@ def scatter_harris_correlation(acronyms=False):
         y = [data[region][1] for region in data]
         labels = list(data.keys())
         colors = [pal[region] for region in labels]  # Assume `pal` maps regions to colors
+        print( 'i', i)
         scatter_panel(
-            axes[i], x, y, labels, colors,
+            axs[i], x, y, labels, colors,
             xlabel='specialization' if i == 0 else '',
             ylabel='hierarchy score',
             title=f'{nets[i].replace("_", " ").title()}'
         )
         if i != 0:
-           axes[i].set_ylabel('')
+           axs[i].set_ylabel('')
 
-    # Adjust layout and show
-    plt.tight_layout()
-    plt.show()
+    if alone:
+        # Adjust layout and show
+        plt.tight_layout()
+        plt.show()
 
 
 
@@ -4615,3 +4595,280 @@ def ghostscript_compress_pdf(level='/printer'):
         print(f"PDF successfully compressed and saved to {output_path}")
     except subprocess.CalledProcessError as e:
         print(f"An error occurred: {e}")
+
+
+def float_array_to_rgba(img_float):
+    cmap = cm._colormaps['gray_r']
+    rgba = cmap(img_float)  # Returns float32 RGBA
+    return (rgba * 255).astype(np.uint8)  # Convert to uint8
+
+
+def save_rastermap_pdf(feat='concat_z', mapping='kmeans', bg=False, cv=False):
+
+    if cv:
+        # load Ari's files
+        r_test = np.load(Path(pth_dmn, 'cross_val_test.npy'),
+                         allow_pickle=True).flat[0]
+        r_train = np.load(Path(pth_dmn, 'cross_val_train.npy'), 
+                          allow_pickle=True).flat[0]
+        
+        spks = r_test[feat]
+        isort = r_train['isort'] 
+        data = spks[isort]
+
+        bg = False      
+
+
+    else:
+        r = regional_group(mapping)
+        spks = r[feat]
+        isort = r['isort'] 
+        data = spks[isort]
+    
+    # Normalize and convert to RGBA image
+    norm_data = data - data.min()
+    norm_data = norm_data / norm_data.max()
+    image_rgba = float_array_to_rgba(norm_data)
+    image_rgba[..., 3] = 255
+
+    if bg:
+        # RGBA rows
+        row_colors = np.array(r['cols'])[isort]  
+
+        # Blend row colors onto grayscale image
+        alpha_overlay = 0.2  # adjust intensity of color overlay
+
+        for i in range(image_rgba.shape[0]):
+            r_c, g_c, b_c, _ = row_colors[i] * 255  # get color per row
+            overlay = np.array([r_c, g_c, b_c], dtype=np.uint8)
+
+            # Blend overlay with original grayscale values (RGB only)
+            image_rgba[i, :, :3] = (
+                (1 - alpha_overlay) * image_rgba[i, :, :3] +
+                alpha_overlay * overlay[None, :]
+            ).astype(np.uint8)
+
+    # Convert to RGB (drop alpha) for PDF compatibility
+    img = Image.fromarray(image_rgba[..., :3], mode='RGB')
+    s = f'_{mapping}' if bg else ''
+    if cv:
+        s = 'cross_val'
+    img.save(f"rastermap{s}.pdf", "PDF")
+
+
+
+def plot_umap_SI(algo='umap_z', mapping='Beryl',smooth=True, norm_=True):
+
+    '''
+    for 10 example regions (columns)
+    and 11 networks (rows)
+    plot a grid of 2d umap embeddings
+    '''
+
+    regs = ['PA', 'MOB', 'MS', 'VISpor',
+            'SIM', 'SCm', 'MRN', 'PRNr', 'CP', 'GRN']
+
+    verss = PETH_types_dict
+
+    fig, axs = plt.subplots(nrows = len(verss), ncols = len(regs),
+                figsize=(183 * MM_TO_INCH, 240 * MM_TO_INCH),
+                sharex=True, sharey=True)
+
+    dim = 2
+    row = 0
+    for vers in verss:
+        r = regional_group(mapping, vers=vers)
+
+        # Define grid boundaries
+        mins, maxs = [], []
+        for i in range(dim):
+            mins.append(np.floor(np.min(r[algo][:, i])))
+            maxs.append(np.ceil(np.max(r[algo][:, i])))
+
+    # deal with edge case, add 1% to each max value
+        for i in range(dim):
+            maxs[i] = maxs[i] * 0.01 + maxs[i]
+
+        coords = {}
+        regcol = {reg: np.array(r['cols'])[r['acs'] == reg][0] for reg in regs}
+
+        imgs = {}
+        meshsize = 256
+
+        for reg in regs:
+            # Scale values to unit interval
+            scaled_data = [
+                (r[algo][np.array(r['acs']) == reg, i] - mins[i]) / (maxs[i] - mins[i])
+                for i in range(dim)
+            ]
+            coords[reg] = scaled_data
+
+            if smooth:
+                data = np.array(scaled_data).T
+                inds = (data * (meshsize - 1)).astype('uint')  # Convert to voxel indices
+
+                img = np.zeros([meshsize] * dim)  # Blank n-dimensional volume
+                for pt in inds:
+                    img[tuple(pt)] += 1
+
+                imsm = ndi.gaussian_filter(img.T, [5] * dim)
+                imgs[reg] = imsm / np.max(imsm) if norm_ else imsm
+
+        col = 0
+
+        # For first panel of row, print version as y label
+
+        axs[row, 0].set_ylabel(vers, fontsize=6)
+
+        for reg in regs:
+            ax = axs[row,col]
+
+            if smooth:
+                ax.imshow(imgs[reg], origin='lower', cmap='viridis')
+                ax.set_aspect('equal')
+                ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+                for spine in ['top', 'right', 'bottom']:
+                    ax.spines[spine].set_visible(False)
+            else:    
+                ax.scatter(coords[reg][0], coords[reg][1], color=regcol[reg], 
+                        s=0.05)
+                ax.spines['right'].set_visible(False)
+                ax.spines['top'].set_visible(False)
+                ax.set_xlim([0, 1])
+                ax.set_ylim([0, 1])
+
+            ax.set_aspect('equal')
+
+            # only print titles of regions for first row
+            if row == 0:
+                ax.set_title(f'{reg} \n {sum(r["acs"] == reg)}', color=pal[reg])
+
+            col += 1
+
+        row += 1
+
+    fig.tight_layout()
+    fig.savefig(Path(pth_dmn.parent, 'imgs', 'overleaf_pdf',
+         f'umap_si_norm{norm_}_smooth{smooth}.png'), dpi=100, bbox_inches='tight')
+
+
+##############
+# multi panel plotting
+##############
+
+
+def adjust_subplots(fig, adjust=5, extra=2):
+    width, height = fig.get_size_inches() / MM_TO_INCH
+    if not isinstance(adjust, int):
+        assert len(adjust) == 4
+    else:
+        adjust = [adjust] *  4
+    fig.subplots_adjust(top=1 - adjust[0] / height, bottom=(adjust[1] + extra) / height,
+                        left=adjust[2] / width, right=1 - adjust[3] / width)
+
+
+def region_level_mixed_selectivity():
+    '''
+    One row, 4 columns of panels.
+    Panel a: 
+        selection of 4 regions with max entropy 
+        and 4 with min, of the cluster counts
+    Panel b: 
+        selection of 4 regions with max entropy 
+        and 4 with min, of the decoding scores
+    Panel c:
+        scatter plot of specialization scores
+        of cluster counts versus decoding scores
+    Panel d:
+        scatter plot of specialization scores
+        of cluster counts versus Harris hierarchy
+    '''     
+
+    fig = plt.figure(figsize=(183 * MM_TO_INCH, 80 * MM_TO_INCH))
+    width, height = fig.get_size_inches() / MM_TO_INCH
+
+    xspans1 = get_coords(width, ratios=[0.5, 0.5, 0.5, 0.5, 1, 1],  
+                         space=3, pad=3, span=(0, 1))
+
+    yspans0 = get_coords(height, ratios=[1, 1, 1, 1], 
+                        space=3, pad=3, span=(0, 1))
+
+    yspans1 = get_coords(height, ratios=[1], 
+                            space=3, pad=3, span=(0, 1))
+
+    a_0 = fg.place_axes_on_grid(fig, xspan=xspans1[0],
+                        yspan=yspans0[0])
+
+    pan_a0 = {f'a_{i}': fg.place_axes_on_grid(fig, xspan=xspans1[0],
+                        yspan=yspans0[i], sharex=a_0, sharey=a_0) 
+                        for i in range(1,4)}
+
+    pan_a1 = {f'a_{i + 4}': fg.place_axes_on_grid(fig, xspan=xspans1[1],
+                        yspan=yspans0[i], sharex=a_0, sharey=a_0) 
+                        for i in range(4)}   
+
+
+
+    b_0 = fg.place_axes_on_grid(fig, xspan=xspans1[2],
+                        yspan=yspans0[0])
+
+    pan_b0 = {f'b_{i}': fg.place_axes_on_grid(fig, xspan=xspans1[2],
+                        yspan=yspans0[i], sharex=b_0, sharey=b_0) 
+                        for i in range(1,4)}
+
+    pan_b1 = {f'b_{i + 4}': fg.place_axes_on_grid(fig, xspan=xspans1[3],
+                        yspan=yspans0[i], sharex=b_0, sharey=b_0) 
+                        for i in range(4)}
+
+
+    axs = {'a_0': a_0,
+            'b_0': b_0,
+            'c': fg.place_axes_on_grid(fig, xspan=xspans1[4], yspan=yspans1[0]),
+           'd': fg.place_axes_on_grid(fig, xspan=xspans1[5], yspan=yspans1[0])}
+
+    for h in [pan_a0, pan_a1, pan_b0, pan_b1]:       
+        axs.update(h)
+
+    for i in range(1, 8):
+        axs[f'a_{i}'].sharex(axs['a_0'])
+        axs[f'a_{i}'].sharey(axs['a_0'])
+        axs[f'b_{i}'].sharex(axs['b_0'])
+        axs[f'b_{i}'].sharey(axs['b_0'])
+        axs[f'a_{i}'].tick_params(labelleft=False)
+        axs[f'b_{i}'].tick_params(labelleft=False)
+
+    single_regions=['PA', 'MOB', 'MS', 'VISpor',
+                    'SIM', 'SCm', 'MRN', 'PRNr']
+
+    clus_freqs(foc='Beryl', single_regions=single_regions, 
+               axs = [axs[f'a_{i}'] for i in range(4)] +
+                     [axs[f'a_{i + 4}'] for i in range(4)])
+
+    clus_freqs(foc='dec', single_regions=single_regions, 
+               axs = [axs[f'b_{i}'] for i in range(4)] +
+                     [axs[f'b_{i + 4}'] for i in range(4)])        
+
+    scat_dec_clus(axs=axs['c'])
+    scat_dec_clus(axs=axs['d'], harris=True, log_scale=False)
+
+    labels = []
+    padx = 2
+    pady = 2
+    labels.append(add_label('a', fig, xspans1[0], yspans0[0], 
+        padx, pady, fontsize=8))
+    labels.append(add_label('b', fig, xspans1[2], yspans0[0], 
+        padx, pady, fontsize=8))
+    labels.append(add_label('c', fig, xspans1[-2], yspans0[0], 
+        padx, pady, fontsize=8))
+    labels.append(add_label('d', fig, xspans1[-1], yspans0[0], 
+        padx, pady, fontsize=8))
+
+    fg.add_labels(fig, labels)
+
+    adjust = 1
+    # Depending on the location of axis labels leave a bit more space
+    extra =  1
+    fig.subplots_adjust(top=1-adjust/height, bottom=(adjust + extra)/height, 
+                        left=adjust/width, right=1-adjust/width)
+
+    
