@@ -4114,7 +4114,7 @@ def compare_two_goups(vers='concat', filt = 'VISp'):
 def plot_rastermap(vers='concat', feat='concat_z', regex='ECT', 
                    exa = False, mapping='kmeans', bg=True, img_only=False,
                    interp='antialiased', single_reg=False, cv=False,
-                   bg_bright = 0.4):
+                   bg_bright = 0.4, vmax=2):
     """
     Function to plot a rastermap with vertical segment boundaries 
     and labels positioned above the segments.
@@ -4194,7 +4194,7 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
     
     fig, ax = plt.subplots(figsize=(12, 3.68) if cv else (6, 8))
 
-    vmin, vmax = 0, 5
+    vmin, vmax = 0, vmax
     data_clipped = np.clip(data, vmin, vmax)
     gray_scaled = (data_clipped - vmin) / (vmax - vmin)  # Normalized to 0-1
 
@@ -4275,7 +4275,7 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
 
     plt.tight_layout()  # Adjust the layout to prevent clipping
     # plt.show()
-    fig.savefig(f'{pth_dmn.parent}/imgs/rastermap_{mapping}_cv{cv}_sr{single_reg}.png', dpi=150, bbox_inches='tight', facecolor='white')
+    fig.savefig(f'{pth_dmn.parent}/imgs/rastermap_{mapping}_cv{cv}_sr{single_reg}_bg_bright{bg_bright}.png', dpi=150, bbox_inches='tight', facecolor='white')
 
 
 
