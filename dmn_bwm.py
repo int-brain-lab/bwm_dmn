@@ -80,7 +80,7 @@ import figrid as fg
 import matplotlib.ticker as ticker
 from matplotlib import cm
 from matplotlib.colors import to_rgba
-
+from matplotlib.cm import ScalarMappable
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -352,6 +352,7 @@ def deep_in_block(trials, pleft, depth=10):
     return bool_array
 
 
+
 def concat_PETHs(pid, get_tts=False, vers='concat'):
 
     '''
@@ -366,8 +367,9 @@ def concat_PETHs(pid, get_tts=False, vers='concat'):
     
     eid, probe = one.pid2eid(pid)
 
+    print('eid', eid)
     # Load in trials data and mask bad trials (False if bad)
-    trials, mask = load_trials_and_mask(one, eid,
+    trials, mask = load_trials_and_mask(one, str(eid),
         saturation_intervals=['saturation_stim_plus04',
                               'saturation_feedback_plus04',
                               'saturation_move_minus02',
@@ -700,6 +702,15 @@ def get_allen_info(rerun=False):
 _,pal = get_allen_info()
 
 
+
+def rgb_to_hex(rgb):
+    return '#{:02X}{:02X}{:02X}'.format(
+        int(rgb[0] * 255),
+        int(rgb[1] * 255),
+        int(rgb[2] * 255)
+    )
+
+
 def get_hierarchy(reg):
     '''
     Get structural hierarchy tree for a given Beryl region.
@@ -731,14 +742,6 @@ def get_hierarchy(reg):
         f'<font color="{col}">{get_name(br.id2acronym(x))} (<b>{br.id2acronym(x)[0]}</b>)</font>'
         for x in idp_int
     ])
-
-
-def rgb_to_hex(rgb):
-    return '#{:02X}{:02X}{:02X}'.format(
-        int(rgb[0] * 255),
-        int(rgb[1] * 255),
-        int(rgb[2] * 255)
-    )
 
 
 def print_full_structure_tree(filename='structure_tree.pdf'):
@@ -1093,83 +1096,6 @@ def get_umap_dist(rerun=False, algo='umap_z',
         d = np.load(pth_, allow_pickle=True).flat[0]        
         
     return d     
-
-
-# def get_pw_dist(rerun=False, mapping='Beryl', vers='concat', 
-#                 nclus=7, norm_=False, zscore_=True, nmin=20):
-
-#     '''
-#     get distance for all region pairs by computing
-#     the Euclidean distance of the feature vectors 
-#     for all pairs of neurons in the two regions and then 
-#     average that score 
-#     '''
-
-#     pth_ = Path(one.cache_dir, 'dmn', 
-#                 f'{mapping}_{vers}_zscore_{zscore_}_pw.npy')
-                
-#     if (not pth_.is_file() or rerun):
-#         r = np.load(Path(pth_dmn, f'{vers}_norm{norm_}.npy'),
-#                      allow_pickle=True).flat[0] 
-        
-#         vecs = 'concat_z' if zscore_ else 'concat'
-                     
-#         if mapping == 'kmeans':
-#             # use kmeans to cluster high-dim points
-             
-#             nclus = nclus
-#             kmeans = KMeans(n_clusters=nclus, random_state=0)
-#             kmeans.fit(r[vecs])
-#             acs = kmeans.labels_
-#             print('kmeans done')
-            
-#         else:
-#             acs = np.array(br.id2acronym(r['ids'], 
-#                                          mapping=mapping))
-
-#         assert len(r[vecs]) == len(acs), 'mismatch, data != acs'
-        
-#         regs0 = Counter(acs)
-#         regs = [x for x in regs0 if regs0[x] > nmin]
-#         res = np.zeros((len(regs),len(regs)))
-#         print(len(regs), 'regions')
-        
-#         k = 0
-#         for i in range(len(regs)):
-#             for j in range(i, len(regs)):
-         
-#                 # group of cells a and b
-#                 g_a = r[vecs][acs == regs[i]]
-#                 g_b = r[vecs][acs == regs[j]]
-
-#                 # compute pairwise distance
-#                 M = cdist(g_a, g_b)
-#                 rows, cols = M.shape
-                
-#                 # remove duplicate counts
-#                 mask = np.ones_like(M, dtype=bool)
-#                 min_dim = min(rows, cols)
-#                 mask[:min_dim, :min_dim] = np.triu(
-#                     np.ones((min_dim, min_dim), dtype=bool), k=1)
-                    
-#                 # average across all pairwise scores    
-#                 res[i,j] = np.mean(M[mask])
-#                 res[j,i] = res[i,j]
-                
-#                 if np.isnan(res[i,j]):
-#                     print(regs[i], regs[j],  len(g_a), len(g_b))
-#                     return
-                    
-#                 #res[i,j] = np.mean(M)    
-#                 k += 1
-#                 print(k, 'of', 0.5*(len(regs)**2), 'done')
-
-#         d = {'res': res, 'regs' : regs}
-#         np.save(pth_, d, allow_pickle=True)
-#     else:
-#         d = np.load(pth_, allow_pickle=True).flat[0]        
-        
-#     return d
 
 
 def NN(x, y, decoder='LDA', CC=1.0, confusion=False,
@@ -2060,7 +1986,7 @@ def plot_cluster_mean_PETHs(r, mapping, feat, vers='concat',
 
 
 def smooth_dist(dim=2, algo='umap_z', mapping='Beryl', 
-                show_imgs=False, restr=False,
+                show_imgs=False, restr=False, global_norm=True,
                 norm_=True, dendro=False, nmin=50, vers='concat'):
     """
     Generalized smoothing and analysis of N-dimensional point clouds.
@@ -2077,9 +2003,8 @@ def smooth_dist(dim=2, algo='umap_z', mapping='Beryl',
     assert 2 <= dim <= 5, "dim must be between 2 and 5."
     feat = 'concat_z' if algo[-1] == 'z' else 'concat'
     r = regional_group(mapping, vers=vers)
+
     if algo == 'xyz':
-        dim = 3
-        feat = 'xyz'
         r[algo] = r[algo]*100000
 
     meshsize = 256 if dim == 2 else 64
@@ -2095,6 +2020,28 @@ def smooth_dist(dim=2, algo='umap_z', mapping='Beryl',
     # deal with edge case, add 1% to each max value
     for i in range(dim):
         maxs[i] = maxs[i] * 0.01 + maxs[i]
+        mins[i] = mins[i] * 0.01 + mins[i]
+
+    if algo == 'xyz':
+        dim = 3
+        feat = 'xyz'
+        
+        # Compute global density
+        global_scaled = [
+            (r[algo][:, i] - mins[i]) / (maxs[i] - mins[i])
+            for i in range(dim)
+        ]
+
+        global_inds = np.clip((np.array(global_scaled).T * meshsize), 0, meshsize - 1).astype('uint')
+        global_img = np.zeros([meshsize] * dim)
+        for pt in global_inds:
+            global_img[tuple(pt)] += 1
+        global_smoothed = ndi.gaussian_filter(global_img.T, [5] * dim)
+
+        if norm_:
+            global_smoothed /= np.max(global_smoothed)
+              
+
 
     imgs = {}
     coords = {}
@@ -2114,23 +2061,37 @@ def smooth_dist(dim=2, algo='umap_z', mapping='Beryl',
     if restr:
         regs = regs[:10]
 
+    # remove regions 'root' and 'void' if present
+    if 'root' in regs:    
+        regs.remove('root')
+    if 'void' in regs:
+        regs.remove('void')
+
     for reg in regs:
         # Scale values to unit interval
         scaled_data = [
             (r[algo][np.array(r['acs']) == reg, i] - mins[i]) / (maxs[i] - mins[i])
             for i in range(dim)
         ]
+        coords[reg] = scaled_data
 
         data = np.array(scaled_data).T
-        inds = (data * meshsize).astype('uint')  # Convert to voxel indices
+        inds = np.clip(data * meshsize, 0, meshsize - 1).astype('uint')  # Convert to voxel indices
 
         img = np.zeros([meshsize] * dim)  # Blank n-dimensional volume
         for pt in inds:
             img[tuple(pt)] += 1
 
         imsm = ndi.gaussian_filter(img.T, [5] * dim)
+
+        if (algo == 'xyz') and global_norm:
+            # Normalize region image by global density
+            with np.errstate(divide='ignore', invalid='ignore'):
+                imsm = np.divide(imsm, global_smoothed)
+                imsm[~np.isfinite(imsm)] = 0  # remove NaNs/Infs
+
         imgs[reg] = imsm / np.max(imsm) if norm_ else imsm
-        coords[reg] = scaled_data
+
 
     if show_imgs and dim <= 3:
         fig, axs = plt.subplots(nrows=3, ncols=len(regs), figsize=(18.6, 8))
@@ -2149,7 +2110,7 @@ def smooth_dist(dim=2, algo='umap_z', mapping='Beryl',
 
             if dim == 2:
                 ax.scatter(coords[reg][0], coords[reg][1], color=regcol[reg], 
-                           s=0.1)
+                           s=0.1, rasterized=True)
                 ax.spines['right'].set_visible(False)
                 ax.spines['top'].set_visible(False)
                 ax.set_xlim([0, 1])
@@ -2159,11 +2120,10 @@ def smooth_dist(dim=2, algo='umap_z', mapping='Beryl',
                 ax.axis('off')
                 ax = fig.add_subplot(3, len(regs), k + 1, projection='3d')
                 ax.scatter(coords[reg][0], coords[reg][1], coords[reg][2], 
-                           s=0.1, c=regcol[reg])
+                           s=0.1, c=regcol[reg], rasterized=True)
                 ax.set_xlim([0, 1])
                 ax.set_ylim([0, 1])
                 ax.set_zlim([0, 1])                 
-
 
             ax.set_aspect('equal')    
             ax.set_title(f"{reg}, ({regs00[reg]})")
@@ -2178,9 +2138,9 @@ def smooth_dist(dim=2, algo='umap_z', mapping='Beryl',
             img = imgs[reg]
             ax = axs[k]
             if dim == 2:
-                ax.imshow(img, origin='lower', cmap='viridis')
+                ax.imshow(img, origin='lower', cmap='viridis', rasterized=True)
             elif dim == 3:
-                ax.imshow(np.max(img, axis=0), origin='lower', cmap='viridis')
+                ax.imshow(np.max(img, axis=0), origin='lower', cmap='viridis', rasterized=True)
             axs[k].set_aspect('equal')
             ax.axis('off')
             k += 1
@@ -2233,113 +2193,94 @@ def smooth_dist(dim=2, algo='umap_z', mapping='Beryl',
         fig.subplots_adjust(top=0.981, bottom=0.019, left=0.04, 
             right=0.992, hspace=0.023, wspace=0.092)
 
-    # Compute similarity between regions
-    res = np.zeros((len(regs), len(regs)))
-    for i, reg_i in enumerate(imgs):
-        for j, reg_j in enumerate(imgs):
-            v0 = imgs[reg_i].flatten()
-            v1 = imgs[reg_j].flatten()
+    # Normalize global smoothed after all region computations
+    if algo == 'xyz':
+        v_all = global_smoothed.flatten()
+    else:
+        v_all = None  # not defined unless xyz
+
+    # Compute similarity between regions and optionally "ALL"
+    regs_aug = list(regs)  # copy
+    imgs_aug = dict(imgs)  # shallow copy
+
+    if algo == 'xyz':
+        imgs_aug['ALL'] = global_smoothed
+        regs_aug.append('ALL')
+
+    res = np.zeros((len(regs_aug), len(regs_aug)))
+    for i, reg_i in enumerate(regs_aug):
+        for j, reg_j in enumerate(regs_aug):
+            v0 = imgs_aug[reg_i].flatten()
+            v1 = imgs_aug[reg_j].flatten()
             res[i, j] = cosine_sim(v0, v1)
 
+    fig0, ax0 = plt.subplots(figsize=(4, 4))
     # Plot similarity matrix and dendrogram
     if dendro:
-        fig0, axs = plt.subplots(1, 2, figsize=(4, 4), 
-            gridspec_kw={'width_ratios': [1, 11]})
         dist = np.max(res) - res
         np.fill_diagonal(dist, 0)
         cres = squareform(dist)
         linkage_matrix = hierarchy.linkage(cres)
-
         ordered_indices = hierarchy.leaves_list(linkage_matrix)
+        # order regions according to dendrogram
+        regs_aug = [regs_aug[i] for i in ordered_indices]
         res = res[:, ordered_indices][ordered_indices, :]
-        row_dendrogram = hierarchy.dendrogram(linkage_matrix, labels=regs, orientation="left",
-                                               color_threshold=np.inf, ax=axs[0])
-        axs[0].axis('off')
-
-        ax0 = axs[1]
-    else:
-        fig0, ax0 = plt.subplots(figsize=(4, 4))
 
     ax0.set_title(f'{algo}, {mapping}, {dim} dims')               
     ims = ax0.imshow(res, origin='lower', interpolation=None,
                      vmin=0, vmax=1)
-    ax0.set_xticks(np.arange(len(regs)), regs,
-                   rotation=90, fontsize=fontsize)
-    ax0.set_yticks(np.arange(len(regs)), regs, fontsize=fontsize)               
-                   
-    [t.set_color(i) for (i,t) in
-        zip([regcol[reg] for reg in regs],
-        ax0.xaxis.get_ticklabels())] 
-         
-    [t.set_color(i) for (i,t) in    
-        zip([regcol[reg] for reg in regs],
-        ax0.yaxis.get_ticklabels())]
-    
-    cb = plt.colorbar(ims,fraction=0.046, pad=0.04)
+    ax0.set_xticks(np.arange(len(regs_aug)))
+    ax0.set_xticklabels(regs_aug, rotation=90, fontsize=fontsize)
+    ax0.set_yticks(np.arange(len(regs_aug)))
+    ax0.set_yticklabels(regs_aug, fontsize=fontsize)
+
+    # Set color for tick labels — 'ALL' gets black
+    for i, reg in enumerate(regs_aug):
+        col = regcol[reg] if reg in regcol else 'black'
+        ax0.xaxis.get_ticklabels()[i].set_color(col)
+        ax0.yaxis.get_ticklabels()[i].set_color(col)
+
+    cb = plt.colorbar(ims, fraction=0.046, pad=0.04)
     cb.set_label('regional similarity')
     fig0.tight_layout()
 
-    return res, regs
+    # Set window titles
+    if 'fig' in locals():
+        fig.canvas.manager.set_window_title(f'global_norm={global_norm}')
+    if 'fig0' in locals():
+        fig0.canvas.manager.set_window_title(f'global_norm={global_norm}')
+
+    # Define base path for saving figures
+    fig_basepath = Path(one.cache_dir, 'dmn', 'figs')
+    fig_basepath.mkdir(parents=True, exist_ok=True)
+    # Construct base name for plots
+    base_name = f"{algo}_{mapping}_{dim}D_globalnorm{global_norm}"
+
+    # Save each figure with appropriate name
+    if 'fig' in locals():
+        fig.savefig(fig_basepath / f"{base_name}_all_panels.svg", 
+                    format='svg', dpi=300, bbox_inches='tight')
+
+    if 'fig0' in locals():
+        fig0.savefig(fig_basepath / f"{base_name}_similarity_matrix.svg", 
+                    format='svg', dpi=300, bbox_inches='tight') 
+
+    return res, regs_aug
 
 
-def plot_dist_energy(mapping='kmeans', vers='concat', nmin=50):
-
-    fontsize = 12
-
-    r = regional_group(mapping, vers=vers)
-    regs00 = Counter(r['acs'])
-    regcol = {reg: np.array(r['cols'])[np.array(r['acs']) == reg][0] for reg in regs00}
-
-    if mapping == 'Beryl':
-        p = (Path(iblatlas.__file__).parent / 'beryl.npy')
-        regsord = dict(zip(
-            br.id2acronym(np.load(p), mapping='Beryl'),
-            br.id2acronym(np.load(p), mapping='Cosmos')))
-        regs = [reg for reg in regsord if reg in regs00 and regs00[reg] > nmin]
-    else:
-        regs = [reg for reg in regs00 if regs00[reg] > nmin]
-
-
-    # Compute similarity between regions
-    res = np.zeros((len(regs), len(regs)))
-    for i,reg_i in enumerate(regs):
-        for j,reg_j in enumerate(regs):
-            x = r['xyz'][np.array(r['acs']) == reg_i] * 1000
-            y = r['xyz'][np.array(r['acs']) == reg_j] * 1000
-            res[i, j] = energy_distance_multivariate(x, y)
-
-    fig0, ax0 = plt.subplots(figsize=(4, 4))
-              
-    ims = ax0.imshow(res, origin='lower', interpolation=None)
-    ax0.set_xticks(np.arange(len(regs)), regs,
-                   rotation=90, fontsize=fontsize)
-    ax0.set_yticks(np.arange(len(regs)), regs, fontsize=fontsize)               
-                   
-    [t.set_color(i) for (i,t) in
-        zip([regcol[reg] for reg in regs],
-        ax0.xaxis.get_ticklabels())] 
-         
-    [t.set_color(i) for (i,t) in    
-        zip([regcol[reg] for reg in regs],
-        ax0.yaxis.get_ticklabels())]
-    
-    cb = plt.colorbar(ims,fraction=0.046, pad=0.04)
-    cb.set_label('regional similarity')
-    ax0.set_title(f'Energy distance between regions; {mapping}')
-    fig0.tight_layout()
-
-
-
-
-def plot_ave_PETHs(feat = 'concat', vers='concat',
-                   rerun=False, anno=True):
-
+def plot_ave_PETHs(feat='concat', vers='concat',
+                   rerun=False, anno=True, separate_cols=False):
     '''
     average PETHs across cells
     plot as lines within average trial times
-    '''   
-    evs = {'stimOn_times':'gray', 'firstMovement_times':'cyan',
-           'feedback_times':'orange'}
+    '''
+
+    import itertools
+    from matplotlib.cm import get_cmap
+
+    evs = {'stimOn_times': 'gray',
+           'firstMovement_times': 'cyan',
+           'feedback_times': 'orange'}
 
     # trial split types, with string to define alignment
     def align(win):
@@ -2351,67 +2292,58 @@ def plot_ave_PETHs(feat = 'concat', vers='concat',
             return 'feedback_times'
 
     def pre_post(win):
-        '''
-        [pre_time, post_time] relative to alignment event
-        split could be contr or restr variant, then
-        use base window
-        '''
-
-        pid = '1a60a6e1-da99-4d4e-a734-39b1d4544fad'
+        pid = '1a276285-8b0e-4cc9-9f0a-a3a002978724'
         tts = concat_PETHs(pid, get_tts=True, vers=vers)
-        
         return tts[win][2]
 
-
-    # get average temporal distances between events    
     pth_dmnm = Path(pth_dmn.parent, 'mean_event_diffs.npy')
-    
-    if not pth_dmnm.is_file() or rerun:      
 
+    if not pth_dmnm.is_file() or rerun:
         eids = list(np.unique(bwm_query(one)['eid']))
-                     
-        
         diffs = []
         for eid in eids:
             try:
-                trials, mask = load_trials_and_mask(one, eid, 
-                    revision='2024-07-10')
+                trials, mask = load_trials_and_mask(one, eid,
+                                                    revision='2024-07-10')
                 trials = trials[mask][:-100]
-
                 diffs.append(np.mean(np.diff(
-                            trials[list(evs.keys())]),axis=0))
+                    trials[list(evs.keys())]), axis=0))
             except:
                 print(f'error with {eid}')
                 continue
-                
-        
-        d = {}
-        d['mean'] = np.nanmean(diffs,axis=0) 
-        d['std'] = np.nanstd(diffs,axis=0)
-        d['diffs'] = diffs
-        d['av_tr_times'] = [np.cumsum([0]+ list(x)) for x in d['diffs']]
 
-        d['av_times'] = dict(zip(list(evs.keys()), 
-                             zip(np.cumsum([0]+ list(d['mean'])),
-                                 np.cumsum([0]+ list(d['std'])))))
-        
-        np.save(pth_dmnm, d, allow_pickle=True)   
+        d = {}
+        d['mean'] = np.nanmean(diffs, axis=0)
+        d['std'] = np.nanstd(diffs, axis=0)
+        d['diffs'] = diffs
+        d['av_tr_times'] = [np.cumsum([0] + list(x)) for x in d['diffs']]
+        d['av_times'] = dict(zip(list(evs.keys()),
+                                 zip(np.cumsum([0] + list(d['mean'])),
+                                     np.cumsum([0] + list(d['std'])))))
+        np.save(pth_dmnm, d, allow_pickle=True)
 
     d = np.load(pth_dmnm, allow_pickle=True).flat[0]
-    
+
     fig, ax = plt.subplots(figsize=(7, 2.75))
-    r = np.load(Path(pth_dmn, 'concat.npy'),allow_pickle=True).flat[0]
-    r['mean'] = np.mean(r[feat],axis=0)
+    r = np.load(Path(pth_dmn, 'concat.npy'), allow_pickle=True).flat[0]
+    r['mean'] = np.mean(r[feat], axis=0)
 
-    # get alignment event per PETH type
     pid = '1a60a6e1-da99-4d4e-a734-39b1d4544fad'
-    ttt =  concat_PETHs(pid, get_tts=True, vers=vers)
+    ttt = concat_PETHs(pid, get_tts=True, vers=vers)
 
-    # plot trial averages
-    yys = []  # to find maxes for annotation
+    yys = []
     st = 0
+
+    # use distinct colors for lines and labels if separate_cols is True
+    if separate_cols:
+        cmap = get_cmap('tab10')
+        colors = itertools.cycle(cmap.colors)
+    else:
+        colors = itertools.cycle(['k'])  # all black
+
     for tt in ttt:
-  
+        color = next(colors)
+
         xx = np.linspace(-ttt[tt][-1][0],
                          ttt[tt][-1][1],
                          r['len'][tt]) + d['av_times'][ttt[tt][0]][0]
@@ -2421,36 +2353,27 @@ def plot_ave_PETHs(feat = 'concat', vers='concat',
 
         st += r['len'][tt]
 
-
-        ax.plot(xx, yy, label=tt, color='k')
+        ax.plot(xx, yy, label=tt, color=color)
         if anno:
-            ax.annotate(tt, (xx[-1], yy[-1]), color='k')
-        
-    
+            ax.annotate(tt, (xx[-1], yy[-1]), color=color)
+
     for ev in d['av_times']:
         if ev == 'intervals_1':
             continue
         ax.axvline(x=d['av_times'][ev][0], label=ev,
                    color=evs[ev], linestyle='-')
 
-        if anno:           
-            ax.annotate(ev, (d['av_times'][ev][0], 0.8*max(yys)), 
-                        color=evs[ev], rotation=90, 
+        if anno:
+            ax.annotate(ev, (d['av_times'][ev][0], 0.8 * max(yys)),
+                        color=evs[ev], rotation=90,
                         textcoords='offset points', xytext=(-15, 0))
-    
-                   
-    d['av_tr_times'] = [np.cumsum([0]+ list(x)) 
-                        for x in d['diffs']]
-                 
+
     ax.spines['right'].set_visible(False)
-    ax.spines['top'].set_visible(False)    
+    ax.spines['top'].set_visible(False)
     ax.set_xlabel('time [sec]')
     ax.set_ylabel('trial averaged fr [Hz]')
     fig.canvas.manager.set_window_title('PETHs averaged across all BWM cells')
-    #ax.set_xlim(-1.15,3)
     fig.tight_layout()
-#    fig.savefig(Path(one.cache_dir,'dmn', 'figs',
-#                'intro', 'avg_PETHs.svg'))
 
 
 
@@ -3521,78 +3444,6 @@ wspace=0.05)
 #                dpi=150, bbox_inches='tight')    
 
 
-
-def plot_peth():
-
-    '''
-    for 4 simple trial types, plot PETH for all regions;
-    indicate latency also
-    '''
-
-    _,pal = get_allen_info()   
-    d = np.load(Path(one.cache_dir, 'dmn', 'stack_simple.npy'),
-                allow_pickle=True).flat[0]
-    
-    # order regions by beryl, called regs1
-    regs0 = list(d.keys()) 
-    p = (Path(iblatlas.__file__).parent / 'beryl.npy')
-    regs = br.id2acronym(np.load(p), mapping='Beryl')
-    regs1 = []
-    for reg in regs:
-        if reg in regs0:
-            regs1.append(reg)
-
-    xs = {'stim': np.linspace(0,0.15,len(d['MRN']['stim'])),
-          'choice': np.linspace(0,0.15,len(d['MRN']['choice'])),
-          'fback': np.linspace(0,0.15,len(d['MRN']['fback'])),
-          'stim0': np.linspace(0,0.15,len(d['MRN']['stim0'])),
-          'stimdiff': np.linspace(0,0.15,len(d['MRN']['stim0']))}
-
-    # scale lines
-    yoffset = np.max([np.max([np.max(d[reg][trial_type]) 
-                              for reg in regs1])
-                              for trial_type in xs])/20
-
-    
-    # split regions into q columns
-    q = 3
-    regions_sorted = regs1
-    num_regions = len(regs1)
-    regs_per_col = num_regions // q + (num_regions % q > 0)  
-    yticks = np.arange(regs_per_col)
-    
-    # Split regions into three groups
-    reg_groups = [regions_sorted[regs_per_col*k:regs_per_col*(k+1)] 
-                  for k in range(q)]
-
-    # Initialize the figure and axes
-    fig, axs = plt.subplots(1, len(xs)*q, figsize=(18, 10))
-
-    ii = 0
-    for trial_type in xs:
-
-        for k in range(q):  # per column
-            for i, reg in enumerate(reg_groups[k]):
-                x = xs[trial_type]  # converted to sec
-                y = ((d[reg][trial_type] - np.min(d[reg][trial_type])) / yoffset 
-                      + yticks[i])
-                                  
-                axs[ii].plot(x, y, color=pal[reg])
-                
-            axs[ii].set_title(trial_type)   
-            axs[ii].set_yticks(yticks[:len(reg_groups[k])])
-            axs[ii].set_yticklabels(reg_groups[k])
-            axs[ii].set_xlabel('time [sec]')
-            colors = [pal[reg] for reg in reg_groups[k]]
-            for ticklabel, color in zip(axs[ii].get_yticklabels(), colors):
-                ticklabel.set_color(color) 
-
-            ii+=1             
-   
-    fig.tight_layout()
-    
-        
-
 def plot_dist_clusters(anno=True, axs=None):
 
     '''
@@ -3747,7 +3598,7 @@ def var_expl(minreg=20):
 
     
 def clus_freqs(foc='kmeans', nmin=50, nclus=13, vers='concat', get_res=False,
-               rerun=False, norm_=True, save_=False, single_regions=[],
+               rerun=False, norm_=True, save_=True, single_regions=[],
                axs = None):
 
     '''
@@ -4008,6 +3859,8 @@ def clus_freqs(foc='kmeans', nmin=50, nclus=13, vers='concat', get_res=False,
     if get_res:
         return d
 
+
+
 def has_data(ax):
     # Check if there are any plot lines
     if len(ax.lines) > 0:
@@ -4053,7 +3906,7 @@ def count_trials():
 def compare_two_goups(vers='concat', filt = 'VISp'):
 
     '''
-    compare average feature vecotr for two groups of cells
+    compare average feature vector for two groups of cells
     '''
 
     r = regional_group('Beryl', vers=vers)        
@@ -4487,113 +4340,255 @@ def get_dec_bwm(nscores=3):
     return combined_res
 
 
-def scat_dec_clus(norm_=True, ari=False, harris=False, 
-                  log_scale=True, axs=None):
-    # Replace the example dictionaries with the processed scores
-    be = flatness_entropy_score(clus_freqs(foc='Beryl', get_res=True)) 
+def plot_histograms():
+    '''
+    Plot two histograms of the flatness scores across regions:
+    one for decoding, one for clustering, as line outlines.
+    '''
+
+    n_bins = 20
+
+    be = flatness_entropy_score(clus_freqs(foc='Beryl', get_res=True))
+    print(f"# regions in clustering (be): {len(be)}")
+    de = flatness_entropy_score(clus_freqs(foc='dec', get_res=True))
+    print(f"# regions in decoding   (de): {len(de)}")
+
+    regions = sorted(set(be.keys()) & set(de.keys()))
+    print(f"# regions in intersection: {len(regions)}")
+
+    be_values = [be[reg] for reg in regions]
+    de_values = [de[reg] for reg in regions]
+
+    # Shared bins
+    all_values = be_values + de_values
+    bins = np.histogram_bin_edges(all_values, bins=20)
+
+    # Histogram counts
+    be_counts, _ = np.histogram(be_values, bins=bins)
+    de_counts, _ = np.histogram(de_values, bins=bins)
+
+    bin_centers = 0.5 * (bins[1:] + bins[:-1])
+
+    fig, ax = plt.subplots(figsize=(3, 2.5))
+
+    ax.step(bin_centers, be_counts, where='mid', label='Clustering', color='blue', linewidth=2)
+    ax.step(bin_centers, de_counts, where='mid', label='Decoding', color='red', linewidth=2)
+
+    ax.set_xlabel('Specialization', fontsize=10)
+    ax.set_ylabel('# Regions', fontsize=10)
+
+    ax.legend()
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.yaxis.set_major_locator(plt.MaxNLocator(3))
+    ax.xaxis.set_major_locator(plt.MaxNLocator(3))
+
+    plt.tight_layout()
+    fig.savefig(Path(pth_dmn.parent, 'imgs', 'overleaf_pdf',
+        'flatness_histograms.svg'), format='svg', bbox_inches='tight')
+    plt.show()
+
+
+def plot_three_swansons():
+    '''
+    For the cluster count figure, plot three Swansons:
+    1. Cluster counts per region (flatness entropy from clustering)
+    2. Specialization scores from decoding
+    3. Cosmos colors
+    '''
+
+    # Load flatness scores independently
+    be = flatness_entropy_score(clus_freqs(foc='Beryl', get_res=True))
+    de = flatness_entropy_score(clus_freqs(foc='dec', get_res=True))
+
+    acronyms_be = np.array(list(be.keys()))
+    acronyms_de = np.array(list(de.keys()))
+
+    log_be = np.log([be[k] for k in acronyms_be])
+    log_de = np.log([de[k] for k in acronyms_de])
+
+    fig, axs = plt.subplots(ncols=3, figsize=(4.5, 3))
+
+    # Define colormaps and value ranges separately
+    cmap = plt.get_cmap('magma')
+    vmin_be, vmax_be = log_be.min(), log_be.max()
+    vmin_de, vmax_de = log_de.min(), log_de.max()
+
+    # Panel 1: Clustering specialization
+    plot_swanson_vector(
+        acronyms=acronyms_be,
+        values=log_be,
+        ax=axs[0],
+        br=br,
+        orientation='portrait',
+        cmap=cmap,
+        vmin=vmin_be,
+        vmax=vmax_be,
+        show_cbar=False,
+    )
+    axs[0].axis('off')
+
+    # Add colorbar and grey "no data" box to first panel
+    cax1 = fig.add_axes([0.05, 0.72, 0.015, 0.2])
+    cb1 = plt.colorbar(ScalarMappable(norm=Normalize(vmin_be, vmax_be), cmap=cmap), cax=cax1)
+    cb1.ax.tick_params(labelsize=5)
+    cb1.set_label('log(specialization(clu))', fontsize=6, labelpad=2)
+    grey_patch = mpatches.Patch(color='lightgrey', label='no data')
+    axs[0].legend(handles=[grey_patch], loc='upper left', fontsize=5, frameon=False, handlelength=1, handleheight=0.8)
+
+    # Panel 2: Decoding specialization
+    plot_swanson_vector(
+        acronyms=acronyms_de,
+        values=log_de,
+        ax=axs[1],
+        br=br,
+        orientation='portrait',
+        cmap=cmap,
+        vmin=vmin_de,
+        vmax=vmax_de,
+        show_cbar=False,
+    )
+    axs[1].axis('off')
+
+    # Add colorbar to second panel
+    cax2 = fig.add_axes([0.38, 0.72, 0.015, 0.2])
+    cb2 = plt.colorbar(ScalarMappable(norm=Normalize(vmin_de, vmax_de), cmap=cmap), cax=cax2)
+    cb2.ax.tick_params(labelsize=5)
+    cb2.set_label('log(specialization(dec))', fontsize=6, labelpad=2)
+
+    # Panel 3: Color overlay
+    plot_swanson_vector(ax=axs[2], orientation='portrait')
+    axs[2].axis('off')
+
+    plt.tight_layout()
+    fig.savefig(Path(pth_dmn.parent, 'imgs', 'overleaf_pdf', 'swanson_three_flatness.svg'),
+                format='svg', bbox_inches='tight')
+
+
+
+def scat_dec_clus(norm_=True, ari=False, harris=False,
+                  log_scale=True, axs=None, compare='clu'):
+    '''
+    Scatter plots comparing specialization scores from clustering and decoding,
+    and optionally Harris hierarchy scores.
+
+    Parameters
+    ----------
+    norm_ : bool
+        Placeholder; not used in current implementation.
+    ari : bool
+        If True, use ARI-based decoding scores instead of flatness.
+    harris : bool
+        If True, compare specialization scores to Harris hierarchy.
+    log_scale : bool
+        If True, use logarithmic axes.
+    axs : matplotlib.axes.Axes
+        Optional axis to plot on.
+    compare : {'clu', 'dec'}
+        In Harris mode, whether to compare clustering or decoding specialization to the hierarchy.
+    '''
+
+    # Load specialization scores
+    be = flatness_entropy_score(clus_freqs(foc='Beryl', get_res=True))
 
     if ari:
-        d0 = np.load('/home/mic/wasserstein_fromflatdist_13_concat_nd2.npy', allow_pickle=True).flat[0]
-        de = {}
-        k = 0
-        for reg in d0['regs']:
-            de[reg] = d0['res'][k]
-            k += 1
-    else:                             
-        de = flatness_entropy_score(clus_freqs(foc='dec', get_res=True))  
-
-    if harris:
-        # Harris hierarchy scores
-        harris_hierarchy_scores = {region: idx for idx, region 
-            in enumerate(harris_hierarchy)}
-
-        # Merge scores for common regions
-        common_regions = set(be.keys()).intersection(de.keys()).intersection(
-            harris_hierarchy_scores.keys())
-        merged_data = {region: (be[region], de[region], 
-            harris_hierarchy_scores[region]) for region in common_regions}
-
+        d0 = np.load('/home/mic/wasserstein_fromflatdist_13_concat_nd2.npy',
+                     allow_pickle=True).flat[0]
+        de = {reg: d0['res'][k] for k, reg in enumerate(d0['regs'])}
     else:
-        # Merge scores for common regions
-        common_regions = set(be.keys()).intersection(de.keys())
-        merged_data = {region: (be[region], de[region]) 
-            for region in common_regions} 
+        de = flatness_entropy_score(clus_freqs(foc='dec', get_res=True))
 
-    print(f"Number of common regions: {len(merged_data)}")
-    # Separate values for plotting
-    x_be = [merged_data[region][0] for region in merged_data]
-    y_de = [merged_data[region][1] for region in merged_data]
-
-    if harris:
-        z_harris = [merged_data[region][2] for region in merged_data]
-    colors = [pal[region] for region in merged_data]
-    labels = list(merged_data.keys())
-
-    # Set up subplots
     if axs is None:
-        fig, axs = plt.subplots(1, 1, 
-            figsize=(3, 3)) 
+        fig, axs = plt.subplots(figsize=(3, 3))
 
-    # Define scatter plot function for reuse
-    def scatter_panel(ax, x, y, xlabel, ylabel):
-        
-        # Pearson correlation
-        corr, p = pearsonr(x, y)
-        print(f"Pearson r,p = {corr:.2f},{p:.4f}")
-        if p < 0.05:
+    def scatter_panel(ax, x, y, xlabel, ylabel, labels, colors):
+        # Correlation
+        corr, pval = pearsonr(x, y)
+        print(f"Pearson r = {corr:.2f}, p = {pval:.4g}")
 
-            # ax.text(0.95, 0.95, '*', transform=ax.transAxes, fontsize=20, verticalalignment='top')
+        # Linear fit
+        slope, intercept, r_value, _, _ = linregress(x, y)
+        xx = np.linspace(min(x), max(x), 100)
+        yy = slope * xx + intercept
+        ax.plot(xx, yy, '--', color='black', lw=1,
+                label=f'$R^2$ = {r_value**2:.2f}')
 
-            # Fit regression line
-            slope, intercept, r_value, _, _ = linregress(x, y)
-            xx = np.linspace(min(x), max(x), 100)
-            yy = slope * xx + intercept
-            ax.plot(xx, yy, color='black', linestyle='--', 
-                label=f'Fit: y={slope:.2f}x+{intercept:.2f}')
-
-        # Scatter points with labels
-        for i, region in enumerate(labels):
-            ax.scatter(x[i], y[i], color=colors[i], label=region)
-            #ax.text(x[i], y[i], region, color=colors[i], fontsize=8, ha='left')
+        for i in range(len(x)):
+            ax.scatter(x[i], y[i], color=colors[i], s=10)
 
         if log_scale:
             ax.set_xscale('log')
             ax.set_yscale('log')
-        # Set labels
-        ax.set_xlabel(xlabel, fontsize=12)
-        ax.set_ylabel(ylabel, fontsize=12)
+            # # Ensure x and y limits match
+            # min_val = min(min(x), min(y))
+            # max_val = max(max(x), max(y))
+            # ax.set_xlim(min_val, max_val)
+            # ax.set_ylim(min_val, max_val)
+
+            # ax.set_aspect('equal', adjustable='box')
+
+        ax.set_xlabel(xlabel, fontsize=10)
+        ax.set_ylabel(ylabel, fontsize=10)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
+        ax.legend(fontsize=8)
 
+        if not log_scale:
+            ax.xaxis.set_major_locator(MaxNLocator(3))
+            ax.yaxis.set_major_locator(MaxNLocator(3))
+
+        ax.text(0.98, 0.02, f'{len(x)} regions',
+                transform=ax.transAxes, ha='right', va='bottom', color='k')
 
     if harris:
-        # Panel 2: `be` vs `harris`
-        scatter_panel(
-            axs,
-            x_be, z_harris,
-            xlabel='specialization (clu)',
-            ylabel='Harris hierarchy score'
-        )
+        harris_hierarchy_scores = {region: idx for idx, region in enumerate(harris_hierarchy)}
 
-    else:    
-        # Panel 1: `be` vs `de`
-        scatter_panel(
-            axs,
-            x_be, y_de,
-            xlabel='specialization (clu)',
-            ylabel='specialization (dec)' if not ari else "ari's non-flatness-scores"
-        )
-        # # Panel 3: `de` vs `harris`
-        # scatter_panel(
-        #     axes[2],
-        #     y_de, z_harris,
-        #     xlabel='BWM dec (non_flatness_score(d_d))' if not ari else "ari's non-flatness-scores",
-        #     ylabel='Harris hierarchy score'
-        # )
+        if compare == 'clu':
+            common = set(be) & set(harris_hierarchy_scores)
+            x_vals = [be[r] for r in common]
+            y_vals = [harris_hierarchy_scores[r] for r in common]
+            labels = list(common)
+            colors = [pal[r] for r in labels]
+            xlabel = 'log(Specialization (clu))' if log_scale else 'Specialization (clu)'
+            ylabel = 'Harris hierarchy score'
+            save_name = 'scat_clu_vs_harris.svg'
 
-    # Adjust layout and show
+        elif compare == 'dec':
+            common = set(de) & set(harris_hierarchy_scores)
+            x_vals = [de[r] for r in common]
+            y_vals = [harris_hierarchy_scores[r] for r in common]
+            labels = list(common)
+            colors = [pal[r] for r in labels]
+            xlabel = 'log(Specialization (dec))' if log_scale else 'Specialization (dec)'
+            ylabel = 'Harris hierarchy score'
+            save_name = 'scat_dec_vs_harris.svg'
+
+        else:
+            raise ValueError("compare must be 'clu' or 'dec'")
+
+        scatter_panel(axs, x_vals, y_vals, xlabel, ylabel, labels, colors)
+
+    else:
+        common = set(be) & set(de)
+        x_vals = [be[r] for r in common]
+        y_vals = [de[r] for r in common]
+        labels = list(common)
+        colors = [pal[r] for r in labels]
+        xlabel = 'log(Specialization (clu))' if log_scale else 'Specialization (clu)'
+        ylabel = (
+            'log(Specialization (dec))' if log_scale and not ari else
+            'Specialization (dec)' if not ari else
+            'ARI non-flatness'
+        )
+        save_name = 'scat_clu_vs_dec.svg' if not ari else 'scat_clu_vs_ari.svg'
+
+        scatter_panel(axs, x_vals, y_vals, xlabel, ylabel, labels, colors)
+
     plt.tight_layout()
+    plt.savefig(Path(pth_dmn.parent, 'imgs', 'overleaf_pdf', save_name),
+                format='svg', bbox_inches='tight')
     plt.show()
+
 
 
 def scatter_harris_correlation(acronyms=False, axs=None):
@@ -4688,7 +4683,6 @@ def scatter_harris_correlation(acronyms=False, axs=None):
         plt.show()
 
 
-
 def plot_brain_region_counts(start=None, end=None, nmin=50):
     """
     Plot a bar chart of brain region counts, color-coded by a given palette.
@@ -4771,72 +4765,6 @@ def embed_histograms_scatter(foc='dec', ax=None):
     ax.set_xlabel('umap dim 1')
     ax.set_ylabel('umap_dim 2')
 
-
-# def plot_decoding_results():
-
-
-#     re = np.load(Path(pth_dmn,'decode.npy'), allow_pickle=True).flat[0]
-#     # Prepare the data for plotting
-#     sources, mappings = [], []
-#     [[sources.append(k.split(' ')[0]), mappings.append(k.split(' ')[1])] for k in re]
-
-#     mappings = np.unique(mappings) 
-#     sources = np.unique(sources) 
-
-#     data = []
-
-#     for source in sources:
-#         for mapp in mappings:
-#             key = f"{source} {mapp}"
-#             if key not in re:
-#                 continue
-#             normal_results, shuffled_results = re[key]  
-#             for split in normal_results:
-#                 test_results = split[:, 1]
-#                 data.extend([{'Mapping': mapp, 'Source': source, 'Type': 'Test Normal', 'Accuracy': acc} for acc in test_results])
-#             for split in shuffled_results:
-#                 test_results = split[:, 1]
-#                 data.extend([{'Mapping': mapp, 'Source': source, 'Type': 'Test Shuffled', 'Accuracy': acc} for acc in test_results])
-
-#     df = pd.DataFrame(data)
-
-#     fig, ax = plt.subplots(figsize=(3, 3))
-#     mapping_colors = sns.color_palette("tab10", len(mappings))
-#     mapping_palette = {str(mapp): color for mapp, 
-#         color in zip(mappings, mapping_colors)}
-#     expanded_palette = {
-#         mapp: {'Test Normal': color, 'Test Shuffled': color}
-#         for mapp, color in mapping_palette.items()
-#     }
-#     for mapp in mappings:    
-#         sns.stripplot(
-#             data=df[df['Mapping'] == mapp],
-#             x='Source', y='Accuracy', hue='Type',
-#             dodge=True, jitter=True, ax=ax,
-#             palette=expanded_palette[mapp] ,  # Use the defined color palette
-#             size=3
-#         )
-    
-#     ax.axvline(x=0.5, color='k', linestyle='-', linewidth=1)
-#     ax.axvline(x=0, color='k', linestyle='--', linewidth=1)
-#     ax.axvline(x=1, color='k', linestyle='--', linewidth=1)
-
-
-
-#     ax.spines['top'].set_visible(False)
-#     ax.spines['right'].set_visible(False)
-
-#     plt.tight_layout()
-#     custom_handles = [plt.Line2D([0], [0], color=palette, marker='o', 
-#                         linestyle='', markersize=5)
-#                       for palette in mapping_colors]
-#     ax.legend(custom_handles, mappings, title='Targets', loc='best', 
-#          frameon=False).set_draggable(True)
-
-#     ax.set_xticks([-0.25,  0.25, 0.75, 1.25])
-#     ax.set_xticklabels(['test','shuffle', 'test','shuffle'], rotation=90)
-#     ax.set_xlabel('concat_z | ephysTF')
-#     ax.set_ylabel('Decoding Accuracy')
 
 def plot_decoding_results():
     """
@@ -4944,6 +4872,7 @@ def plot_decoding_results():
                ncol=len(mappings), bbox_to_anchor=(0.5, 1.05))
     plt.tight_layout()
     plt.show()     
+
 
 def ghostscript_compress_pdf(level='/printer'):
 
@@ -5102,7 +5031,8 @@ def plot_umap_SI(algo='umap_z', mapping='Beryl',smooth=True, norm_=True):
 
         # For first panel of row, print version as y label
 
-        axs[row, 0].set_ylabel(vers, fontsize=6)
+
+        axs[row, 0].set_ylabel(vers.replace(' ', '\n'), fontsize=6)
 
         for reg in regs:
             ax = axs[row,col]
@@ -5133,7 +5063,84 @@ def plot_umap_SI(algo='umap_z', mapping='Beryl',smooth=True, norm_=True):
 
     fig.tight_layout()
     fig.savefig(Path(pth_dmn.parent, 'imgs', 'overleaf_pdf',
-         f'umap_si_norm{norm_}_smooth{smooth}.png'), dpi=100, bbox_inches='tight')
+         f'umap_si_norm{norm_}_smooth{smooth}.png'), dpi=180, bbox_inches='tight')
+
+
+
+def plot_umap_SI_concat_cosmos(algo='umap_z', mapping='Cosmos', 
+                            smooth=True, norm_=True):
+    '''
+    Plot 2D smoothed UMAP embeddings for all Cosmos regions and network "concat"
+    '''
+
+    # Assuming these variables and functions are available from the environment:
+    # - PETH_types_dict
+    # - regional_group()
+    # - pal
+    # - MM_TO_INCH
+    # - pth_dmn
+
+    vers = 'concat'  # fixed to concat network
+    r = regional_group(mapping, vers=vers)
+
+    regs = sorted(set(r['acs']))  # all unique regions in Cosmos mapping
+    dim = 2
+
+    fig, axs = plt.subplots(nrows=1, ncols=len(regs),
+                figsize=(183 * MM_TO_INCH, 24 * MM_TO_INCH),
+                sharex=True, sharey=True)
+
+    mins, maxs = [], []
+    for i in range(dim):
+        mins.append(np.floor(np.min(r[algo][:, i])))
+        maxs.append(np.ceil(np.max(r[algo][:, i])))
+
+    for i in range(dim):
+        maxs[i] = maxs[i] * 0.01 + maxs[i]
+
+    coords = {}
+    regcol = {reg: np.array(r['cols'])[r['acs'] == reg][0] for reg in regs}
+    imgs = {}
+    meshsize = 256
+
+    for reg in regs:
+        scaled_data = [
+            (r[algo][np.array(r['acs']) == reg, i] - mins[i]) / (maxs[i] - mins[i])
+            for i in range(dim)
+        ]
+        coords[reg] = scaled_data
+
+        if smooth:
+            data = np.array(scaled_data).T
+            inds = (data * (meshsize - 1)).astype('uint')
+            img = np.zeros([meshsize] * dim)
+            for pt in inds:
+                img[tuple(pt)] += 1
+            imsm = ndi.gaussian_filter(img.T, [5] * dim)
+            imgs[reg] = imsm / np.max(imsm) if norm_ else imsm
+
+    for col, reg in enumerate(regs):
+        ax = axs[col] if len(regs) > 1 else axs
+
+        if smooth:
+            ax.imshow(imgs[reg], origin='lower', cmap='viridis')
+            ax.set_aspect('equal')
+            ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+            for spine in ['top', 'right', 'bottom']:
+                ax.spines[spine].set_visible(False)
+        else:    
+            ax.scatter(coords[reg][0], coords[reg][1], color=regcol[reg], s=0.05)
+            ax.spines['right'].set_visible(False)
+            ax.spines['top'].set_visible(False)
+            ax.set_xlim([0, 1])
+            ax.set_ylim([0, 1])
+            ax.set_aspect('equal')
+
+        ax.set_title(f'{reg}\n{sum(r["acs"] == reg)}', fontsize=6, color=pal[reg])
+
+    fig.tight_layout()
+    fig.savefig(Path(pth_dmn.parent, 'imgs', 'overleaf_pdf',
+         f'umap_si_concat_cosmos_norm{norm_}_smooth{smooth}.png'), dpi=180, bbox_inches='tight')
 
 
 ##############
