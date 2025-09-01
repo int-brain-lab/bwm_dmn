@@ -3,6 +3,7 @@
 
 
 import numpy as np
+import random
 from collections import Counter
 from pathlib import Path
 from spectral_connectivity import Multitaper, Connectivity
@@ -82,9 +83,6 @@ T_BIN = 0.0125  # 0.005
 sigl=0.05  # alpha throughout
 
 #df = bwm_query(one)
-#align = {'stim': 'stim on',
-#         'choice': 'motion on',
-#         'fback': 'feedback'}
 
 # save results here
 pth_res = Path(one.cache_dir, 'granger') #, 'res_feedback_times')
@@ -96,6 +94,21 @@ def get_allen_info():
                 allow_pickle=True).flat[0]
     return r['dfa'], r['palette']
 
+
+def trans_(d):
+    '''
+    turn adjacency matrix into A --> B format dictionary
+    '''
+    d0 = {}
+    res = d['res']
+    regs = d['regs']
+    for i in range(len(regs)):
+        for j in range(len(regs)):
+            if i == j:
+                continue
+            d0[f'{regs[i]} --> {regs[j]}'] = res[i,j]
+                
+    return d0
 
 def p_fisher(p_values):
     # combine p-values via Fisher's method
@@ -405,11 +418,11 @@ def bin_average_neural(eid, mapping='Beryl', nmin=1):
     '''
     
     pids0, probes = one.eid2pid(eid)
-    
+    df = bwm_query(one)
     pids = []
     
     for pid in pids0:
-        if pid in df['pid'].values:
+        if str(pid) in df['pid'].values:
             pids.append(pid)
 
     if len(pids) == 1:
@@ -859,7 +872,7 @@ def get_all_granger(eids='all', nshufs = 100, nmin=10, wins=wins):
 
 
 
-def get_res(nmin=10, metric='granger', combine_=True, c_mc =False,
+def get_res(nmin=10, metric='granger', combine_=False, c_mc =False,
             rerun=False, sig_only=False, sessmin=2, win='whole_session'):
 
     '''
@@ -916,7 +929,6 @@ def get_res(nmin=10, metric='granger', combine_=True, c_mc =False,
                         d[f'{regs[i]} --> {regs[j]}'].append(
                             [m[j, i], p_c[i,j], 
                             D['regsd'][regs[i]], D['regsd'][regs[j]], eid])
-                        
 
                     else:
                         d[f'{regs[i]} --> {regs[j]}'] = []
@@ -961,15 +973,19 @@ def get_res(nmin=10, metric='granger', combine_=True, c_mc =False,
 
     if combine_:
         # take mean score across measurements
-        dd = {k: [np.mean(np.array(d[k])[:,0], dtype=float), 
-                 p_fisher(np.array(np.array(d[k])[:,1], dtype=float))] 
-                 for k in d if (len(d[k]) >= sessmin)}
+        dd = {
+            k: np.array([
+                np.mean(np.array(d[k])[:, 0].astype(float)), 
+                p_fisher(np.array(d[k])[:, 1].astype(float))
+            ], dtype=float)  # Ensure dtype is float for the array
+            for k in d if len(d[k]) >= sessmin
+        }
         
         if sig_only:
             ddd = {}
             for pair in dd:
                 if dd[pair][1] < sigl:
-                    ddd[pair] = dd[pair][0]  
+                    ddd[pair] = float(dd[pair][0])
 
             dd = ddd
 
@@ -977,7 +993,7 @@ def get_res(nmin=10, metric='granger', combine_=True, c_mc =False,
         if sig_only:
             dd = {}
             for pair in d:
-                l = [x[0] for x in d[pair] if x[1] < sigl]    
+                l = [float(x[0]) for x in d[pair] if x[1] < sigl]    
                 if l == []:
                     continue
                 else:
@@ -1291,7 +1307,9 @@ def plot_gc(eid, segl=10, shuf=False,
     
     metric = 'pairwise_spectral_granger_prediction'
     or 'coherence_magnitude'
-    
+
+    For SI:
+    plot_gc('af55d16f-0e31-4073-bdb5-26da54914aa2', single_pair=True)
     '''
     time00 = time.perf_counter()
     
@@ -1349,7 +1367,8 @@ def plot_gc(eid, segl=10, shuf=False,
         # mean score across frequencies
         m = np.mean(psg, axis=0)
     
-    fig, axs = plt.subplots(nrows=1, ncols=3, figsize=(10,4))
+    fig, axs = plt.subplots(nrows=1, ncols=2, figsize=(6.19,3),
+                            label = eid)
     
     # plot example time series, first segment
     exdat = r[:,:int(segl/T_BIN)]/T_BIN
@@ -1374,8 +1393,8 @@ def plot_gc(eid, segl=10, shuf=False,
         s += np.max(y)
         i +=1
               
-    axs[0].set_xlabel('time [sec]')
-    axs[0].set_ylabel('firing rate [Hz]')
+    axs[0].set_xlabel('Time (s)')
+    axs[0].set_ylabel('Firing rate (Hz)')
     axs[0].spines['top'].set_visible(False)
     axs[0].spines['right'].set_visible(False)
     axs[0].set_title('example segment')
@@ -1396,40 +1415,45 @@ def plot_gc(eid, segl=10, shuf=False,
 
         axs[1].legend()
         axs[1].set_xlabel('frequency [Hz]')
-        axs[1].set_ylabel(metric)   
-        axs[1].set_title(f'top {j} tuples') 
+        if metric == 'pairwise_spectral_granger_prediction':
+            axs[1].set_ylabel('Pairwise spectral \n granger prediction')
+        else:
+            axs[1].set_ylabel(metric)
+        axs[1].spines['top'].set_visible(False)
+        axs[1].spines['right'].set_visible(False)  
+        # axs[1].set_title(f'top {j} tuples') 
     
-    # plot directed granger matrix
-    ims = axs[2].imshow(m, interpolation=None, cmap='gray_r')#, 
-                  #origin='lower')
+#     # plot directed granger matrix
+#     ims = axs[2].imshow(m, interpolation=None, cmap='gray_r')#, 
+#                   #origin='lower')
                   
-#    # highlight max connections              
-#    for i, j in exes:
-#        rect = patches.Rectangle((j - 0.5, i - 0.5), 1, 1, 
-#                                  linewidth=2, 
-#                                  edgecolor='red', 
-#                                  facecolor='none')
-#        axs[2].add_patch(rect)              
+# #    # highlight max connections              
+# #    for i, j in exes:
+# #        rect = patches.Rectangle((j - 0.5, i - 0.5), 1, 1, 
+# #                                  linewidth=2, 
+# #                                  edgecolor='red', 
+# #                                  facecolor='none')
+# #        axs[2].add_patch(rect)              
                   
-    axs[2].set_xticks(np.arange(m.shape[0]))
-    axs[2].set_xticklabels(regs, rotation=90)
-    axs[2].set_xlabel('source')
-    axs[2].set_yticks(np.arange(m.shape[1]))
-    axs[2].set_yticklabels(regs)
-    axs[2].set_ylabel('target')     
-    axs[2].set_title('mean abs corr across lags' 
-                     if metric0 == 'cross_corr' 
-                     else 'mean across freqs')
+#     axs[2].set_xticks(np.arange(m.shape[0]))
+#     axs[2].set_xticklabels(regs, rotation=90)
+#     axs[2].set_xlabel('source')
+#     axs[2].set_yticks(np.arange(m.shape[1]))
+#     axs[2].set_yticklabels(regs)
+#     axs[2].set_ylabel('target')     
+#     axs[2].set_title('mean abs corr across lags' 
+#                      if metric0 == 'cross_corr' 
+#                      else 'mean across freqs')
                   
-    cb = plt.colorbar(ims,fraction=0.046, pad=0.04)              
+#     cb = plt.colorbar(ims,fraction=0.046, pad=0.04)              
 
 
-    fig.suptitle(f'eid = {eid} {"shuffled" if shuf else ""} ' 
-                 f'vers={vers}, peak_freq_factor0 = {peak_freq_factor0}, '
-                 f'peak_freq_factor1 = {peak_freq_factor1}, ' 
-                 f'phase_lag_factor={phase_lag_factor},'
-                 if eid == 'sim' else 
-                 f'eid = {eid} {"shuffled" if shuf else ""} ')   
+    # fig.suptitle(f'eid = {eid} {"shuffled" if shuf else ""} ' 
+    #              f'vers={vers}, peak_freq_factor0 = {peak_freq_factor0}, '
+    #              f'peak_freq_factor1 = {peak_freq_factor1}, ' 
+    #              f'phase_lag_factor={phase_lag_factor},'
+    #              if eid == 'sim' else 
+    #              f'eid = {eid} {"shuffled" if shuf else ""} ')   
     fig.tight_layout()
     time11 = time.perf_counter()
     print('runtime [sec]: ', time11 - time00)     
@@ -1481,7 +1505,7 @@ def plot_strip_pairs(metric='granger', sessmin = 3,
         d_exs = {x:d[x] for x in exs}
     
         fig, axs = plt.subplots(nrows=nrows, 
-                                ncols=1, figsize=(9,6), sharey=True)
+                                ncols=1, figsize=(9,6.76), sharey=True)
 
         for row in range(nrows):
             
@@ -1597,27 +1621,50 @@ def plot_strip_pairs(metric='granger', sessmin = 3,
             fig.tight_layout()        
 
     
-def scatter_two(wins=['whole_session', 'feedback_plus1']):
+def scatter_two(winns=['whole_session', 'charles_ephys_Granger'],
+                sig_only=True):
 
-    dg = np.load(Path(one.cache_dir, 'granger', 
-                        f'granger_{wins[0]}.npy'), 
-                        allow_pickle=True).flat[0]    
-                        
-    dc = np.load(Path(one.cache_dir, 'granger', 
-                        f'granger_{wins[1]}.npy'), 
-                        allow_pickle=True).flat[0]
+    # winns=['whole_session', 'feedback_plus1']  
+    
+    if winns[1] == 'charles_ephys_Granger':
+    
+        # group scores across recordings    
+        dg = get_res(win=winns[0],combine_=True)
+    
+        dc0 = pd.read_parquet(Path(one.cache_dir, 'granger', 
+                                f'{winns[1]}.pqt'))
+        # change format
+
+        dc = {' --> '.join(x.split(' -> ')): 
+                [dc0[dc0['reg'] == x]['corrected_score'].item(),
+                 dc0[dc0['reg'] == x]['pvalue'].item()]
+                for x in dc0['reg'].values}
+                               
+                                
+                                  
+    else:
+        dg = get_res(win=winns[0],combine=False)     
+        dc = np.load(Path(one.cache_dir, 'granger', 
+                            f'granger_{winns[1]}.npy'), 
+                            allow_pickle=True).flat[0]
                                                
     pairs = list(set(dg.keys()).intersection(set(dc.keys())))
     
     pts = []
     scores = []
-    
-    for p in pairs:
-        for i in range(len(dg[p])):
-            scores.append([dg[p][i][0],dg[p][i][1], 
-                           dc[p][i][0],dc[p][i][1]])
-            pts.append(p)
-     
+
+    if winns[1] == 'charles_ephys_Granger':
+        for p in pairs:
+                scores.append([dg[p][0],dg[p][1], 
+                               dc[p][0],dc[p][1]])
+                pts.append(p)    
+    else:
+        for p in pairs:
+            for i in range(len(dg[p])):
+                scores.append([dg[p][i][0],dg[p][i][1], 
+                               dc[p][i][0],dc[p][i][1]])
+                pts.append(p)
+                  
     scores = np.array(scores) 
     scores[:,0] = np.log(scores[:,0])
     scores[:,2] = np.log(scores[:,2])
@@ -1636,8 +1683,8 @@ def scatter_two(wins=['whole_session', 'feedback_plus1']):
                color='b', s=15, marker='x', label='y sig')
     
     plt.legend()      
-    ax.set_xlabel(f'{wins[0]} (log(granger))')       
-    ax.set_ylabel(f'{wins[1]} (log(granger))')
+    ax.set_xlabel(f'{winns[0]} (log(granger))')       
+    ax.set_ylabel(f'{winns[1]} (log(granger))')
     both_sig = np.bitwise_and(scores[:,1]<sigl, scores[:,3]<sigl) 
     
     cors,ps = spearmanr(scores[:,0][both_sig], scores[:,2][both_sig])
@@ -1811,7 +1858,7 @@ def freq_maxs_hists(perc = 95, freqlow=10):
     fig.tight_layout()
     
 
-def scatter_direction(sig_only=True):
+def scatter_direction(sig_only=True, annotate=True):
 
     '''
     scatter plot for region pairs 
@@ -1845,19 +1892,22 @@ def scatter_direction(sig_only=True):
         pairs0.append(', '.join([a,b]))
           
             
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(figsize=(3,3))
     ax.scatter(dir0, dir1, color='k', s=0.5)
     ax.plot([0, 1], [0, 1], linestyle='--', color='grey')
     
-    for i in range(len(pairs)):
-        ax.annotate('  ' + pairs0[i], 
-            (dir0[i], dir1[i]),
-            fontsize=5,color='k')  
+    if annotate:
+        for i in random.sample(range(len(pairs)),3):
+            ax.annotate('  ' + pairs0[i], 
+                (dir0[i], dir1[i]),
+                fontsize=10,color='k', fontweight='bold')  
 
             
     ax.set_xlabel('A --> B')       
     ax.set_ylabel('B --> A')
-
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+         
     cors,ps = spearmanr(dir0, dir1)
     corp,pp = pearsonr(dir0, dir1)
 
@@ -1918,7 +1968,8 @@ def get_ari():
 
 
 def plot_graph(metric='granger', restrict='', ax=None, win='whole_session',
-               direction='both', sa = 1.5, sessmin=2, ari=False):
+               direction='both', sa = 1.5, sessmin=2, 
+               ari=False, sig_only=False, ews = 50):
 
     '''
     circular graph
@@ -1935,12 +1986,12 @@ def plot_graph(metric='granger', restrict='', ax=None, win='whole_session',
     alone = False
     if ax == None:
         alone = True
-        fig, ax = plt.subplots(figsize=(6,6), label=win)
+        fig, ax = plt.subplots(figsize=(4,4), label=win)
 
     if metric == 'cartesian':
         d = trans_(get_centroids(dist_=True))
     elif metric == 'granger':
-        d = get_res(metric=metric,combine_=True, sessmin=sessmin, win=win)   
+        d = get_res(metric=metric, sessmin=sessmin, win=win, combine_=True)   
     elif metric == 'pw':
         d = trans_(get_pw_dist(vers='concat'))   
     elif metric == 'umap_z':     
@@ -1949,15 +2000,19 @@ def plot_graph(metric='granger', restrict='', ax=None, win='whole_session',
         print('what metric?')
         return
    
-    ews = 80 if metric == 'granger' else 8
+    # ews was 80
+    ews = ews if metric == 'granger' else ews/10  # edge width
     fontsize = 11 if alone else 1
     
-
     # scale symbols for multi-panel graphs
     node_size = 30 if alone else 3
     
-    nsw = 0.02 if metric == 'coherence' else 0.005
-    ews = ews/sa
+    # non-significant edge width
+    if sig_only:
+        nsw = 0
+    else:
+        nsw = 0.02 if metric == 'coherence' else 0.005
+    ews = ews/sa  # edge width
     node_size = node_size/sa
     fontsize = fontsize/sa
        
@@ -1971,6 +2026,7 @@ def plot_graph(metric='granger', restrict='', ax=None, win='whole_session',
                      
     _, pa = get_allen_info()
             
+
     G = nx.DiGraph()
     for edge, weight in d.items():
         source, target = edge.split(' --> ')
@@ -1984,12 +2040,11 @@ def plot_graph(metric='granger', restrict='', ax=None, win='whole_session',
                        weight=w, 
                        color='k' if weight[1] < sigl else 'cyan')
         else:
-            w = weight
+            w = weight[0]
             w = w*ews
             G.add_edge(source, target, 
                        weight=w, 
-                       color='k')            
-        
+                       color='k')
 
     if ari:
         rs = get_ari()
@@ -2013,10 +2068,9 @@ def plot_graph(metric='granger', restrict='', ax=None, win='whole_session',
         for reg in regs:
             if reg in G.nodes:
                 node_order.append(reg)
-                   
+                  
     pos0 = nx.circular_layout(G)
     pos = dict(zip(node_order,pos0.values()))
-    
 
     nx.draw_networkx_nodes(G, pos, node_size=node_size, ax=ax,
                            node_color=[pa[node] for node in G.nodes])
@@ -2081,7 +2135,7 @@ def plot_graph(metric='granger', restrict='', ax=None, win='whole_session',
 #                        'granger_single_graph.svg'))
 
 
-def plot_multi_graph(sessmin=2, win='whole_session'):
+def plot_multi_graph(sessmin=2, win='whole_session', sig_only=False, sa=2):
 
     cregs = ['CB', 'TH', 'HPF', 'Isocortex', 
              'OLF', 'CTXsp', 'CNU', 'HY', 'HB', 'MB']
@@ -2094,7 +2148,7 @@ def plot_multi_graph(sessmin=2, win='whole_session'):
     for creg in cregs: 
         for direction in directions:
             plot_graph(metric='granger', restrict=creg, sessmin = sessmin, 
-                       ax=axs[k], sa = 1.5, direction=direction, win=win)     
+                       ax=axs[k], sa = sa, direction=direction, win=win, sig_only=sig_only)     
             axs[k].set_title(f'{creg} {direction}')
             k += 1
   
@@ -2155,6 +2209,187 @@ def make_table():
     df_sorted = df.sort_values(by='Granger score', ascending=False)
     df_sorted.to_csv(Path(pth_res.parent, 'granger.csv'), index=False)
 
+
+
+def heatmap_adjacency():
+
+    data = get_res(c_mc=True, sig_only=True, combine_=True, sessmin=1)
+
+    # Step 1: Extract unique brain regions
+    regions = set()
+    for key in data.keys():
+        source, target = key.split(' --> ')
+        regions.add(source)
+        regions.add(target)
+
+    # Sort regions for consistency
+
+    # order by canonical order
+    p = (Path(iblatlas.__file__).parent / 'beryl.npy')
+    regs_ = br.id2acronym(np.load(p), mapping='Beryl')
+
+    regsC = [reg for reg in regs_ if reg in regions]
+    regions = regsC
+
+    # Step 2: Create a mapping of regions to matrix indices
+    region_index = {region: idx for idx, region in enumerate(regions)}
+
+    # Step 3: Initialize an adjacency matrix (square, with zeroes)
+    n = len(regions)
+    adj_matrix = np.zeros((n, n))
+
+    # Step 4: Populate the adjacency matrix using the dictionary data
+    for key, values in data.items():
+        source, target = key.split(' --> ')
+        source_idx = region_index[source]
+        target_idx = region_index[target]
+        
+        # Use the first Granger score (or you can decide how to handle multiple scores)
+        adj_matrix[source_idx][target_idx] = np.mean(values) # [0]
+
+    # Step 5: Convert the adjacency matrix to a pandas DataFrame for readability
+    adj_matrix_df = pd.DataFrame(adj_matrix, index=regions, columns=regions)
+
+
+    _, palette = get_allen_info()
+    # Step 7: Create a heatmap with colored region labels
+    fig, ax = plt.subplots(figsize=(3, 3))
+
+    # Plot the heatmap
+    #sns.heatmap(adj_matrix_df, cmap='viridis', ax=ax, cbar=True, square=True)
+    sparse_matrix = csr_matrix(adj_matrix_df)
+    ax.spy(sparse_matrix, markersize=1, color='k')
+
+
+    # Set tick label colors and ensure all ticks are shown
+    ax.set_xticks(np.arange(len(regions)) + 0.5)  # Ensure all ticks are placed correctly
+    ax.set_yticks(np.arange(len(regions)) + 0.5)
+
+    ax.set_xticklabels(regions, fontsize=6, rotation=90)  # Small fontsize and rotate labels for x-axis
+    ax.set_yticklabels(regions, fontsize=6)
+
+    # Set tick label colors based on the palette
+    for label in ax.get_yticklabels():
+        region = label.get_text()
+        label.set_color(palette.get(region, 'black'))  # Default to black if not in palette
+    
+    for label in ax.get_xticklabels():
+        region = label.get_text()
+        label.set_color(palette.get(region, 'black'))  
+
+    # Rotate x-axis labels for better readability
+    plt.xticks(rotation=90)
+    ax.tick_params(length=0)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+    fig.tight_layout()
+
+    # Save or show the figure
+    plt.show()
+
   
   
-  
+def scatter_similarity(ranks=False, hexbin_=False, anno=False):
+
+    '''
+    for pairs of 3 similarity metrics, 
+    scatter and correlate region pairs;
+    '''
+
+    D = {}
+
+
+    D['cartesian']= trans_(get_centroids(dist_=True))
+    D['granger'] = get_res(metric='granger', sig_only=True, combine_=True, sessmin=1)
+    D['axonal'] = get_structural(fign=3)
+
+
+#         '30ephys': trans_(get_umap_dist(algo='umap_e')),
+#         #'coherence': get_res(metric='coherence', 
+                              #sig_only=True, combine_=True),
+         #'granger': get_res(metric='granger', 
+                           # sig_only=True, combine_=True),
+         #'structural3_sp': get_structural(fign=3, shortestp=True),
+         #'axonal': get_structural(fign=3)
+         
+     
+    # tt = len(list(combinations(list(D.keys()),2)))
+    # ncols = math.ceil(math.sqrt(tt))
+    # nrows = math.ceil(tt / ncols)
+
+       
+    nrows = 3
+    ncols = 1    
+        
+     
+    fig, ax = plt.subplots(ncols=ncols, nrows=nrows,
+                           figsize=[2.57, 5.51])     
+    ax = np.array(ax).flatten()
+    
+    metrics = list(D.keys())   
+    nf = list(combinations(range(len(D)),2))
+     
+    for k in range(len(nf)):
+       
+        dg,dc = D[metrics[nf[k][0]]], D[metrics[nf[k][1]]]
+                        
+        pairs = list(set(dg.keys()).intersection(set(dc.keys())))
+        
+        pts = []
+        gs = []
+        cs = []
+        
+        for p in pairs:
+            gs.append(np.mean(dg[p]))
+            cs.append(np.mean(dc[p]))
+            pts.append(p)        
+
+        gs = gs
+        cs = cs
+        pts = pts
+        
+        corp,pp = pearsonr(gs, cs)
+        cors,ps = spearmanr(gs, cs)
+        
+
+        if ranks:
+            gs = np.argsort(np.argsort(gs))
+            cs = np.argsort(np.argsort(cs))
+
+            
+        if hexbin_:
+            ax[k].hexbin(gs, cs, cmap='Greys', gridsize=150)
+        else:                
+            ax[k].scatter(gs, cs, color='b' if ranks else 'k', 
+                          s=0.1, alpha=0.1, rasterized=True)
+
+        if anno:
+     
+            for i in range(len(pts)):
+                ax[k].annotate('  ' + pts[i], 
+                    (gs[i], cs[i]),
+                    fontsize=5,color='b' if ranks else 'k')
+                       
+        # cc = ('r' if 'cartesian' in (metrics[nf[k][0]], metrics[nf[k][1]]) 
+        #       else 'k')  
+        cc = 'k'
+
+        a = 'ranks' if ranks else ''
+        ax[k].set_xlabel(f'{metrics[nf[k][0]]} '.capitalize() + a, color=cc)       
+        ax[k].set_ylabel(f'{metrics[nf[k][1]]} '.capitalize() + a, color=cc)
+        ax[k].spines['right'].set_visible(False)
+        ax[k].spines['top'].set_visible(False)
+        ss = (f"{np.round(corp,2) if pp<0.05 else '_'}, "
+              f"{np.round(cors,2) if ps<0.05 else '_'}")
+        ax[k].set_title(ss + f'\n {len(pts)}')
+    
+        print(metrics[nf[k][0]], metrics[nf[k][1]], len(pts))
+        print(f'pe: (r,p)=({np.round(corp,2)},{np.round(pp,2)})')
+        print(f'sp: (r,p)=({np.round(cors,2)},{np.round(ps,2)})')
+        
+    # Check if axes is taken, if not, switch axes off
+    [a.axis('off') for a in ax if not a.title.get_text()]
+
+
+    fig.tight_layout()
