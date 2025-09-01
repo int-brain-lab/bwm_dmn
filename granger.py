@@ -41,9 +41,13 @@ import matplotlib
 sns.reset_defaults()
 plt.ion()
 
-one = ONE()
-#base_url='https://openalyx.internationalbrainlab.org',
-#          password='international', silent=True
+# Initialize ONE API with proper authentication
+try:
+    ONE.setup(base_url='https://openalyx.internationalbrainlab.org', silent=True)
+    one = ONE(password='international', silent=True)
+except Exception as e:
+    print(f"Warning: Could not initialize ONE API in granger.py: {e}")
+    one = None
 
 bad_eids = ['4e560423-5caf-4cda-8511-d1ab4cd2bf7d',
             '3a3ea015-b5f4-4e8b-b189-9364d1fc7435',
