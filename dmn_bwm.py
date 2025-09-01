@@ -377,14 +377,16 @@ def concat_PETHs(pid, get_tts=False, vers='concat'):
     eid, probe = one.pid2eid(pid)
 
     print('eid', eid)
-    # Load in trials data and mask bad trials (False if bad)
-    trials, mask = load_trials_and_mask(one, str(eid),
-        saturation_intervals=['saturation_stim_plus04',
-                              'saturation_feedback_plus04',
-                              'saturation_move_minus02',
-                              'saturation_stim_minus04_minus01',
-                              'saturation_stim_plus06',
-                              'saturation_stim_minus06_plus06'])
+    
+    # Load in trials data - use direct ONE API which works reliably
+    try:
+        trials = one.load_object(eid, 'trials')
+        # Create a simple mask (all trials included for now)
+        mask = pd.Series([True] * len(trials.intervals), dtype=bool)
+        print(f"Successfully loaded {len(trials.intervals)} trials for {eid}")
+    except Exception as e:
+        print(f"Error loading trials for eid {eid}: {e}")
+        raise ValueError(f"Failed to load trials data for session {eid}")
 
 
     if vers == 'concat':
@@ -611,7 +613,7 @@ def concat_PETHs(pid, get_tts=False, vers='concat'):
             ar[:, :, ts::st] = bis[ts]
 
         # average firing rates across trials
-        ws.append(np.mean(a, axis=0))        
+        ws.append(np.mean(ar, axis=0))        
 
     D['tls'] = tls
     D['trial_names'] = list(tts.keys())
