@@ -163,24 +163,6 @@ except Exception as e:
 br = BrainRegions()
 #units_df = bwm_units(one)  # canonical set of cells
 
-# Known problematic sessions to exclude
-bad_eids = ['4e560423-5caf-4cda-8511-d1ab4cd2bf7d',
-            '3a3ea015-b5f4-4e8b-b189-9364d1fc7435',
-            'd85c454e-8737-4cba-b6ad-b2339429d99b',
-            'de905562-31c6-4c31-9ece-3ee87b97eab4',
-            '2d9bfc10-59fb-424a-b699-7c42f86c7871',
-            '7cc74598-9c1b-436b-84fa-0bf89f31adf6',
-            '642c97ea-fe89-4ec9-8629-5e492ea4019d',
-            'a2ec6341-c55f-48a0-a23b-0ef2f5b1d71e', # clear saturation
-            '195443eb-08e9-4a18-a7e1-d105b2ce1429',
-            '549caacc-3bd7-40f1-913d-e94141816547',
-            '90c61c38-b9fd-4cc3-9795-29160d2f8e55',
-            'ebe090af-5922-4fcd-8fc6-17b8ba7bad6d',
-            'a9138924-4395-4981-83d1-530f6ff7c8fc',
-            '8c025071-c4f3-426c-9aed-f149e8f75b7b',
-            '29a6def1-fc5c-4eea-ac48-47e9b053dcb5',
-            '0cc486c3-8c7b-494d-aa04-b70e2690bcba']
-
 # save results here
 pth_dmn = Path(one.cache_dir, 'dmn', 'res')
 pth_dmn.mkdir(parents=True, exist_ok=True)
