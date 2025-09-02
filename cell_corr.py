@@ -21,7 +21,13 @@ from one.api import ONE
 
 plt.ion()
 
-one = ONE()
+# Initialize ONE API with proper authentication
+try:
+    ONE.setup(base_url='https://openalyx.internationalbrainlab.org', silent=True)
+    one = ONE(password='international', silent=True)
+except Exception as e:
+    print(f"Warning: Could not initialize ONE API in cell_corr.py: {e}")
+    one = None
 #bwmq = bwm_query(one)
 ba = AllenAtlas()          
 br = BrainRegions()

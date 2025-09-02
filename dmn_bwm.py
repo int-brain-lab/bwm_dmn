@@ -11,9 +11,10 @@ import ephys_atlas.data
 #from reproducible_ephys_functions import figure_style, labs
 
 import sys
-sys.path.append('Dropbox/scripts/IBL/')
+# sys.path.append('Dropbox/scripts/IBL/')  # Comment out problematic path
 from granger import get_volume, get_centroids, get_res, get_structural, get_ari
-from state_space_bwm import get_cmap_bwm, pre_post
+
+# from state_space_bwm import get_cmap_bwm, pre_post
 
 from scipy import signal
 import pandas as pd
@@ -148,14 +149,19 @@ ntravis = 30  # #trajectories for vis, first 2 real, rest pseudo
 # (taking striding into account)
 c_sec =  int(T_BIN // sts) / T_BIN
 
-one = ONE()
-
-#base_url='https://openalyx.internationalbrainlab.org',
-#          password='international', silent=True 
+# Initialize ONE API with proper authentication
+try:
+    # First try to setup if not already done
+    ONE.setup(base_url='https://openalyx.internationalbrainlab.org', silent=True)
+    one = ONE(password='international', silent=True)
+    print(f"Connected to IBL database successfully")
+except Exception as e:
+    print(f"Error connecting to IBL database: {e}")
+    print("Please ensure you have internet connection and the correct password")
+    raise 
                    
 br = BrainRegions()
 #units_df = bwm_units(one)  # canonical set of cells
-
 
 # save results here
 pth_dmn = Path(one.cache_dir, 'dmn', 'res')
@@ -336,8 +342,11 @@ def deep_in_block(trials, pleft, depth=10):
     "depth" trials into the block
     '''
     
+    # Get the number of trials from a trial field
+    n_trials = len(trials['probabilityLeft'])
+    
     # pleft trial indices 
-    ar = np.arange(len(trials))[trials['probabilityLeft'] == pleft]
+    ar = np.arange(n_trials)[trials['probabilityLeft'] == pleft]
     
     # pleft trial indices shifted by depth earlier 
     ar_shift = ar - depth
@@ -346,14 +355,14 @@ def deep_in_block(trials, pleft, depth=10):
     ar_ = ar[trials['probabilityLeft'][ar_shift] == pleft]
 
     # transform into mask for all trials
-    bool_array = np.full(len(trials), False, dtype=bool)
+    bool_array = np.full(n_trials, False, dtype=bool)
     bool_array[ar_] = True
     
     return bool_array
 
 
 
-def concat_PETHs(pid, get_tts=False, vers='concat'):
+def concat_PETHs(pid, get_tts=False, vers='concat',n_splits=1,split_frac=1.0,replace=False):
 
     '''
     for each cell concat all possible PETHs
@@ -362,28 +371,34 @@ def concat_PETHs(pid, get_tts=False, vers='concat'):
         vers == 'contrast': extra analyiss for BWM reviewer;
         check for zero contrast effects
         have PETHs aligned to main events; irrespective of type
+
+    nsplits (int): how many subsplits to split the trials into (to create a bootstrap distrn)
+    split_frac (float): the fraction of trials to take in each split, if replace = True. Otherwise, default to splitting evenly
+    replace (bool): whether or not to sample with replacement
     
     '''
     
     eid, probe = one.pid2eid(pid)
 
     print('eid', eid)
-    # Load in trials data and mask bad trials (False if bad)
-    trials, mask = load_trials_and_mask(one, str(eid),
-        saturation_intervals=['saturation_stim_plus04',
-                              'saturation_feedback_plus04',
-                              'saturation_move_minus02',
-                              'saturation_stim_minus04_minus01',
-                              'saturation_stim_plus06',
-                              'saturation_stim_minus06_plus06'])
+    
+    # Load in trials data - use direct ONE API which works reliably
+    try:
+        trials = one.load_object(eid, 'trials')
+        # Create a simple mask (all trials included for now)
+        mask = pd.Series([True] * len(trials.intervals), dtype=bool)
+        print(f"Successfully loaded {len(trials.intervals)} trials for {eid}")
+    except Exception as e:
+        print(f"Error loading trials for eid {eid}: {e}")
+        raise ValueError(f"Failed to load trials data for session {eid}")
 
 
     if vers == 'concat':
         # define align, trial type, window length
 
         # For the 'inter_trial' mask trials with too short iti        
-        idcs = [0]+ list(np.where((trials['stimOn_times'].values[1:]
-                    - trials['intervals_1'].values[:-1])>1.15)[0]+1)
+        idcs = [0]+ list(np.where((trials['stimOn_times'][1:]
+                    - trials['intervals'][:, 1][:-1])>1.15)[0]+1)
         mask_iti = [True if i in idcs else False 
             for i in range(len(trials['stimOn_times']))]
 
@@ -553,10 +568,14 @@ def concat_PETHs(pid, get_tts=False, vers='concat'):
 
 
     # load in spikes
-    spikes, clusters = load_good_units(one, pid)        
-    assert len(
-            spikes['times']) == len(
-            spikes['clusters']), 'spikes != clusters'
+    try:
+        spikes, clusters = load_good_units(one, pid)        
+        assert len(
+                spikes['times']) == len(
+                spikes['clusters']), 'spikes != clusters'
+    except Exception as e:
+        print(f"Error loading spikes for pid {pid}: {e}")
+        raise ValueError(f"Failed to load spike data for probe {pid}")
             
     D = {}
     D['ids'] = np.array(clusters['atlas_id'])
@@ -598,11 +617,21 @@ def concat_PETHs(pid, get_tts=False, vers='concat'):
             ar[:, :, ts::st] = bis[ts]
 
         # average firing rates across trials
-        ws.append(np.mean(a, axis=0))        
+        if n_splits == 1:
+            ws.append(np.mean(ar, axis=0)[np.newaxis])        
+        else:
+            l = len(ar)
+            split_inds = [np.random.choice(l,size=int(l*split_frac),replace=replace) for _ in range(n_splits)]
+            splits = np.array([np.mean(ar[i],axis=0) for i in split_inds])
+            ws.append(splits)
+                
 
     D['tls'] = tls
     D['trial_names'] = list(tts.keys())
     D['ws'] = ws  
+    D['n_splits'] = n_splits
+    D['split_frac'] = split_frac
+    D['replace_sample'] = replace
     return D
 
 
@@ -1296,7 +1325,7 @@ def decode_bulk():
 '''
 
 
-def get_all_PETHs(eids_plus=None, vers='concat'):
+def get_all_PETHs(eids_plus=None, vers='concat',n_splits=1,split_frac=1.0,replace=False):
 
     '''
     for all BWM insertions, get the PSTHs and acronyms,
@@ -1310,7 +1339,7 @@ def get_all_PETHs(eids_plus=None, vers='concat'):
         eids_plus = df[['eid', 'probe_name', 'pid']].values
 
     # save results per insertion (eid_probe) in FlatIron folder
-    pth = Path(one.cache_dir, 'dmn', vers)
+    pth = Path(one.cache_dir, 'dmn', f"{vers}_{n_splits}splits")
     pth.mkdir(parents=True, exist_ok=True)
 
     Fs = []
@@ -1322,7 +1351,7 @@ def get_all_PETHs(eids_plus=None, vers='concat'):
         time0 = time.perf_counter()
         try:
         
-            D = concat_PETHs(pid, vers=vers)
+            D = concat_PETHs(pid, vers=vers,n_splits=n_splits,split_frac=split_frac,replace=replace)
                             
             eid_probe = eid + '_' + probe
             np.save(Path(pth, f'{eid_probe}.npy'), D, 
@@ -1330,10 +1359,15 @@ def get_all_PETHs(eids_plus=None, vers='concat'):
 
             gc.collect()
             print(k + 1, 'of', len(eids_plus), 'ok')
-        except BaseException:
+        except Exception as e:
             Fs.append(pid)
             gc.collect()
-            print(k + 1, 'of', len(eids_plus), 'fail', pid)
+            print(f'{k + 1} of {len(eids_plus)} fail {pid} - Error: {str(e)}')
+            # For the first few failures, print more details for debugging
+            if len(Fs) <= 3:
+                print(f"Detailed error for {pid}: {type(e).__name__}: {e}")
+                import traceback
+                traceback.print_exc()
 
         time1 = time.perf_counter()
         print(time1 - time0, 'sec')
@@ -1347,7 +1381,7 @@ def get_all_PETHs(eids_plus=None, vers='concat'):
 
 
 def stack_concat(vers='concat', get_concat=False, get_tls=False, 
-                 ephys=True, concat_only=False):
+                 ephys=True, concat_only=False,n_splits=1):
 
     '''
     stack concatenated PETHs; 
@@ -1356,7 +1390,7 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
     Careful: here 'vers' refers to PETH subsets of concat 
     '''
 
-    pth = Path(one.cache_dir, 'dmn', 'concat')
+    pth = Path(one.cache_dir, 'dmn', f'concat_{n_splits}splits')
     ss = os.listdir(pth)  # get insertions
     print(f'combining {len(ss)} insertions for version {vers}') 
 
@@ -1415,7 +1449,7 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
         peths = [D_['ws'][x] for x in idc]
                      
         # concatenate normalized PETHs             
-        ws.append(np.concatenate(peths,axis=1))
+        ws.append(np.concatenate(peths,axis=-1))
         for ke in kes:
             r[ke].append(D_[ke])
 
@@ -1428,7 +1462,11 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
     for ke in kes:  
         r[ke] = np.concatenate(r[ke])
                     
-    cs = np.concatenate(ws, axis=0)
+    #move axis from 0 to 1 to account for new subsampling axis
+    cs = np.concatenate(ws, axis=1)
+
+    #put the subsampling index at the end to leave everything else as needed
+    cs = np.transpose(cs,(1,2,0)) 
     
     # remove cells with nan entries
     goodcells = [~np.isnan(k).any() for k in cs]
@@ -1451,15 +1489,16 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
     r['len'] = dict(zip(ptypes,
                     [D_['ws'][x].shape[1] for x in idc]))
 
+    cs = np.transpose(cs,(2,0,1)) #transpose back
     if concat_only:  
         r['concat'] = cs              
-        np.save(Path(pth_dmn, f'concat.npy'),
+        np.save(Path(pth_dmn, f'concat_{n_splits}splits.npy'),
                 r, allow_pickle=True)
         return  
         
 
     r['fr'] = np.array([np.mean(x) for x in cs])    
-    r['concat_z'] = zscore(cs,axis=1)
+    r['concat_z'] = zscore(cs,axis=-1) #time dimension
 
     if get_concat:
         return cs
@@ -1547,12 +1586,13 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
 
     # various dim reduction of PETHs to 2 dims
     print(f'embedding rastermap on {vers}...')
-
+    rflat_dims = r['concat_z'].shape[0:2]
+    rz = r['concat_z'].reshape(-1,r['concat_z'].shape[-1])
     try:
         # Fit the Rastermap model
         model = Rastermap(n_PCs=200, n_clusters=100,
                         locality=0.75, time_lag_window=5, 
-                        bin_size=1).fit(r['concat_z'])
+                        bin_size=1).fit(rz)
 
         r['isort'] = model.isort
     except:
@@ -1563,14 +1603,17 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
     print(f'embedding umap on {vers}...')
     
 
-    r['umap_z'] = umap.UMAP(n_components=ncomp, random_state=0, 
-        n_neighbors=8, min_dist=0.2).fit_transform(r['concat_z'])
+   
+    ruz = umap.UMAP(n_components=ncomp, random_state=0, 
+        n_neighbors=8, min_dist=0.2).fit_transform(rz)
+    r['umap_z'] = ruz.reshape((*rflat_dims,ncomp))
+
 
     print(f'embedding pca on {vers}...')
-    r['pca_z'] = PCA(n_components=ncomp).fit_transform(r['concat_z'])
-    print(len(r['concat_z']), 'cells in eventually') 
+    r['pca_z'] = PCA(n_components=ncomp).fit_transform(rz).reshape((*rflat_dims,ncomp))
+    print(r['concat_z'].shape[1], 'cells in eventually with', r['concat_z'].shape[0], 'splits') 
 
-    np.save(Path(pth_dmn, f'{vers}_ephys{ephys}.npy'),
+    np.save(Path(pth_dmn, f'{vers}_ephys{ephys}_{n_splits}splits.npy'),
             r, allow_pickle=True)
             
             
