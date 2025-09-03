@@ -3,9 +3,8 @@
 
 This repository contains the main analysis code supporting the publication:
 
-> **Schartner M, Ashwood Z, Acerbi L, Harris KD, Carandini M, International Brain Laboratory**  
-> *Spatially Distributed and Regionally Unbound Cellular-Resolution Brain-Wide Processing Loops in Mice*  
-> [bioRxiv 2025.07.30.667641](https://www.biorxiv.org/content/10.1101/2025.07.30.667641v1)
+Schartner, Michael, et al. "Spatially distributed and regionally unbound cellular resolution brain-wide processing loops in mice." bioRxiv (2025): 2025-07.
+https://www.biorxiv.org/content/10.1101/2025.07.30.667641v1
 
 The script `dmn_bwm.py` implements data processing, dimensionality reduction, anatomical mapping, and specialization analyses for the IBL Brain-Wide Map dataset (data accessible here: https://docs.internationalbrainlab.org/notebooks_external/data_structure.html).  
 
