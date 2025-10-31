@@ -9,7 +9,7 @@ from iblatlas.plots import plot_swanson_vector
 from brainbox.io.one import SessionLoader
 import ephys_atlas.data
 #from reproducible_ephys_functions import figure_style, labs
-
+from sklearn.manifold import SpectralEmbedding
 import sys
 sys.path.append('Dropbox/scripts/IBL/')
 from granger import get_volume, get_centroids, get_res, get_structural, get_ari
@@ -81,6 +81,8 @@ import matplotlib.ticker as ticker
 from matplotlib import cm
 from matplotlib.colors import to_rgba
 from matplotlib.cm import ScalarMappable
+from typing import Optional, List, Tuple, Dict
+
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -353,17 +355,25 @@ def deep_in_block(trials, pleft, depth=10):
 
 
 
-def concat_PETHs(pid, get_tts=False, vers='concat'):
+def concat_PETHs(pid, get_tts=False, vers='concat', cv=True, 
+                 seed = 0, require_all=True):
 
-    '''
-    for each cell concat all possible PETHs
-    
-    vers: different PETH set
-        vers == 'contrast': extra analyiss for BWM reviewer;
-        check for zero contrast effects
-        have PETHs aligned to main events; irrespective of type
-    
-    '''
+    """
+    Build trial-averaged PETH bundles.
+
+    cv=False: return a single dict D (legacy behavior; no I/O).
+    cv=True : return two dicts (D0, D1) from disjoint random halves; no I/O.
+
+    Each returned dict has:
+      - ids, xyz, channels, axial_um, lateral_um, uuids
+      - trial_names : list[str]
+      - tls         : dict[str, int]   (trial counts for that set/half)
+      - ws          : list[np.ndarray] (one (n_neurons, n_timebins) per PETH)
+
+    require_all=True:
+      - If any PETH has zero TOTAL trials for this insertion, raise ValueError.
+      - (For cv=True, halves may be imbalanced; only total=0 triggers an error.)
+    """
     
     eid, probe = one.pid2eid(pid)
 
@@ -558,53 +568,117 @@ def concat_PETHs(pid, get_tts=False, vers='concat'):
             spikes['times']) == len(
             spikes['clusters']), 'spikes != clusters'
             
-    D = {}
-    D['ids'] = np.array(clusters['atlas_id'])
-    D['xyz'] = np.array(clusters[['x','y','z']])
-    D['channels'] = np.array(clusters['channels'])
-    D['axial_um'] = np.array(clusters['axial_um'])
-    D['lateral_um'] = np.array(clusters['lateral_um'])
-    D['uuids'] = np.array(clusters['uuids'])
+    meta = {
+        'ids': np.array(clusters['atlas_id']),
+        'xyz': np.array(clusters[['x', 'y', 'z']]),
+        'channels': np.array(clusters['channels']),
+        'axial_um': np.array(clusters['axial_um']),
+        'lateral_um': np.array(clusters['lateral_um']),
+        'uuids': np.array(clusters['uuids']),
+        'trial_names': list(tts.keys()),
+    }
 
-    tls = {}  # trial numbers for each type
-    ws = []  # list of binned data
-    
-    for tt in tts:
-
-        event = trials[tts[tt][0]][np.bitwise_and.reduce([mask, tts[tt][1]])]
-        tls[tt] = len(event)
-
-        # bin and cut into trials
-        # overlapping time bins, bin size = T_BIN, stride = sts
-        # tts[key][-1][pre-event time, post-event time]
-        bis = []
+    # helper to compute averaged PETH for a given set of event times
+    def _avg_peth(event_times: np.ndarray, pre: float, post: float) -> Optional[np.ndarray]:
+        if len(event_times) == 0:
+            return None
         st = int(T_BIN // sts)
-
+        bis: List[np.ndarray] = []
         for ts in range(st):
-
             bi, _ = bin_spikes2D(
                 spikes['times'],
                 clusters['cluster_id'][spikes['clusters']],
                 clusters['cluster_id'],
-                np.array(event) + ts * sts,
-                tts[tt][-1][0], tts[tt][-1][1],
-                T_BIN)
-            bis.append(bi)
-
-        ntr, nn, nbin = bi.shape
-        ar = np.zeros((ntr, nn, st * nbin))
-
+                np.asarray(event_times) + ts * sts,
+                pre, post, T_BIN
+            )
+            bis.append(bi)  # (ntr, n_neurons, nbin)
+        ntr, nn, nbin = bis[0].shape
+        if ntr == 0:
+            return None
+        ar = np.zeros((ntr, nn, st * nbin), dtype=bis[0].dtype)
         for ts in range(st):
             ar[:, :, ts::st] = bis[ts]
+        return np.mean(ar, axis=0)  # BUGFIX vs. np.mean(a, ...)
 
-        # average firing rates across trials
-        ws.append(np.mean(a, axis=0))        
+    # ---- cv == False: legacy single bundle ----
+    if not cv:
+        tls: Dict[str, int] = {}
+        ws: List[Optional[np.ndarray]] = []
+        for key in meta['trial_names']:
+            align_col, trial_mask, (pre, post) = tts[key]
+            event = trials[align_col][np.bitwise_and.reduce([mask, trial_mask])].to_numpy()
+            tls[key] = len(event)
+            if tls[key] == 0 and require_all:
+                raise ValueError(f"Missing PETH '{key}' for pid={pid} (0 trials).")
+            ws.append(_avg_peth(event, pre, post))
 
-    D['tls'] = tls
-    D['trial_names'] = list(tts.keys())
-    D['ws'] = ws  
-    return D
+        if require_all and any(w is None for w in ws):
+            # Shouldn't happen if tls>0 always, but guard anyway
+            missing = [meta['trial_names'][i] for i, w in enumerate(ws) if w is None]
+            raise ValueError(f"PETH(s) with empty averages for pid={pid}: {missing}")
 
+        # fill Nones with zeros only if allowed
+        if not require_all:
+            ref = next((w.shape for w in ws if w is not None), (0, 0))
+            ws = [w if w is not None else np.zeros(ref, dtype=float) for w in ws]
+
+        D = dict(meta)
+        D['tls'] = tls
+        D['ws'] = ws if not any(w is None for w in ws) else ws  # unchanged if require_all True
+        return D
+
+    # ---- cv == True: two halves, no I/O ----
+    rng = np.random.default_rng(seed) if seed is not None else np.random.default_rng()
+
+    # total-trial check per PETH
+    totals: Dict[str, int] = {}
+    for key in meta['trial_names']:
+        align_col, trial_mask, _ = tts[key]
+        events_all = trials[align_col][np.bitwise_and.reduce([mask, trial_mask])].to_numpy()
+        totals[key] = len(events_all)
+        if totals[key] == 0 and require_all:
+            raise ValueError(f"Missing PETH '{key}' for pid={pid} (0 total trials).")
+
+    tls0: Dict[str, int] = {}
+    tls1: Dict[str, int] = {}
+    ws0: List[Optional[np.ndarray]] = []
+    ws1: List[Optional[np.ndarray]] = []
+
+    for key in meta['trial_names']:
+        align_col, trial_mask, (pre, post) = tts[key]
+        events_all = trials[align_col][np.bitwise_and.reduce([mask, trial_mask])].to_numpy()
+        n = len(events_all)
+
+        if n == 0:
+            # already handled when require_all=True; otherwise keep None
+            tls0[key] = 0; tls1[key] = 0
+            ws0.append(None); ws1.append(None)
+            continue
+
+        idx = np.arange(n)
+        rng.shuffle(idx)
+        n0 = (n + 1) // 2  # ceil to half0, floor to half1
+        ev0 = events_all[idx[:n0]]
+        ev1 = events_all[idx[n0:]]
+
+        tls0[key] = len(ev0)
+        tls1[key] = len(ev1)
+
+        ws0.append(_avg_peth(ev0, pre, post))
+        ws1.append(_avg_peth(ev1, pre, post))
+
+    # If strict: we only required total>0. Halves may be empty for small n.
+    if not require_all:
+        # replace Nones with zeros to keep shapes stable
+        ref0 = next((w.shape for w in ws0 if w is not None), (0, 0))
+        ref1 = next((w.shape for w in ws1 if w is not None), ref0)
+        ws0 = [w if w is not None else np.zeros(ref0, dtype=float) for w in ws0]
+        ws1 = [w if w is not None else np.zeros(ref1, dtype=float) for w in ws1]
+
+    D0 = dict(meta); D0['tls'] = tls0; D0['ws'] = ws0
+    D1 = dict(meta); D1['tls'] = tls1; D1['ws'] = ws1
+    return D0, D1
 
 def load_atlas_data():
               
@@ -833,8 +907,12 @@ def regional_group(mapping, vers='concat', ephys=False,
         if ((pth__.is_file()) and (not rerun)):
             return np.load(pth__,allow_pickle=True).flat[0] 
 
-    r = np.load(Path(pth_dmn, f'{vers}_ephys{ephys}.npy'),
-                 allow_pickle=True).flat[0]
+    if vers == 'concatPCAclean':
+        r = np.load(Path(pth_dmn, f'concat_ephys{ephys}_PCAclean.npy'),
+                    allow_pickle=True).flat[0]
+    else:
+        r = np.load(Path(pth_dmn, f'{vers}_ephys{ephys}.npy'),
+                    allow_pickle=True).flat[0]
 
     # add point names to dict
     r['nums'] = range(len(r['xyz'][:,0]))
@@ -932,53 +1010,6 @@ def regional_group(mapping, vers='concat', ephys=False,
         cmap = mpl.cm.get_cmap('Spectral')
         cols = cmap(clusters/nclus)
         acs = clusters   
-
-    # elif mapping in PETH_types_dict:
-    #     # For a group of PETH types defined in PETH_types_dict,
-    #     # concatenate the defined PETH segments and rank cells by mean score
-    #     feat = 'concat_z'  # was _bd
-    #     assert vers == 'concat', 'vers needs to be concat for this'
-    #     assert feat == 'concat_z'
-
-    #     # Retrieve the list of PETH types to concatenate from PETH_types_dict
-    #     peth_types_to_concat = PETH_types_dict[mapping]
-
-    #     # Initialize a list to store the concatenated segments
-    #     concatenated_data = []
-
-    #     # Iterate through each PETH type in the list and concatenate the data
-    #     for peth_type in peth_types_to_concat:
-    #         # Extract relevant information from the data
-    #         # Get the start and end indices of the PETH segment
-    #         segment_names = list(r['len'].keys())
-    #         segment_lengths = list(r['len'].values())
-    #         start_idx = sum(segment_lengths[:segment_names.index(peth_type)])
-    #         end_idx = start_idx + r['len'][peth_type]
-
-    #         # Extract the segment of interest and append to concatenated_data
-    #         segment_data = r[feat][:, start_idx:end_idx]
-    #         concatenated_data.append(segment_data)
-
-    #     # Concatenate all the segments along the column axis
-    #     concatenated_data = np.concatenate(concatenated_data, axis=1)
-
-    #     # Compute the mean (max) for each neuron across the concatenated segment
-    #     means = np.mean(abs(concatenated_data), axis=1)
-
-    #     # Rank neurons based on their mean values
-    #     df = pd.DataFrame({'means': means})
-    #     df['rankings'] = df['means'].rank(method='min', ascending=False).astype(int)
-    #     r['rankings'] = df['rankings'].values
-
-    #     # Map neuron IDs to brain region acronyms (if needed)
-    #     acs = np.array(br.id2acronym(r['ids'], mapping='Beryl'))
-
-    #     # Apply a color map based on the rankings
-    #     cmap = mpl.cm.get_cmap('Spectral')
-    #     cols = cmap(r['rankings'] / max(r['rankings']))
-
-    #     # Count the occurrence of each brain region acronym
-    #     regs = Counter(acs)
 
     elif mapping in tts__:
         # for a specific PETH type, 
@@ -1296,58 +1327,63 @@ def decode_bulk():
 '''
 
 
-def get_all_PETHs(eids_plus=None, vers='concat'):
+def get_all_PETHs(eids_plus=None, vers: str = 'concat',
+                  cv: bool = False, require_all: bool = True, seed: Optional[int] = 0):
+    """
+    For all BWM insertions, compute PETH bundles and save per insertion.
 
-    '''
-    for all BWM insertions, get the PSTHs and acronyms,
-    i.e. run get_PETHs
-    '''
-    
+    - eids_plus: array-like of (eid, probe_name, pid). If None, uses bwm_query(one).
+    - vers: 'concat' or 'contrast'
+    - cv=False: save one file per insertion: <eid>_<probe>.npy
+    - cv=True : save two files per insertion:
+                <eid>_<probe>_half0.npy and <eid>_<probe>_half1.npy
+
+    Skips insertions that violate 'require_all' (e.g., PETHs with zero total trials).
+    """
     time00 = time.perf_counter()
 
     if eids_plus is None:
         df = bwm_query(one)
         eids_plus = df[['eid', 'probe_name', 'pid']].values
 
-    # save results per insertion (eid_probe) in FlatIron folder
     pth = Path(one.cache_dir, 'dmn', vers)
     pth.mkdir(parents=True, exist_ok=True)
 
     Fs = []
-    k = 0
-    print(f'Processing {len(eids_plus)} insertions')
-    for i in eids_plus:
-        eid, probe, pid = i
-
-        time0 = time.perf_counter()
+    print(f'Processing {len(eids_plus)} insertions (cv={cv}, require_all={require_all})')
+    for k, (eid, probe, pid) in enumerate(eids_plus, start=1):
+        t0 = time.perf_counter()
         try:
-        
-            D = concat_PETHs(pid, vers=vers)
-                            
-            eid_probe = eid + '_' + probe
-            np.save(Path(pth, f'{eid_probe}.npy'), D, 
-                    allow_pickle=True)
+            if not cv:
+                D = concat_PETHs(pid, vers=vers, cv=False, require_all=require_all)
+                eid_probe = f'{eid}_{probe}'
+                np.save(Path(pth, f'{eid_probe}.npy'), D, allow_pickle=True)
+            else:
+                D0, D1 = concat_PETHs(pid, vers=vers, cv=True, seed=seed, require_all=require_all)
+                eid_probe = f'{eid}_{probe}'
+                np.save(Path(pth, f'{eid_probe}_half0.npy'), D0, allow_pickle=True)
+                np.save(Path(pth, f'{eid_probe}_half1.npy'), D1, allow_pickle=True)
 
             gc.collect()
-            print(k + 1, 'of', len(eids_plus), 'ok')
-        except BaseException:
-            Fs.append(pid)
+            print(k, 'of', len(eids_plus), 'ok')
+        except BaseException as e:
+            Fs.append((pid, str(e)))
             gc.collect()
-            print(k + 1, 'of', len(eids_plus), 'fail', pid)
+            print(k, 'of', len(eids_plus), 'fail', pid, '|', type(e).__name__, '-', e)
 
-        time1 = time.perf_counter()
-        print(time1 - time0, 'sec')
+        t1 = time.perf_counter()
+        print(f'{t1 - t0:.2f} sec')
 
-        k += 1
-
-    time11 = time.perf_counter()
-    print((time11 - time00) / 60, f'min for the complete bwm set')
-    print(f'{len(Fs)}, load failures:')
-    print(Fs)
+    t11 = time.perf_counter()
+    print(f'{(t11 - time00) / 60:.2f} min for the complete BWM set')
+    print(f'{len(Fs)} load failures:')
+    if len(Fs):
+        for f in Fs:
+            print('  ', f)
 
 
 def stack_concat(vers='concat', get_concat=False, get_tls=False, 
-                 ephys=True, concat_only=False):
+                 ephys=True, concat_only=False, PCAclean=False):
 
     '''
     stack concatenated PETHs; 
@@ -1461,6 +1497,22 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
     r['fr'] = np.array([np.mean(x) for x in cs])    
     r['concat_z'] = zscore(cs,axis=1)
 
+
+     # Optional PCA denoising across time for Rastermap (neurons x time)
+    
+    if PCAclean:
+        X_for_rastermap = r['concat_z']
+        print('PCA denoising concat_z along time (50 comps)...')
+        n_comp = min(50, X_for_rastermap.shape[1])
+
+        pca_time = PCA(n_components=n_comp, svd_solver='randomized', random_state=0)
+        # Fit on neurons x time, reduce time-dim, then reconstruct
+        TT = pca_time.fit_transform(X_for_rastermap)          # [neurons x n_comp]
+        X_recon = pca_time.inverse_transform(TT)              # [neurons x time]
+        r['concat_z'] = X_recon                              # keep for plotting later
+        r['pca_time_evratio'] = pca_time.explained_variance_ratio_
+          
+
     if get_concat:
         return cs
 
@@ -1529,6 +1581,8 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
             if len(r[key]) == l0:
                 r[key] = r[key][goodcells]
 
+        print(f"{r['concat_z'].shape[0]} good cells stacked after ephys")
+
         print('z-scoring ephys features')
         r['ephysTF'] = zscore(np.stack(r['ephysTF'], axis=0),axis=1)
         print('umap of ephys ...')
@@ -1555,6 +1609,11 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
                         bin_size=1).fit(r['concat_z'])
 
         r['isort'] = model.isort
+
+        # embedding = SpectralEmbedding(n_components=1,       
+        #     affinity='nearest_neighbors').fit_transform(r['concat_z'])
+        # r['isort_se'] = np.argsort(embedding[:,0])
+
     except:
         print('Rastermap failed')
         
@@ -1566,12 +1625,9 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
     r['umap_z'] = umap.UMAP(n_components=ncomp, random_state=0, 
         n_neighbors=8, min_dist=0.2).fit_transform(r['concat_z'])
 
-    print(f'embedding pca on {vers}...')
-    r['pca_z'] = PCA(n_components=ncomp).fit_transform(r['concat_z'])
-    print(len(r['concat_z']), 'cells in eventually') 
-
-    np.save(Path(pth_dmn, f'{vers}_ephys{ephys}.npy'),
-            r, allow_pickle=True)
+    s = Path(pth_dmn, f'{vers}_ephys{ephys}_PCAclean.npy' if PCAclean 
+                     else f'{vers}_ephys{ephys}.npy')
+    np.save(s, r, allow_pickle=True)
             
             
 def stack_simple(nmin=10):
@@ -3545,7 +3601,122 @@ def plot_single_feature(algo='umap_z', vers='concat', mapping='Beryl',
     ax.set_xlabel('time [sec]')    
     fig.tight_layout()    
      
-    
+
+def _draw_peth_boundaries(ax, r, vers, yy_max, c_sec, PETH_types_dict, peth_dict):
+    """Add vertical window boundaries and labels, matching plot_single_feature."""
+    d2 = {sec: r['len'][sec] for sec in PETH_types_dict[vers]}
+    h = 0
+    for sec in d2:
+        xv = d2[sec] + h
+        ax.axvline(xv / c_sec, linestyle='--', linewidth=1, color='grey')
+        ax.text(xv / c_sec - d2[sec] / (2 * c_sec), yy_max,
+                '   ' + peth_dict[sec], rotation=90, color='k',
+                fontsize=10, ha='center', va='bottom')
+        h += d2[sec]
+
+
+def plot_features_by_acs(n: int,
+                         algo: str = 'umap_z',
+                         vers: str = 'concat',
+                         mapping: str = 'kmeans',
+                         seed: Optional[int] = None,
+                         max_categories: int = 20,
+                         offset_scale: float = 4.0,
+                         linewidth: float = 1.3,
+                         savefig: bool = True,
+                         save_formats: tuple = ('png',),
+                         dpi: int = 200,
+                         show: bool = True,
+                         annotate: bool = True,
+                         label_key: str = 'Beryl',
+                         label_fontsize: int = 8,
+                         label_pad_frac: float = 0.01):
+    """
+    Adds per-neuron labels (default: r['Beryl'][i]) at the start of each plotted line.
+    """
+    if seed is not None:
+        random.seed(seed); np.random.seed(seed)
+
+    feat = 'concat_z' if algo.endswith('z') else 'concat'
+    r = regional_group(mapping, vers=vers)
+    if feat not in r:
+        raise KeyError(f"Feature '{feat}' not in r. Available: {list(r.keys())}")
+
+    acs_vals = np.asarray(r['acs'])
+    cats = np.unique(acs_vals)
+    if cats.size >= max_categories:
+        print(f"[info] Found {cats.size} 'acs' categories (>= {max_categories}). Skipping.")
+        return
+
+    # saving
+    if savefig:
+        save_dir = Path(one.cache_dir, 'dmn', 'figs'); save_dir.mkdir(parents=True, exist_ok=True)
+        print(f"[info] Figures will be saved to {save_dir}")
+
+    xx = np.arange(r[feat].shape[1]) / c_sec  # seconds
+    x_span = xx[-1] - xx[0]
+    x0_annot = xx[0] + label_pad_frac * x_span  # small pad from left
+
+    for cat in cats:
+        idx_all = np.where(acs_vals == cat)[0]
+        if idx_all.size == 0: 
+            continue
+        k = min(n, idx_all.size)
+        samp = np.random.choice(idx_all, size=k, replace=False) if idx_all.size >= k \
+               else np.array(random.choices(idx_all, k=k))
+
+        fig, ax = plt.subplots(figsize=(7.6, 10), constrained_layout=True)
+        try:
+            # vertical spacing
+            stds = [np.nanstd(r[feat][i]) for i in samp]
+            base_off = 2.0 * (np.nanmedian(stds) if len(stds) else 1.0)
+            off = base_off * offset_scale
+
+            y_max_seen = -np.inf
+            for j, i in enumerate(samp):
+                yi = r[feat][i]
+                yy = yi + j * off
+                color = r['cols'][i] if 'cols' in r else None
+                ax.plot(xx, yy, linewidth=linewidth, color=color, alpha=0.9)
+                y_max_seen = max(y_max_seen, np.nanmax(yy))
+
+                # --- Beryl label placed just left of the line ---
+                if annotate and (label_key in r):
+                    x_offset = xx[0] - 0.02 * (xx[-1] - xx[0])  # 2% left of data
+                    prefix = max(1, int(0.02 * yi.size))
+                    y0 = np.nanmedian(yi[:prefix]) + j * off
+                    lbl = str(r[label_key][i])
+                    ax.text(x_offset, y0, lbl,
+                            fontsize=label_fontsize,
+                            va='center', ha='right',
+                            color=color if color is not None else 'black',
+                            alpha=0.95,
+                            clip_on=False)
+
+            _draw_peth_boundaries(ax, r, vers, y_max_seen, c_sec, PETH_types_dict, peth_dict)
+
+            fig.suptitle(f"{mapping} = {cat}   (n={k} of {idx_all.size} neurons)",
+                         y=1.02, fontsize=12, weight='bold')
+            ax.set_xlabel("time [s]")
+            ax.set_ylabel("z-scored firing rate (stacked)")
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.spines['left'].set_visible(False)            
+
+
+            # leave room for y-label + suptitle
+            fig.subplots_adjust(left=0.12, top=0.90)
+
+            if savefig:
+                for fmt in save_formats:
+                    fn = save_dir / f"{mapping}_{cat}_n{n}.{fmt}"
+                    fig.savefig(fn, dpi=dpi, bbox_inches='tight')
+                print(f"  saved: {mapping}_{cat}_n{n}.{save_formats[0]}")
+
+            if show:
+                plt.show(block=False)
+        finally:
+            gc.collect() 
     
 def var_expl(minreg=20):
 
@@ -3967,7 +4138,7 @@ def compare_two_goups(vers='concat', filt = 'VISp'):
 def plot_rastermap(vers='concat', feat='concat_z', regex='ECT', 
                    exa = False, mapping='kmeans', bg=True, img_only=False,
                    interp='antialiased', single_reg=False, cv=False,
-                   bg_bright = 0.4, vmax=2):
+                   bg_bright = 0.99, vmax=2, rerun=False, sort_method='rastermap'):
     """
     Function to plot a rastermap with vertical segment boundaries 
     and labels positioned above the segments.
@@ -3978,9 +4149,14 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
 
     Most numerous regions for each Cosmos are:
     ['CP', 'MRN', 'PO', 'CA1', 'MOp', 'CUL4 5', 'IRN', 'PIR', 'ZI', 'BMA']
-
+    ...
+    sort_method : str, default 'rastermap'
+        Sorting method for rows. One of:
+        - 'rastermap' (default): use r['isort']
+        - 'umap': sort by first UMAP dimension
+        - 'pca': sort by first PCA dimension
     """
-    r = regional_group(mapping, vers=vers, ephys=False)
+    r = regional_group(mapping, vers=vers, ephys=False, rerun=rerun)
 
     if exa:
         plot_cluster_mean_PETHs(r,mapping, feat)
@@ -4016,8 +4192,20 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
         gc.collect()
 
     else:
+
         spks = r[feat]
-        isort = r['isort' if feat != 'ephysTF' else 'isort_e'] 
+        # --- choose sorting algorithm ---
+        if sort_method == 'rastermap':
+            isort = r['isort' if feat != 'ephysTF' else 'isort_e']
+        elif sort_method == 'umap':
+            assert 'umap_z' in r, "r['umap_z'] not found in results."
+            isort = np.argsort(r['umap_z'][:, 0])
+        elif sort_method == 'pca':
+            assert 'pca_z' in r, "r['pca_z'] not found in results."
+            isort = np.argsort(r['pca_z'][:, 0])
+        else:
+            raise ValueError(f"Unknown sort_method: {sort_method}")
+
         data = spks[isort]
         row_colors = np.array(r['cols'])[isort]
 
@@ -4074,10 +4262,14 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
         gc.collect()
 
     else:
-        # No background: show grayscale as transparent overlay
+        # No background: show signal as brightness (white = strong activity)
         rgba_overlay = np.zeros((*gray_scaled.shape, 4), dtype=np.float32)
-        rgba_overlay[..., :3] = 1
-        rgba_overlay[..., 3] = gray_scaled * data_opacity
+        inv_gray = 1.0 - gray_scaled  # invert: high activity = bright
+
+        # replicate across RGB channels
+        rgba_overlay[..., :3] = inv_gray[..., np.newaxis]
+        rgba_overlay[..., 3] = 1.0  # fully opaque
+
         ax.imshow(rgba_overlay, aspect="auto", interpolation=interp, zorder=2)
 
         del rgba_overlay
@@ -4128,7 +4320,11 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
 
     plt.tight_layout()  # Adjust the layout to prevent clipping
     # plt.show()
-    fig.savefig(f'{pth_dmn.parent}/imgs/rastermap_{mapping}_cv{cv}_sr{single_reg}_bg_bright{bg_bright}.png', dpi=150, bbox_inches='tight', facecolor='white')
+    fig.savefig(f'{pth_dmn.parent}/imgs/rastermap_{mapping}_cv{cv}_{regex}_bg_bright{bg_bright}.png', dpi=150, bbox_inches='tight', facecolor='white')
+
+    for v in ("sig","img_array","isort","r"):
+        if v in locals(): 
+            del locals()[v]
 
 
 
