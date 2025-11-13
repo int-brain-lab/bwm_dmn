@@ -225,6 +225,7 @@ PETH_types_dict = {
     'Feedback correct': ['fback1'],
     'Feedback incorrect': ['fback0']
 }
+
     
 
 # https://www.nature.com/articles/s41586-019-1716-z/figures/6
@@ -985,7 +986,7 @@ def print_full_structure_tree(filename='structure_tree.pdf'):
 
 
 def regional_group(mapping, vers='concat', ephys=False,
-                   nclus=13, rerun=False, cv=True, combine_mistake=True):
+                   nclus=8, rerun=False, cv=True, combine_mistake=True):
     """
     Group / color neurons for visualization and downstream analyses.
 
@@ -1042,9 +1043,8 @@ def regional_group(mapping, vers='concat', ephys=False,
     r['nums'] = np.arange(r['xyz'].shape[0], dtype=int)
 
     # Sanity: columns must match sum of segment lengths
-    feat_key = 'concat_z' if 'concat_z' in r else ('concat' if 'concat' in r else None)
-    if feat_key is None:
-        raise KeyError("Saved stack lacks 'concat'/'concat_z'.")
+    feat_key = 'concat_z'
+
     n_cols = r[feat_key].shape[1]
     sum_len = int(np.sum(list(r['len'].values())))
     if sum_len != n_cols:
@@ -1064,31 +1064,98 @@ def regional_group(mapping, vers='concat', ephys=False,
 
     # ---------- Grouping / coloring ----------
     if mapping == 'kmeans':
-        feat = 'concat_z' if 'concat_z' in r else 'concat'
+        feat = 'concat_z'
         pth_cache = _kmeans_cache_path()
-        labels_loaded = None
-        if (not rerun) and pth_cache.is_file():
-            try:
-                cached = np.load(pth_cache, allow_pickle=True).flat[0]
-                if (isinstance(cached, dict)
-                    and cached.get('order_sig') == r['_order_signature']
-                    and 'kmeans_labels' in cached
-                    and len(cached['kmeans_labels']) == r[feat].shape[0]):
-                    labels_loaded = cached['kmeans_labels']
-                    print(f"[kmeans] using cached labels ({pth_cache.name})")
-            except Exception as e:
-                print(f"[kmeans] cache read error; recomputing: {e}")
+        clusters = None # Initialize clusters to None
+        
+        # --- 1. Cross-Validated (CV) K-means Logic ---
+        # This is the new desired behavior when CV data is available
+        is_cv_mode = (cv and 'concat_z_train' in r and r['concat_z_train'].shape[0] == r[feat].shape[0])
 
-        if labels_loaded is None:
-            print(f"[kmeans] computing labels (n={nclus}) on {feat}")
-            kmeans = KMeans(n_clusters=nclus, random_state=0)
-            kmeans.fit(r[feat])
-            clusters = kmeans.labels_
-            np.save(pth_cache, {'kmeans_labels': clusters,
-                                'order_sig': r['_order_signature']},
-                    allow_pickle=True)
-        else:
-            clusters = labels_loaded
+        if is_cv_mode:
+            feat_train = 'concat_z_train'
+            
+            # Attempt to load CV results from cache
+            cv_cached = None
+            if (not rerun) and pth_cache.is_file():
+                try:
+                    cached = np.load(pth_cache, allow_pickle=True).flat[0]
+                    # Check cache signature and existence of both labels and same_cluster
+                    if (isinstance(cached, dict)
+                        and cached.get('order_sig') == r['_order_signature']
+                        and 'kmeans_labels' in cached # Test-side clusters
+                        and 'same_cluster' in cached  # Binary array
+                        and len(cached['kmeans_labels']) == r[feat].shape[0]):
+                        cv_cached = cached
+                        clusters = cached['kmeans_labels']
+                        r['same_cluster'] = cached['same_cluster']
+                        print(f"[kmeans CV] using cached labels and same_cluster ({pth_cache.name})")
+                except Exception as e:
+                    print(f"[kmeans CV] cache read error; recomputing: {e}")
+            
+            # Compute CV results if not loaded
+            if clusters is None:
+                print(f"[kmeans CV] computing labels (n={nclus}) on {feat_train} (H0) and {feat} (H1)")
+                kmeans = KMeans(n_clusters=nclus, random_state=0)
+                
+                # 1. Fit on Half 0 (Train)
+                kmeans.fit(r[feat_train])
+                clusters_train = kmeans.labels_
+                
+                del r[feat_train]  # Free memory
+
+                # 2. Predict on Half 1 (Test) using H0 model
+                clusters_test = kmeans.predict(r[feat])
+                
+                # 3. Compute the binary match array
+                same_cluster = (clusters_train == clusters_test).astype(np.int8)
+                
+                # Final clusters are the Test side clusters
+                clusters = clusters_test
+                r['same_cluster'] = same_cluster
+                
+                # Save CV results (Test labels and binary match)
+                np.save(pth_cache, {'kmeans_labels': clusters,
+                                    'same_cluster': same_cluster,
+                                    'order_sig': r['_order_signature']},
+                                    allow_pickle=True)
+                
+        # --- 2. Standard (Non-CV) K-means Logic ---
+        # Used if not in CV mode, or if CV computation failed/was not run.
+        if not is_cv_mode or clusters is None:
+            
+            # Attempt to load standard results from cache
+            labels_loaded = None
+            if (not rerun) and pth_cache.is_file():
+                try:
+                    cached = np.load(pth_cache, allow_pickle=True).flat[0]
+                    # Check cache signature and existence of labels (ignoring same_cluster)
+                    if (isinstance(cached, dict)
+                        and cached.get('order_sig') == r['_order_signature']
+                        and 'kmeans_labels' in cached
+                        and len(cached['kmeans_labels']) == r[feat].shape[0]):
+                        labels_loaded = cached['kmeans_labels']
+                        print(f"[kmeans] using cached labels ({pth_cache.name})")
+                except Exception as e:
+                    print(f"[kmeans] cache read error; recomputing: {e}")
+
+            # Compute standard results if not loaded
+            if labels_loaded is None:
+                print(f"[kmeans] computing labels (n={nclus}) on {feat}")
+                kmeans = KMeans(n_clusters=nclus, random_state=0)
+                kmeans.fit(r[feat]) # Fit on standard feature (Test half for CV, or Non-CV data)
+                clusters = kmeans.labels_
+                # Save standard results
+                np.save(pth_cache, {'kmeans_labels': clusters,
+                                    'order_sig': r['_order_signature']},
+                                    allow_pickle=True)
+            else:
+                clusters = labels_loaded
+        
+        # --- 3. Continuation (Common to both) ---
+        # 'clusters' is now guaranteed to be set, either from CV, Standard fit, or cache.
+        if clusters is None:
+             raise RuntimeError("K-means clustering failed to compute or load.")
 
         cmap = mpl.cm.get_cmap('Spectral')
         cols = cmap(clusters / nclus)
@@ -1654,6 +1721,10 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
       - bwm_query(one)  # to map (eid, probe) -> pid
       - float_array_to_rgba, Rastermap, umap, zscore, etc. (if you use embeddings)
     """
+
+
+    start_time = time.time()
+
     # ---- paths ----
     pth = Path(one.cache_dir, 'dmn', vers)
     pth.mkdir(parents=True, exist_ok=True)
@@ -1857,6 +1928,10 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
         out = pth_res / f'{vers}_cvFalse_ephys{ephys}.npy'
         np.save(out, r, allow_pickle=True)
         print(f'saved combined data to {out}')
+
+        end_time = time.time()
+        duration = end_time - start_time
+        print(f"Function 'my_function' executed in: {duration:.4f} seconds")
         return
 
     # ---------------------- CV path ----------------------
@@ -1966,6 +2041,7 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
     print(f"[CV] MERGED sizes: TRAIN={X_train.shape[0]} neurons, TEST={X_test.shape[0]} neurons")
 
     Z_train = zscore(X_train, axis=1) if X_train.size else X_train
+    r['concat_z_train'] = Z_train
     r['concat_z'] = zscore(X_test,  axis=1) if X_test.size  else X_test
     r['fr'] = np.array([np.mean(x) for x in X_test], dtype=np.float32) if X_test.size else np.array([], dtype=np.float32)
 
@@ -1989,6 +2065,9 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
     np.save(out, r, allow_pickle=True)
     print(f'saved combined data to {out}')
 
+    end_time = time.time()
+    duration = end_time - start_time
+    print(f"Function 'my_function' executed in: {duration:.4f} seconds")
 
 
 
@@ -2162,7 +2241,7 @@ def plot_dim_reduction(algo='umap_z', mapping='kmeans', ephys=False,
 
 
 def plot_cluster_mean_PETHs(r, mapping, feat, vers='concat',
-                            axx=None, alone=True, combine_mistake=False):
+                            axx=None, alone=True, combine_mistake=False, cvk=True): # MODIFIED
     """
     Plot mean PETH per cluster using the segment order/labels from the data file.
     """
@@ -2175,6 +2254,9 @@ def plot_cluster_mean_PETHs(r, mapping, feat, vers='concat',
         raise KeyError("r['len'] (segment lengths) missing or empty.")
     if 'peth_dict' not in r:
         r['peth_dict'] = {k: k for k in r['len'].keys()}
+
+    # Check for CV-KMeans requirement and availability
+    cvk_filter = (cvk and 'same_cluster' in r and np.any(r['same_cluster'])) # NEW
 
     clu_vals = np.array(sorted(np.unique(r['acs'])))
     n_clu = len(clu_vals)
@@ -2198,7 +2280,18 @@ def plot_cluster_mean_PETHs(r, mapping, feat, vers='concat',
         print(f"[warn] sum(r['len'])={sum(seg_lengths)} != n_bins={n_bins}")
 
     for k, clu in enumerate(clu_vals):
-        idx = np.where(r['acs'] == clu)[0]
+        # Determine the base indices for the current cluster
+        base_idx = np.where(r['acs'] == clu)[0] # Keep base_idx separate for clearer logic
+        
+        # Apply the CV-KMeans filter if cvk=True and data is present
+        if cvk_filter:
+            # Only include indices where 'acs' matches AND 'same_cluster' is True (1)
+            idx = np.where(np.bitwise_and(r['acs'] == clu, r['same_cluster']))[0] 
+            print(f"Cluster {clu}: using {len(idx)} neurons after CV-KMeans filter (from {len(base_idx)} total).")
+        else:
+            # Use the base indices if no filter is applied
+            idx = base_idx # MODIFIED (uses the original base_idx for clarity)
+
         if idx.size == 0:
             axx[k].axis('off')
             continue
@@ -3613,7 +3706,7 @@ def plot_dist_clusters(anno=True, axs=None):
 
 
 def plot_single_feature(algo='umap_z', vers='concat', mapping='Beryl',
-                        reg='MOp', combine_mistake=False, ephys=False, nclus=13, cv=False):
+                        reg='MOp', combine_mistake=True, ephys=False, nclus=8, cv=True):
     """
     For a single cell, plot its feature vector with PETH labels.
     Segment order and labels are taken from r['len'] and r['peth_dict'].
@@ -3660,15 +3753,17 @@ def plot_single_feature(algo='umap_z', vers='concat', mapping='Beryl',
 
      
 
-def _draw_peth_boundaries(ax, r, vers, yy_max, c_sec, PETH_types_dict, peth_dict):
+def _draw_peth_boundaries(ax, r, vers, yy_max, c_sec):
     """Add vertical window boundaries and labels, matching plot_single_feature."""
-    d2 = {sec: r['len'][sec] for sec in PETH_types_dict[vers]}
+   
+
+    d2 = {sec: r['len'][sec] for sec in r['ttypes']}
     h = 0
     for sec in d2:
         xv = d2[sec] + h
         ax.axvline(xv / c_sec, linestyle='--', linewidth=1, color='grey')
         ax.text(xv / c_sec - d2[sec] / (2 * c_sec), yy_max,
-                '   ' + peth_dict[sec], rotation=90, color='k',
+                '   ' + r['peth_dict'][sec], rotation=90, color='k',
                 fontsize=10, ha='center', va='bottom')
         h += d2[sec]
 
@@ -3751,10 +3846,9 @@ def plot_features_by_acs(n: int,
                             alpha=0.95,
                             clip_on=False)
 
-            _draw_peth_boundaries(ax, r, vers, y_max_seen, c_sec, PETH_types_dict, peth_dict)
+            _draw_peth_boundaries(ax, r, vers, y_max_seen, c_sec)
 
-            fig.suptitle(f"{mapping} = {cat}   (n={k} of {idx_all.size} neurons)",
-                         y=1.02, fontsize=12, weight='bold')
+            fig.suptitle(f"{mapping} = {cat}   (n={k} of {idx_all.size} neurons)", fontsize=12, weight='bold')
             ax.set_xlabel("time [s]")
             ax.set_ylabel("z-scored firing rate (stacked)")
             ax.spines['top'].set_visible(False)
