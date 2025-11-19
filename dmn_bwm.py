@@ -170,46 +170,54 @@ sigl = 0.05  # significance level (for stacking, plotting, fdr)
 
 
 # order sensitive: must be tts__ = concat_PETHs(pid, get_tts=True).keys()
-tts__ = ['inter_trial', 'blockL', 'blockR', 'block50', 
-         'quiescence', 'stimLbLcL', 'stimLbRcL', 'stimLbRcR', 
-         'stimLbLcR', 'stimRbLcL', 'stimRbRcL', 'stimRbRcR', 
-         'stimRbLcR', 'motor_init', 'sLbLchoiceL', 'sLbRchoiceL', 
-         'sLbRchoiceR', 'sLbLchoiceR', 'sRbLchoiceL', 'sRbRchoiceL', 
-         'sRbRchoiceR', 'sRbLchoiceR', 'choiceL', 'choiceR',  
-         'fback1', 'fback0']
+tts__ = [
+        'inter_trial', 
+        'blockL', 
+        'blockR', 
+        'quiescence', 
+        'block_change_s', 
+        'stimLbLcL', 
+        'stimLbRcL', 
+        'stimRbRcR', 
+        'stimRbLcR', 
+        'mistake_s', 
+        'motor_init', 
+        'block_change_m', 
+        'sLbLchoiceL', 
+        'sLbRchoiceL', 
+        'sRbRchoiceR', 
+        'sRbLchoiceR', 
+        'mistake_m', 
+        'choiceL', 
+        'choiceR', 
+        'fback1', 
+        'fback0']
      
 peth_ila = [
     r"$\mathrm{rest}$",
     r"$\mathrm{L_b}$",
     r"$\mathrm{R_b}$",
-    r"$\mathrm{50_b}$",
     r"$\mathrm{quies}$",
+    r"$\mathrm{change_b, s}$",
     r"$\mathrm{L_sL_cL_b, s}$",
     r"$\mathrm{L_sL_cR_b, s}$",
-    r"$\mathrm{L_sR_cR_b, s}$",
-    r"$\mathrm{L_sR_cL_b, s}$",
-    r"$\mathrm{R_sL_cL_b, s}$",
-    r"$\mathrm{R_sL_cR_b, s}$",
     r"$\mathrm{R_sR_cR_b, s}$",
     r"$\mathrm{R_sR_cL_b, s}$",
+    r"$\mathrm{mistake, s}$",
     r"$\mathrm{m}$",
+    r"$\mathrm{change_b, m}$",
     r"$\mathrm{L_sL_cL_b, m}$",
     r"$\mathrm{L_sL_cR_b, m}$",
-    r"$\mathrm{L_sR_cR_b, m}$",
-    r"$\mathrm{L_sR_cL_b, m}$",
-    r"$\mathrm{R_sL_cL_b, m}$",
-    r"$\mathrm{R_sL_cR_b, m}$",
     r"$\mathrm{R_sR_cR_b, m}$",
     r"$\mathrm{R_sR_cL_b, m}$",
+    r"$\mathrm{mistake, m}$",
     r"$\mathrm{L_{move}}$",
     r"$\mathrm{R_{move}}$",
     r"$\mathrm{feedbk1}$",
     r"$\mathrm{feedbk0}$"
 ]
 
-
 peth_dict = dict(zip(tts__, peth_ila))
-
 
 PETH_types_dict = {
     'concat': [item for item in tts__],
@@ -226,7 +234,6 @@ PETH_types_dict = {
     'Feedback incorrect': ['fback0']
 }
 
-    
 
 # https://www.nature.com/articles/s41586-019-1716-z/figures/6
 harris_hierarchy = [
@@ -242,76 +249,6 @@ harris_hierarchy = [
     "ACAd", "ORBl", "PIL", "PF", "RE", "VM",
     "POL"
 ]
-
-# --- mistake grouping spec ---
-_MISTAKE_S = ['stimLbRcR', 'stimLbLcR', 'stimRbLcL', 'stimRbRcL']
-_MISTAKE_M = ['sLbRchoiceR', 'sLbLchoiceR', 'sRbLchoiceL', 'sRbRchoiceL']
-
-_ANCHOR_S = 'stimRbLcR'     # after this stim-level segment
-_ANCHOR_M = 'sRbLchoiceR'   # before movement, at the 's' (movement-aligned) level
-
-
-def _combine_spec(ttypes_orig, combine_mistake: bool):
-    """
-    Returns:
-      - ttypes_eff: list of segment names in final concatenation order
-      - groups: {'mistake_s': [...], 'mistake_m': [...]}
-
-    Anchoring rules:
-      - 'mistake_s' inserted immediately AFTER _ANCHOR_S; fallback after last 'stim*'; else at start.
-      - 'mistake_m' inserted immediately AFTER _ANCHOR_M; fallback:
-            after last movement-aligned segment (those ending with ', m'),
-            else before first 'choice*',
-            else at end.
-    """
-    if not combine_mistake:
-        return list(ttypes_orig), {}
-
-    # 1) base order without mistake constituents or pre-existing composites
-    base = [n for n in ttypes_orig
-            if n not in _MISTAKE_S and n not in _MISTAKE_M and n not in ('mistake_s', 'mistake_m')]
-
-    out = list(base)
-
-    # --- helpers ---
-    def idx_after(name, seq):
-        try:
-            return seq.index(name) + 1
-        except ValueError:
-            return None
-
-    def idx_after_last_prefix(prefix, seq):
-        idxs = [i for i, n in enumerate(seq) if n.startswith(prefix)]
-        return (max(idxs) + 1) if idxs else None
-
-    def idx_before_first_prefix(prefix, seq):
-        idxs = [i for i, n in enumerate(seq) if n.startswith(prefix)]
-        return min(idxs) if idxs else None
-
-    # 2) insert mistake_s (AFTER stim anchor)
-    j_s = idx_after(_ANCHOR_S, out)
-    if j_s is None:
-        j_s = idx_after_last_prefix('stim', out)
-    if j_s is None:
-        j_s = 0
-    out.insert(j_s, 'mistake_s')
-
-    # 3) insert mistake_m (AFTER movement anchor)
-    j_m = idx_after(_ANCHOR_M, out)  # <-- key change: AFTER, not before
-    if j_m is None:
-        # after last movement-aligned segment (names that end with ', m')
-        mov_idxs = [i for i, n in enumerate(out) if re.search(r'\s*,\s*m$', n)]
-        j_m = (max(mov_idxs) + 1) if mov_idxs else None
-    if j_m is None:
-        # before first choice* as a final structured fallback
-        j_m = idx_before_first_prefix('choice', out)
-    if j_m is None:
-        j_m = len(out)
-    out.insert(j_m, 'mistake_m')
-
-    groups = {'mistake_s': list(_MISTAKE_S), 'mistake_m': list(_MISTAKE_M)}
-    return out, groups
-
 
 
 # ----------------- helper: concatenate members on trials axis -----------------
@@ -480,6 +417,21 @@ def deep_in_block(trials, pleft, depth=3):
     return bool_array
 
 
+def first_three_after_block_switch(trials):
+    pl = trials['probabilityLeft'].values
+    n = len(pl)
+
+    # indices where block changes (start of new block)
+    bs = np.where(np.diff(pl) != 0)[0] + 1
+
+    mask = np.zeros(n, dtype=bool)
+
+    # mark block_start, block_start+1, block_start+2
+    for b in bs:
+        mask[b : min(b+3, n)] = True
+
+    return mask
+
 
 def concat_PETHs(pid, get_tts: bool = False, vers: str = 'concat', 
                  require_all: bool = False):
@@ -536,70 +488,47 @@ def concat_PETHs(pid, get_tts: bool = False, vers: str = 'concat',
             'blockR': ['stimOn_times', 
                        np.bitwise_and.reduce([mask, 
                        trials['probabilityLeft'] == 0.2]),
-                       [0.4, -0.1]],
-            'block50': ['stimOn_times', 
-                       np.bitwise_and.reduce([mask, 
-                       trials['probabilityLeft'] == 0.5]),
-                       [0.4, -0.1]],                                            
+                       [0.4, -0.1]],                                        
             'quiescence': ['stimOn_times', mask, 
-                       [0.4, -0.1]],                       
+                       [0.4, -0.1]],
+            'block_change_s': ['stimOn_times', np.bitwise_and(
+                mask, first_three_after_block_switch(trials)),
+                       [0, 0.15]],
             'stimLbLcL': ['stimOn_times',
                  np.bitwise_and.reduce([mask, 
                     ~np.isnan(trials[f'contrastLeft']),
                     trials['probabilityLeft'] == 0.8,
                     deep_in_block(trials, 0.8),
-                    trials['choice'] == 1]), 
-                                        [0, 0.2]], 
+                    trials['choice'] == 1]), [0, 0.15]], 
             'stimLbRcL': ['stimOn_times',            
                 np.bitwise_and.reduce([mask,
                     ~np.isnan(trials[f'contrastLeft']), 
                     trials['probabilityLeft'] == 0.2,                       
                     deep_in_block(trials, 0.2),
-                    trials['choice'] == 1]), [0, 0.2]],
-            'stimLbRcR': ['stimOn_times',
-                 np.bitwise_and.reduce([mask, 
-                    ~np.isnan(trials[f'contrastLeft']), 
-                    trials['probabilityLeft'] == 0.2,
-                    deep_in_block(trials, 0.2),
-                    trials['choice'] == -1]), 
-                                        [0, 0.2]],           
-            'stimLbLcR': ['stimOn_times',
-                 np.bitwise_and.reduce([mask,       
-                    ~np.isnan(trials[f'contrastLeft']), 
-                    trials['probabilityLeft'] == 0.8,
-                    deep_in_block(trials, 0.8),
-                    trials['choice'] == -1]), 
-                                        [0, 0.2]],
-            'stimRbLcL': ['stimOn_times',
-                 np.bitwise_and.reduce([mask, 
-                    ~np.isnan(trials[f'contrastRight']), 
-                    trials['probabilityLeft'] == 0.8,
-                    deep_in_block(trials, 0.8),
-                    trials['choice'] == 1]), 
-                                        [0, 0.2]], 
-            'stimRbRcL': ['stimOn_times',
-                 np.bitwise_and.reduce([mask, 
-                    ~np.isnan(trials[f'contrastRight']), 
-                    trials['probabilityLeft'] == 0.2,
-                    deep_in_block(trials, 0.2),
-                    trials['choice'] == 1]), 
-                                        [0, 0.2]],
+                    trials['choice'] == 1]), [0, 0.15]],
             'stimRbRcR': ['stimOn_times',
                  np.bitwise_and.reduce([mask, 
                     ~np.isnan(trials[f'contrastRight']), 
                     trials['probabilityLeft'] == 0.2,
                     deep_in_block(trials, 0.2),
                     trials['choice'] == -1]), 
-                                        [0, 0.2]],        
+                                        [0, 0.15]],        
             'stimRbLcR': ['stimOn_times',
                  np.bitwise_and.reduce([mask, 
                     ~np.isnan(trials[f'contrastRight']), 
                     trials['probabilityLeft'] == 0.8,
                     deep_in_block(trials, 0.8),
                     trials['choice'] == -1]), 
-                                        [0, 0.2]],
+                                        [0, 0.15]],
+            'mistake_s': ['stimOn_times',
+                np.bitwise_and.reduce([mask,
+                    trials['feedbackType'] == -1]), 
+                                        [0, 0.15]],
             'motor_init': ['firstMovement_times', mask, 
-                       [0.15, 0]],                                        
+                       [0.15, 0]],  
+            'block_change_m': ['firstMovement_times', np.bitwise_and(
+                mask, first_three_after_block_switch(trials)),
+                       [0.15, 0]],                                                 
             'sLbLchoiceL': ['firstMovement_times',
                  np.bitwise_and.reduce([mask,  
                     ~np.isnan(trials[f'contrastLeft']), 
@@ -611,30 +540,6 @@ def concat_PETHs(pid, get_tts: bool = False, vers: str = 'concat',
                     ~np.isnan(trials[f'contrastLeft']), 
                     trials['probabilityLeft'] == 0.2,
                     trials['choice'] == 1]), 
-                                        [0.15, 0]],
-            'sLbRchoiceR': ['firstMovement_times',
-                 np.bitwise_and.reduce([mask, 
-                    ~np.isnan(trials[f'contrastLeft']), 
-                    trials['probabilityLeft'] == 0.2,
-                    trials['choice'] == -1]), 
-                                        [0.15, 0]],           
-            'sLbLchoiceR': ['firstMovement_times',
-                 np.bitwise_and.reduce([mask, 
-                    ~np.isnan(trials[f'contrastLeft']), 
-                    trials['probabilityLeft'] == 0.8,
-                    trials['choice'] == -1]), 
-                                        [0.15, 0]],
-            'sRbLchoiceL': ['firstMovement_times',
-                 np.bitwise_and.reduce([mask, 
-                    ~np.isnan(trials[f'contrastRight']), 
-                    trials['probabilityLeft'] == 0.8,
-                    trials['choice'] == 1]), 
-                                        [0.15, 0]], 
-            'sRbRchoiceL': ['firstMovement_times',
-                 np.bitwise_and.reduce([mask, 
-                 ~np.isnan(trials[f'contrastRight']), 
-                                        trials['probabilityLeft'] == 0.2,
-                                        trials['choice'] == 1]), 
                                         [0.15, 0]],
             'sRbRchoiceR': ['firstMovement_times',
                  np.bitwise_and.reduce([mask, 
@@ -648,6 +553,10 @@ def concat_PETHs(pid, get_tts: bool = False, vers: str = 'concat',
                                         trials['probabilityLeft'] == 0.8,
                                         trials['choice'] == -1]), 
                                         [0.15, 0]],
+            'mistake_m': ['firstMovement_times',
+                np.bitwise_and.reduce([mask,
+                    trials['feedbackType'] == -1]), 
+                                        [0, 0.15]], 
             'choiceL': ['firstMovement_times', 
                 np.bitwise_and.reduce([mask,
                     trials['choice'] == 1]), 
@@ -985,13 +894,16 @@ def print_full_structure_tree(filename='structure_tree.pdf'):
 
 
 
-def regional_group(mapping, vers='concat', ephys=False,
+def regional_group(mapping, vers='concat', ephys=False, is_cv_mode=False,
                    nclus=8, rerun=False, cv=True, combine_mistake=True):
     """
     Group / color neurons for visualization and downstream analyses.
 
     IMPORTANT: Trusts the column order saved by stack_concat (r['ttypes'] and r['len']).
     No re-anchoring or reordering happens here.
+
+    is_cv_mode: if True, uses CV data for clustering (requires cv=True and
+                 presence of 'concat_z_train' in the stack).
     """
 
     # ---------- Paths ----------
@@ -1070,9 +982,12 @@ def regional_group(mapping, vers='concat', ephys=False,
         
         # --- 1. Cross-Validated (CV) K-means Logic ---
         # This is the new desired behavior when CV data is available
-        is_cv_mode = (cv and 'concat_z_train' in r and r['concat_z_train'].shape[0] == r[feat].shape[0])
+        
 
         if is_cv_mode:
+
+            assert (cv and 'concat_z_train' in r and r['concat_z_train'].shape[0] == r[feat].shape[0]) , (
+                "CV mode requested but training features missing or mismatched.")
             feat_train = 'concat_z_train'
             
             # Attempt to load CV results from cache
@@ -1461,31 +1376,6 @@ def decode_bulk():
 ### bulk processing
 ##############################################################
 '''
-#  'suggest_bad_eids': ['0802ced5-33a3-405e-8336-b65ebc5cb07c',
-#   '0ac8d013-b91e-4732-bc7b-a1164ff3e445',
-#   '27ef44c0-acb2-4220-b776-477d0d5abd35',
-#   '283ecb4c-e529-409c-9f0a-8ea5191dcf50',
-#   '4364a246-f8d7-4ce7-ba23-a098104b96e4',
-#   '4a45c8ba-db6f-4f11-9403-56e06a33dfa4',
-#   '4aa1d525-5c7d-4c50-a147-ec53a9014812',
-#   '4d8c7767-981c-4347-8e5e-5d5fffe38534',
-#   '4ecb5d24-f5cc-402c-be28-9d0f7cb14b3a',
-#   '7416f387-b302-4ca3-8daf-03b585a1b7ec',
-#   '872ce8ff-9fb3-485c-be00-bc5479e0095b',
-#   '87ad026d-5b95-4022-8d59-c260870d830f',
-#   '88d24c31-52e4-49cc-9f32-6adbeb9eba87',
-#   '8ca740c5-e7fe-430a-aa10-e74e9c3cbbe8',
-#   '90d1e82c-c96f-496c-ad4e-ee3f02067f25',
-#   'aec5d3cc-4bb2-4349-80a9-0395b76f04e2',
-#   'caa5dddc-9290-4e27-9f5e-575ba3598614',
-#   'd0ea3148-948d-4817-94f8-dcaf2342bbbe',
-#   'd2832a38-27f6-452d-91d6-af72d794136c',
-#   'd71e565d-4ddb-42df-849e-f99cfdeced52',
-#   'e1931de1-cf7b-49af-af33-2ade15e8abe7',
-#   'ebe090af-5922-4fcd-8fc6-17b8ba7bad6d',
-#   'ee40aece-cffd-4edb-a4b6-155f158c666a',
-#   'fc43390d-457e-463a-9fd4-b94a0a8b48f5']
-
 
 def get_all_PETHs_parallel(
     eids_plus=None,
@@ -1689,40 +1579,13 @@ def _attach_ephys_features(r):
 
 
 def stack_concat(vers='concat', get_concat=False, get_tls=False,
-                 ephys=False, concat_only=False, cv=True,
-                 combine_mistake=True, min_trials=10):
+                 ephys=False, concat_only=False, cv=False, min_trials=10):
     """
-    Stack concatenated PETHs; compute embeddings from per-trial data on disk.
+    Stack concatenated PETHs from per-trial data on disk and optionally compute embeddings.
 
-    Key design:
-      • Build the concatenated matrix directly in the final effective order (ttypes_eff).
-      • mistake_s / mistake_m are REAL composite segments (not just labels).
-      • r['ttypes'], r['len'], r['bounds'] match the saved matrices exactly.
-
-    Non-CV:
-      - For each insertion, average per-trial (N,T,M) -> (N,T) for each segment in ttypes_eff
-        (with mistake members combined), then concatenate along time -> (N, sum_T).
-      - Concatenate insertions along rows; compute features; optionally embed.
-      - Save to '<one.cache_dir>/dmn/res/{vers}_cvFalse_ephys{ephys}.npy'.
-
-    CV:
-      - Split trials for each segment (after combining mistake members) into HALF0/HALF1.
-      - Average within halves, concat along time in ttypes_eff order -> P0 (train), P1 (test).
-      - Fit Rastermap on Z(P0); store Z(P1), isort from P0; embed UMAP on test side.
-      - Save to '<one.cache_dir>/dmn/res/{vers}_cvTrue_ephysFalse.npy'.
-
-    Exclusion:
-      - Skip an insertion if ANY required segment (after grouping) has < min_trials real trials.
-
-    Requires helpers in scope:
-      - _combine_spec(ttypes_orig, combine_mistake) -> (ttypes_eff, mistake_groups)
-      - _concat_trials_over_members_real(D, members, extractor)  # drops placeholders
-      - _count_real_trials_3d(X) -> (count_real, mask_real)       # filter non-placeholder trials
-      - bwm_query(one)  # to map (eid, probe) -> pid
-      - float_array_to_rgba, Rastermap, umap, zscore, etc. (if you use embeddings)
+    - Non-CV:      average trials per segment -> concat time -> one matrix (neurons × time)
+    - CV (half0/1): split trials per segment into two halves -> train & test matrices
     """
-
-
     start_time = time.time()
 
     # ---- paths ----
@@ -1736,20 +1599,14 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
     ss = [fn for fn in ss_all if '_' in fn and not fn.startswith(f'{vers}_')]
     if not ss:
         raise RuntimeError(f"No per-insertion .npy files found in {pth}")
-
     print(f'combining {len(ss)} insertions for version {vers}')
 
-    # ---- authoritative atomic order (includes fillers) ----
+    # ---- authoritative order from PETH_types_dict and sample file ----
     ttypes_atomic = list(PETH_types_dict[vers])
-    if combine_mistake:
-        # sanity: anchors must exist given fillers are present
-        if _ANCHOR_S not in ttypes_atomic:
-            raise ValueError(f"_ANCHOR_S='{_ANCHOR_S}' not found in PETH_types_dict[{vers}]")
-        if _ANCHOR_M not in ttypes_atomic:
-            raise ValueError(f"_ANCHOR_M='{_ANCHOR_M}' not found in PETH_types_dict[{vers}]")
-
-    # ---- derive effective order and grouping map ----
-    ttypes_eff, mistake_groups = _combine_spec(ttypes_atomic, combine_mistake)
+    D_sample = np.load(Path(pth, ss[0]), allow_pickle=True).flat[0]
+    ttypes_0 = D_sample['trial_names']
+    assert ttypes_atomic == ttypes_0, "ttypes in sample file do not match PETH_types_dict."
+    ttypes_eff = ttypes_atomic  # combine_mistake already handled upstream
 
     # ---- pid helper ----
     df = bwm_query(one)
@@ -1765,9 +1622,9 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
         return {k: [] for k in ['ids', 'xyz', 'uuids', 'pid',
                                 'axial_um', 'lateral_um', 'channels']}
 
-    # ---- basic helpers ----
+    # ---- helpers ----
     def _avg_trials(ar: np.ndarray) -> np.ndarray:
-        # (N,T,M) -> (N,T) mean over trials; safe for M==0
+        # (N,T,M) -> (N,T)
         if ar.ndim != 3:
             raise ValueError(f"_avg_trials expects (N,T,M), got {ar.shape}")
         M = ar.shape[2]
@@ -1776,37 +1633,47 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
         return ar.mean(axis=2).astype(np.float32)
 
     def _extract_trials_3d(D, tname: str) -> np.ndarray:
-        # Returns (N,T,M) from either ws_trials[tname] (new) or legacy ws (M,N,T)->(N,T,M)
+        """
+        Input on disk: D['ws'][idx] has shape (n_trials, n_neurons, n_timebins) = (M,N,T).
+        Return: (N,T,M).
+        """
+        if 'ws' not in D:
+            raise KeyError("Expected per-trial data under 'ws' (shape: M,N,T).")
 
-        if 'ws' in D:
-            try:
-                idx = D['trial_names'].index(tname)
-            except ValueError:
-                raise KeyError(f"Trial name '{tname}' not found in D['trial_names']")
-            X_legacy = D['ws'][idx]
-            if X_legacy is None:
-                return np.empty((len(D['ids']), 0, 0), dtype=np.float32)
-            if X_legacy.ndim != 3:
-                raise ValueError(f"legacy ws[{tname}] must be 3D (M,N,T); got {X_legacy.shape}")
-            M, N, T = X_legacy.shape
-            if N != len(D['ids']):
-                raise ValueError(f"legacy ws[{tname}] neurons ({N}) != len(ids) ({len(D['ids'])})")
-            return np.transpose(X_legacy, (1, 2, 0)).astype(np.float32)  # (N,T,M)
+        try:
+            idx = D['trial_names'].index(tname)
+        except ValueError:
+            raise KeyError(f"Trial name '{tname}' not found in D['trial_names']")
 
-        raise KeyError("Per-trial data expected under 'ws_trials' or legacy 'ws'.")
+        X = D['ws'][idx]
+        if X is None:
+            return np.empty((len(D['ids']), 0, 0), dtype=np.float32)
+        if X.ndim != 3:
+            raise ValueError(f"ws['{tname}'] must be 3D (M,N,T); got {X.shape}")
 
-    # ---------------------- Non-CV path ----------------------
+        M, N, T = X.shape
+        if N != len(D['ids']):
+            raise ValueError(f"ws['{tname}'] neurons ({N}) != len(ids) ({len(D['ids'])})")
+
+        # (M,N,T) -> (N,T,M)
+        return np.transpose(X, (1, 2, 0)).astype(np.float32)
+
+    def _compute_lens_eff_from_sample(D_sample, ttypes_eff):
+        lens = []
+        for t in ttypes_eff:
+            Xt = _extract_trials_3d(D_sample, t)  # (N,T,M)
+            lens.append(int(Xt.shape[1]))
+        return lens
+
+    # =========================================================
+    #                      NON-CV PATH
+    # =========================================================
     if not cv:
         r = _init_r_dict()
         ws = []
         tlss = {}
 
-        # sample file (for segment lengths)
-        D_sample = _load_D(Path(pth, ss[0]))
-
         for s in ss:
-            if not s.endswith('.npy') or s.startswith(f'{vers}_'):
-                continue
             eid = s.split('_')[0]
             probe_name = s.split('_')[1].split('.')[0]
             pid = pid__(eid, probe_name)
@@ -1818,41 +1685,32 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
             if get_tls:
                 continue
 
-            # ---- per-insertion gating AFTER grouping ----
+            # gating after grouping (grouping already done upstream)
             def _count_grouped_trials(tname: str) -> int:
-                if combine_mistake and (tname in mistake_groups):
-                    Xt = _concat_trials_over_members_real(D_, mistake_groups[tname], _extract_trials_3d)
-                    return Xt.shape[2]
-                else:
-                    X = _extract_trials_3d(D_, tname)
-                    c, _ = _count_real_trials_3d(X)
-                    return int(c)
+                X = _extract_trials_3d(D_, tname)
+                c, _ = _count_real_trials_3d(X)
+                return int(c)
 
-            failing = {t: _count_grouped_trials(t) for t in ttypes_eff}
-            failing = {t: c for t, c in failing.items() if c < min_trials}
+            counts = {t: _count_grouped_trials(t) for t in ttypes_eff}
+            failing = {t: c for t, c in counts.items() if c < min_trials}
             if failing:
                 detail = ", ".join(f"{t}={c}" for t, c in sorted(failing.items()))
-                print(f"[skip] {eid}_{probe_name}: <{min_trials} real trials for grouped types: {detail}")
+                print(f"[skip] {eid}_{probe_name}: <{min_trials} real trials for types: {detail}")
                 continue
 
-            # ---- build (N, sum_T) directly in FINAL order ----
             segs = []
             for t in ttypes_eff:
-                if combine_mistake and (t in mistake_groups):
-                    X = _concat_trials_over_members_real(D_, mistake_groups[t], _extract_trials_3d)  # (N,T,M_real)
-                else:
-                    X = _extract_trials_3d(D_, t)                                                    # (N,T,M)
-                    if X.size:
-                        _, mk = _count_real_trials_3d(X)
-                        if mk.size:
-                            X = X[:, :, mk]  # drop placeholders
+                X = _extract_trials_3d(D_, t)  # (N,T,M)
+                if X.size:
+                    _, mk = _count_real_trials_3d(X)
+                    if mk.size:
+                        X = X[:, :, mk]  # drop placeholder trials
                 A = _avg_trials(X)  # (N,T)
                 segs.append(A)
 
-            P = np.concatenate(segs, axis=1)  # (N, sum_T in effective order)
+            P = np.concatenate(segs, axis=1)  # (N, sum_T)
             ws.append(P)
 
-            # stack metadata (aligned to rows)
             for ke in r.keys():
                 r[ke].append(D_[ke])
 
@@ -1861,42 +1719,31 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
         if get_tls:
             return tlss
 
-        # ---- concatenate across insertions (rows) and clean ----
         for ke in r.keys():
             r[ke] = np.concatenate(r[ke]) if len(r[ke]) else np.array([])
         cs = np.concatenate(ws, axis=0) if len(ws) else np.empty((0, 0))
-        print(f"[non-CV] MERGED raw size: {cs.shape[0]} neurons, {cs.shape[1] if cs.size else 0} timebins")
+        print(f"[non-CV] MERGED raw size: {cs.shape[0]} neurons, "
+              f"{cs.shape[1] if cs.size else 0} timebins")
 
         # remove rows with NaNs or all-zero
-        good = np.array([~np.isnan(row).any() for row in cs])
-        for ke in r.keys(): r[ke] = r[ke][good]
+        good = (~np.isnan(cs).any(axis=1)) & np.any(cs, axis=1)
+        for ke in r.keys():
+            r[ke] = r[ke][good]
         cs = cs[good]
-        nonzero = np.array([np.any(row) for row in cs])
-        for ke in r.keys(): r[ke] = r[ke][nonzero]
-        cs = cs[nonzero]
         print(f"[non-CV] After cleaning: {cs.shape[0]} neurons kept")
 
-        # ---- lengths & bounds from sample file in effective order ----
-        lens_eff = []
-        for t in ttypes_eff:
-            if t in mistake_groups:
-                Xt = _concat_trials_over_members(D_sample, mistake_groups[t], _extract_trials_3d)
-            else:
-                Xt = _extract_trials_3d(D_sample, t)
-            lens_eff.append(int(Xt.shape[1]))
-
+        lens_eff = _compute_lens_eff_from_sample(D_sample, ttypes_eff)
         r['ttypes'] = list(ttypes_eff)
         r['len'] = dict(zip(ttypes_eff, lens_eff))
-        b = np.cumsum([0] + lens_eff)
-        r['bounds'] = {t: (int(b[i]), int(b[i+1])) for i, t in enumerate(ttypes_eff)}
-        r['mistake_groups'] = mistake_groups
 
         if concat_only:
             r['concat'] = cs
-            np.save(pth_res / f'{vers}_concat_only.npy', r, allow_pickle=True)
+            out = pth_res / f'{vers}_concat_only.npy'
+            np.save(out, r, allow_pickle=True)
+            print(f'saved concatenated-only data to {out}')
+            print(f"Function 'stack_concat' executed in: {time.time() - start_time:.4f} s")
             return
 
-        # ---- features & optional embeddings ----
         r['fr'] = np.array([np.mean(x) for x in cs], dtype=np.float32)
         r['concat_z'] = zscore(cs, axis=1)
 
@@ -1906,14 +1753,14 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
             print(f"{r['concat_z'].shape[0]} neurons retained after ephys cleaning")
             print('z-scoring ephys features')
             r['ephysTF'] = zscore(np.stack(r['ephysTF'], axis=0), axis=1)
-            print('embedding rastermap on ephys')
+            print('embedding Rastermap on ephys')
             model_e = Rastermap(n_PCs=200, n_clusters=100,
                                 locality=0.75, time_lag_window=5, bin_size=1).fit(r['ephysTF'])
             r['isort_e'] = model_e.isort
             print('UMAP on ephys...')
             r['umap_e'] = umap.UMAP(n_components=2, random_state=0).fit_transform(r['ephysTF'])
 
-        print(f'embedding rastermap on {vers}...')
+        print(f'embedding Rastermap on {vers}...')
         try:
             model = Rastermap(n_PCs=200, n_clusters=100,
                               locality=0.75, time_lag_window=5, bin_size=1).fit(r['concat_z'])
@@ -1925,57 +1772,51 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
         r['umap_z'] = umap.UMAP(n_components=2, random_state=0,
                                 n_neighbors=8, min_dist=0.2).fit_transform(r['concat_z'])
 
+        print(f'embedding PCA on {vers}...')
+        pca = PCA(n_components=2)
+        r['pca_z'] = pca.fit_transform(r['concat_z'])
+
         out = pth_res / f'{vers}_cvFalse_ephys{ephys}.npy'
         np.save(out, r, allow_pickle=True)
         print(f'saved combined data to {out}')
-
-        end_time = time.time()
-        duration = end_time - start_time
-        print(f"Function 'my_function' executed in: {duration:.4f} seconds")
+        print(f"Function 'stack_concat' executed in: {time.time() - start_time:.4f} s")
         return
 
-    # ---------------------- CV path ----------------------
-    def _half_means_concat(D, ttypes_eff, mistake_groups):
+    # =========================================================
+    #                        CV PATH
+    # =========================================================
+    def _half_means_concat(D, ttypes_eff):
         segs0, segs1 = [], []
         for t in ttypes_eff:
-            if combine_mistake and (t in mistake_groups):
-                X = _concat_trials_over_members_real(D, mistake_groups[t], _extract_trials_3d)  # (N,T,M_real)
-            else:
-                X = _extract_trials_3d(D, t)                                                   # (N,T,M)
-                if X.size:
-                    _, mk = _count_real_trials_3d(X)
-                    if mk.size:
-                        X = X[:, :, mk]  # drop placeholders
+            X = _extract_trials_3d(D, t)  # (N,T,M)
+            if X.size:
+                _, mk = _count_real_trials_3d(X)
+                if mk.size:
+                    X = X[:, :, mk]
+
             M = X.shape[2]
             if M <= 1:
-                idx0 = np.arange(M, dtype=int)  # TRAIN gets singleton/empty; TEST empty
+                idx0 = np.arange(M, dtype=int)
                 idx1 = np.array([], dtype=int)
             else:
-                k = (M + 1) // 2                 # balanced contiguous split
+                k = (M + 1) // 2
                 idx0 = np.arange(0, k, dtype=int)
                 idx1 = np.arange(k, M, dtype=int)
 
-            A0 = _avg_trials(X[:, :, idx0])  # (N,T)
-            A1 = _avg_trials(X[:, :, idx1])  # (N,T)
-            segs0.append(A0); segs1.append(A1)
+            A0 = _avg_trials(X[:, :, idx0])
+            A1 = _avg_trials(X[:, :, idx1])
+            segs0.append(A0)
+            segs1.append(A1)
 
         P0 = np.concatenate(segs0, axis=1) if segs0 else np.empty((0, 0))
         P1 = np.concatenate(segs1, axis=1) if segs1 else np.empty((0, 0))
         return P0, P1
 
-    # --- CV aggregation ---
     r = _init_r_dict()
     ws_train, ws_test = [], []
     tot0_raw = tot1_raw = tot_after = 0
 
-    D_sample = _load_D(Path(pth, ss[0]))
-
-    # lengths from sample file in effective order
-    lens_eff = []
-    for t in ttypes_eff:
-        Xt = (_concat_trials_over_members(D_sample, mistake_groups[t], _extract_trials_3d)
-              if t in mistake_groups else _extract_trials_3d(D_sample, t))
-        lens_eff.append(int(Xt.shape[1]))
+    lens_eff = _compute_lens_eff_from_sample(D_sample, ttypes_eff)
 
     for fn in ss:
         eid = fn.split('_')[0]
@@ -1983,30 +1824,24 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
         pid = pid__(eid, probe_name)
         D = _load_D(Path(pth, fn))
 
-        # gating AFTER grouping
         def _count_grouped_trials_cv(tname: str) -> int:
-            if combine_mistake and (tname in mistake_groups):
-                Xt = _concat_trials_over_members_real(D, mistake_groups[tname], _extract_trials_3d)
-                return Xt.shape[2]
-            else:
-                X = _extract_trials_3d(D, tname)
-                c, _ = _count_real_trials_3d(X)
-                return int(c)
+            X = _extract_trials_3d(D, tname)
+            c, _ = _count_real_trials_3d(X)
+            return int(c)
 
         counts_cv = {t: _count_grouped_trials_cv(t) for t in ttypes_eff}
         failing_cv = {t: c for t, c in counts_cv.items() if c < min_trials}
         if failing_cv:
             detail = ", ".join(f"{t}={c}" for t, c in sorted(failing_cv.items()))
-            print(f"[CV skip] {eid}_{probe_name}: <{min_trials} real trials for grouped types: {detail}")
+            print(f"[CV skip] {eid}_{probe_name}: <{min_trials} real trials for types: {detail}")
             continue
 
         try:
-            P0, P1 = _half_means_concat(D, ttypes_eff, mistake_groups)
+            P0, P1 = _half_means_concat(D, ttypes_eff)
         except Exception as ex:
             print(f"[CV] Skipping {eid}_{probe_name}: {type(ex).__name__}: {ex}")
             continue
 
-        # joint validity on FULL concatenated vectors
         valid0 = (~np.isnan(P0).any(axis=1)) & np.any(P0, axis=1)
         valid1 = (~np.isnan(P1).any(axis=1)) & np.any(P1, axis=1)
         common_good = valid0 & valid1
@@ -2024,13 +1859,14 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
             base = np.array([pid] * n_raw) if ke == 'pid' else np.asarray(D[ke])
             r[ke].append(base[common_good])
 
-        tot0_raw += n_raw; tot1_raw += n_raw; tot_after += P0c.shape[0]
+        tot0_raw += n_raw
+        tot1_raw += n_raw
+        tot_after += P0c.shape[0]
 
     print(len(ws_train), 'CV train insertions combined; ', len(ws_test), 'CV test insertions combined')
     print(f"[CV] TOTALS (before cleaning): half0={tot0_raw}, half1={tot1_raw} neurons")
     print(f"[CV] TOTALS (after joint mask): kept={tot_after} neurons")
 
-    # concat across insertions and proceed
     for ke in r.keys():
         r[ke] = np.concatenate(r[ke]) if len(r[ke]) else np.array([])
     X_train = np.concatenate(ws_train, axis=0) if len(ws_train) else np.empty((0, 0))
@@ -2042,15 +1878,11 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
 
     Z_train = zscore(X_train, axis=1) if X_train.size else X_train
     r['concat_z_train'] = Z_train
-    r['concat_z'] = zscore(X_test,  axis=1) if X_test.size  else X_test
+    r['concat_z'] = zscore(X_test, axis=1) if X_test.size else X_test
     r['fr'] = np.array([np.mean(x) for x in X_test], dtype=np.float32) if X_test.size else np.array([], dtype=np.float32)
 
-    # lengths & bounds in the same (final) order
     r['ttypes'] = list(ttypes_eff)
     r['len'] = dict(zip(ttypes_eff, lens_eff))
-    b = np.cumsum([0] + lens_eff)
-    r['bounds'] = {t: (int(b[i]), int(b[i+1])) for i, t in enumerate(ttypes_eff)}
-    r['mistake_groups'] = mistake_groups
 
     print('[CV] fitting Rastermap on TRAIN (half0) and storing sorting for TEST (half1)...')
     model = Rastermap(n_PCs=200, n_clusters=100,
@@ -2064,11 +1896,7 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
     out = pth_res / f'{vers}_cvTrue_ephysFalse.npy'
     np.save(out, r, allow_pickle=True)
     print(f'saved combined data to {out}')
-
-    end_time = time.time()
-    duration = end_time - start_time
-    print(f"Function 'my_function' executed in: {duration:.4f} seconds")
-
+    print(f"Function 'stack_concat' executed in: {time.time() - start_time:.4f} s")
 
 
 
@@ -2149,8 +1977,8 @@ def plot_dim_reduction(algo='umap_z', mapping='kmeans', ephys=False,
     # --- save main figure ---
     if alone:
         fig.tight_layout()
-        cmb_tag = f"_cmb{int(bool(combine_mistake))}"
-        out = Path(one.cache_dir, 'dmn', 'imgs', f'{nclus}_kmeans_umap{cmb_tag}.png')
+        cmb_tag = f"_cmb{combine_mistake}"
+        out = Path(one.cache_dir, 'dmn', 'imgs', f'{nclus}_kmeans_umap{cmb_tag}_cv{cv}.png')
         fig.savefig(out, dpi=150)
 
     # --- interactive example ---
@@ -2186,7 +2014,7 @@ def plot_dim_reduction(algo='umap_z', mapping='kmeans', ephys=False,
                                 combine_mistake=combine_mistake)
         ff = plt.gcf()
         out2 = Path(one.cache_dir, 'dmn', 'imgs',
-                    f'{nclus}_kmeans_lines_cmb{int(bool(combine_mistake))}.png')
+                    f'{nclus}_kmeans_lines_cmb{int(bool(combine_mistake))}_cv{cv}.png')
         ff.savefig(out2, dpi=150)
 
     # --- square ROIs and mean/individual PETHs with correct segment order ---
@@ -3769,7 +3597,6 @@ def _draw_peth_boundaries(ax, r, vers, yy_max, c_sec):
 
 
 def plot_features_by_acs(n: int,
-                         algo: str = 'umap_z',
                          vers: str = 'concat',
                          mapping: str = 'kmeans',
                          seed: Optional[int] = None,
@@ -3783,15 +3610,19 @@ def plot_features_by_acs(n: int,
                          annotate: bool = True,
                          label_key: str = 'Beryl',
                          label_fontsize: int = 8,
-                         label_pad_frac: float = 0.01):
+                         label_pad_frac: float = 0.01,
+                         cv=False):
     """
     Adds per-neuron labels (default: r['Beryl'][i]) at the start of each plotted line.
+    For n example neurons per 'acs' category in the specified mapping,
+    plot their feature vectors (PETHs) stacked vertically with offsets.
+    Useful for visualizing variability within anatomical categories.
     """
     if seed is not None:
         random.seed(seed); np.random.seed(seed)
 
-    feat = 'concat_z' if algo.endswith('z') else 'concat'
-    r = regional_group(mapping, vers=vers)
+    feat = 'concat_z'
+    r = regional_group(mapping, vers=vers, cv=cv)
     if feat not in r:
         raise KeyError(f"Feature '{feat}' not in r. Available: {list(r.keys())}")
 
@@ -3863,7 +3694,7 @@ def plot_features_by_acs(n: int,
                 for fmt in save_formats:
                     fn = save_dir / f"{mapping}_{cat}_n{n}.{fmt}"
                     fig.savefig(fn, dpi=dpi, bbox_inches='tight')
-                print(f"  saved: {mapping}_{cat}_n{n}.{save_formats[0]}")
+                print(f"  saved: {mapping}_{cat}_n{n}_cv{cv}.{save_formats[0]}")
 
             if show:
                 plt.show(block=False)
