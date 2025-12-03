@@ -15,6 +15,7 @@ sys.path.append('Dropbox/scripts/IBL/')
 from granger import get_volume, get_centroids, get_res, get_structural, get_ari
 from state_space_bwm import get_cmap_bwm, pre_post
 
+from scipy.signal import hilbert
 from scipy import signal
 import pandas as pd
 import numpy as np
@@ -44,7 +45,8 @@ from joblib import Parallel, delayed
 from sklearn.utils import parallel_backend
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
-import time, os
+import time, os, re 
+from PIL import Image, ImageDraw, ImageFont
 
 import gc
 from pathlib import Path
@@ -556,7 +558,7 @@ def concat_PETHs(pid, get_tts: bool = False, vers: str = 'concat',
             'mistake_m': ['firstMovement_times',
                 np.bitwise_and.reduce([mask,
                     trials['feedbackType'] == -1]), 
-                                        [0, 0.15]], 
+                                        [0.15, 0]], 
             'choiceL': ['firstMovement_times', 
                 np.bitwise_and.reduce([mask,
                     trials['choice'] == 1]), 
@@ -894,49 +896,81 @@ def print_full_structure_tree(filename='structure_tree.pdf'):
 
 
 
-def regional_group(mapping, vers='concat', ephys=False, is_cv_mode=False,
-                   nclus=8, rerun=False, cv=True, combine_mistake=True):
+def regional_group(mapping, vers='concat', ephys=False,grid_upsample=0,
+                   nclus=100, rerun=False, cv=False, cv2=False):
     """
     Group / color neurons for visualization and downstream analyses.
-
-    IMPORTANT: Trusts the column order saved by stack_concat (r['ttypes'] and r['len']).
-    No re-anchoring or reordering happens here.
-
-    is_cv_mode: if True, uses CV data for clustering (requires cv=True and
-                 presence of 'concat_z_train' in the stack).
     """
-
-    # ---------- Paths ----------
     pth_res = Path(one.cache_dir, 'dmn', 'res')
 
+     
+
     def _stack_fname() -> Path:
-        return (pth_res / f'{vers}_cvTrue_ephysFalse.npy') if cv \
-               else (pth_res / f'{vers}_cvFalse_ephys{bool(ephys)}.npy')
+        # valid combinations:
+        # 1) cv=True, cv2=False
+        # 2) cv=False, cv2=False
+        # 3) cv=False, cv2=True
+
+        if cv and cv2:
+            raise ValueError("cv and cv2 cannot both be True.")
+
+        if cv:
+            # case 1
+            return pth_res / f"{vers}_cvTrue_ephysFalse.npy"
+
+        if cv2:
+            # case 3
+            return pth_res / f"{vers}_cv2True_ephysFalse.npy"
+
+        # case 2
+        return pth_res / f"{vers}_cvFalse_ephysFalse.npy"
+
 
     def _kmeans_cache_path() -> Path:
-        base = f'kmeans_{vers}'
-        base += '_cvTrue_ephysFalse' if cv else f'_cvFalse_ephys{bool(ephys)}'
-        base += f'_n{int(nclus)}'
-        # do NOT include combine_mistake; we already trust the saved order
-        return pth_res / (base + '.npy')
+        if cv and cv2:
+            raise ValueError("cv and cv2 cannot both be True.")
+
+        base = f"kmeans_{vers}"
+
+        if cv:
+            base += "_cvTrue_ephysFalse"
+        elif cv2:
+            base += "_cv2True_ephysFalse"
+        else:
+            base += "_cvFalse_ephysFalse"
+
+        base += f"_n{int(nclus)}"
+        return pth_res / (base + ".npy")
+
+
+    def _rm_cache_path() -> Path:
+        if cv and cv2:
+            raise ValueError("cv and cv2 cannot both be True.")
+
+        base = f"rm_{vers}"
+
+        if cv:
+            base += "_cvTrue_ephysFalse"
+        elif cv2:
+            base += "_cv2True_ephysFalse"
+        else:
+            base += "_cvFalse_ephysFalse"
+
+        base += f"_n{int(nclus)}"
+        return pth_res / (base + ".npy")    
+
 
     stack_path = _stack_fname()
     if not stack_path.is_file():
         raise FileNotFoundError(f"Stack file not found: {stack_path}")
 
     r = np.load(stack_path, allow_pickle=True).flat[0]
+    print(f'mapping {mapping}, vers {vers}, ephys {ephys}, nclus {nclus}, '
+            f'rerun {rerun}, cv {cv}, cv2 {cv2}, {len(r["ids"])} neurons loaded.')
 
-    # ---------- Trust saved order ----------
-    if 'ttypes' not in r or not isinstance(r['ttypes'], (list, tuple)) or len(r['ttypes']) == 0:
-        if 'len' in r and isinstance(r['len'], dict) and len(r['len']) > 0:
-            r['ttypes'] = list(r['len'].keys())
-        else:
-            raise KeyError("Saved stack lacks 'ttypes' and a valid 'len' dict.")
-
-    if 'len' not in r or not isinstance(r['len'], dict) or len(r['len']) == 0:
-        raise KeyError("Saved stack lacks a valid r['len'] with segment lengths.")
-    # lock the order
-    r['len'] = OrderedDict((k, int(r['len'][k])) for k in r['ttypes'] if k in r['len'])
+    # ---- trust saved order from stack_concat ----
+    # r['ttypes'] and r['len'] are assumed valid and consistent
+    r['len'] = OrderedDict((k, int(r['len'][k])) for k in r['ttypes'])
 
     # labels: keep existing; fill gaps from global base if available
     if 'peth_dict' in r and isinstance(r['peth_dict'], dict):
@@ -954,138 +988,66 @@ def regional_group(mapping, vers='concat', ephys=False, is_cv_mode=False,
         raise KeyError("Saved stack lacks 'xyz'.")
     r['nums'] = np.arange(r['xyz'].shape[0], dtype=int)
 
-    # Sanity: columns must match sum of segment lengths
     feat_key = 'concat_z'
-
-    n_cols = r[feat_key].shape[1]
-    sum_len = int(np.sum(list(r['len'].values())))
-    if sum_len != n_cols:
-        raise ValueError(f"Column/length mismatch: sum(r['len'])={sum_len} != {feat_key}.shape[1]={n_cols}")
-
-    # Optional: sanity on mistake grouping (purely diagnostic)
-    has_composites = ('mistake_s' in r['ttypes']) or ('mistake_m' in r['ttypes'])
-    atomic_mist = set().union(
-        {'stimLbRcR','stimLbLcR','stimRbLcL','stimRbRcL'},
-        {'sLbRchoiceR','sLbLchoiceR','sRbLchoiceL','sRbRchoiceL'}
+    # signature for k-means cache
+    r['_order_signature'] = (
+        '|'.join(f"{k}:{r['len'][k]}" for k in r['ttypes'])
+        + f"|shape:{r[feat_key].shape}"
     )
-    if has_composites and any(a in r['ttypes'] for a in atomic_mist):
-        print("[warn] both composite and atomic mistake segments are present in ttypes; check stack_concat.")
-
-    # A stable signature for cache invalidation
-    r['_order_signature'] = '|'.join(f"{k}:{r['len'][k]}" for k in r['ttypes']) + f"|shape:{r[feat_key].shape}"
 
     # ---------- Grouping / coloring ----------
     if mapping == 'kmeans':
-        feat = 'concat_z'
+        feat = feat_key
         pth_cache = _kmeans_cache_path()
-        clusters = None # Initialize clusters to None
-        
-        # --- 1. Cross-Validated (CV) K-means Logic ---
-        # This is the new desired behavior when CV data is available
-        
+        clusters = None
 
-        if is_cv_mode:
+        labels_loaded = None
+        if (not rerun) and pth_cache.is_file():
+            try:
+                cached = np.load(pth_cache, allow_pickle=True).flat[0]
+                if (
+                    isinstance(cached, dict)
+                    and cached.get('order_sig') == r['_order_signature']
+                    and 'kmeans_labels' in cached
+                    and len(cached['kmeans_labels']) == r[feat].shape[0]
+                ):
+                    labels_loaded = cached['kmeans_labels']
+                    print(f"[kmeans] using cached labels ({pth_cache.name})")
+            except Exception as e:
+                print(f"[kmeans] cache read error; recomputing: {e}")
 
-            assert (cv and 'concat_z_train' in r and r['concat_z_train'].shape[0] == r[feat].shape[0]) , (
-                "CV mode requested but training features missing or mismatched.")
-            feat_train = 'concat_z_train'
-            
-            # Attempt to load CV results from cache
-            cv_cached = None
-            if (not rerun) and pth_cache.is_file():
-                try:
-                    cached = np.load(pth_cache, allow_pickle=True).flat[0]
-                    # Check cache signature and existence of both labels and same_cluster
-                    if (isinstance(cached, dict)
-                        and cached.get('order_sig') == r['_order_signature']
-                        and 'kmeans_labels' in cached # Test-side clusters
-                        and 'same_cluster' in cached  # Binary array
-                        and len(cached['kmeans_labels']) == r[feat].shape[0]):
-                        cv_cached = cached
-                        clusters = cached['kmeans_labels']
-                        r['same_cluster'] = cached['same_cluster']
-                        print(f"[kmeans CV] using cached labels and same_cluster ({pth_cache.name})")
-                except Exception as e:
-                    print(f"[kmeans CV] cache read error; recomputing: {e}")
-            
-            # Compute CV results if not loaded
-            if clusters is None:
-                print(f"[kmeans CV] computing labels (n={nclus}) on {feat_train} (H0) and {feat} (H1)")
-                kmeans = KMeans(n_clusters=nclus, random_state=0)
-                
-                # 1. Fit on Half 0 (Train)
-                kmeans.fit(r[feat_train])
-                clusters_train = kmeans.labels_
-                
-                del r[feat_train]  # Free memory
+        if labels_loaded is None:
+            print(f"[kmeans] computing labels (n={nclus}) on {feat}")
+            kmeans = KMeans(n_clusters=nclus, random_state=0)
+            kmeans.fit(r[feat])
+            clusters = kmeans.labels_
+            np.save(
+                pth_cache,
+                {'kmeans_labels': clusters, 'order_sig': r['_order_signature']},
+                allow_pickle=True,
+            )
+        else:
+            clusters = labels_loaded
 
-                # 2. Predict on Half 1 (Test) using H0 model
-                clusters_test = kmeans.predict(r[feat])
-                
-                # 3. Compute the binary match array
-                same_cluster = (clusters_train == clusters_test).astype(np.int8)
-                
-                # Final clusters are the Test side clusters
-                clusters = clusters_test
-                r['same_cluster'] = same_cluster
-                
-                # Save CV results (Test labels and binary match)
-                np.save(pth_cache, {'kmeans_labels': clusters,
-                                    'same_cluster': same_cluster,
-                                    'order_sig': r['_order_signature']},
-                                    allow_pickle=True)
-                
-        # --- 2. Standard (Non-CV) K-means Logic ---
-        # Used if not in CV mode, or if CV computation failed/was not run.
-        if not is_cv_mode or clusters is None:
-            
-            # Attempt to load standard results from cache
-            labels_loaded = None
-            if (not rerun) and pth_cache.is_file():
-                try:
-                    cached = np.load(pth_cache, allow_pickle=True).flat[0]
-                    # Check cache signature and existence of labels (ignoring same_cluster)
-                    if (isinstance(cached, dict)
-                        and cached.get('order_sig') == r['_order_signature']
-                        and 'kmeans_labels' in cached
-                        and len(cached['kmeans_labels']) == r[feat].shape[0]):
-                        labels_loaded = cached['kmeans_labels']
-                        print(f"[kmeans] using cached labels ({pth_cache.name})")
-                except Exception as e:
-                    print(f"[kmeans] cache read error; recomputing: {e}")
-
-            # Compute standard results if not loaded
-            if labels_loaded is None:
-                print(f"[kmeans] computing labels (n={nclus}) on {feat}")
-                kmeans = KMeans(n_clusters=nclus, random_state=0)
-                kmeans.fit(r[feat]) # Fit on standard feature (Test half for CV, or Non-CV data)
-                clusters = kmeans.labels_
-                # Save standard results
-                np.save(pth_cache, {'kmeans_labels': clusters,
-                                    'order_sig': r['_order_signature']},
-                                    allow_pickle=True)
-            else:
-                clusters = labels_loaded
-        
-        # --- 3. Continuation (Common to both) ---
-        # 'clusters' is now guaranteed to be set, either from CV, Standard fit, or cache.
         if clusters is None:
-             raise RuntimeError("K-means clustering failed to compute or load.")
+            raise RuntimeError("K-means clustering failed to compute or load.")
 
         cmap = mpl.cm.get_cmap('Spectral')
         cols = cmap(clusters / nclus)
         acs = clusters.astype(int)
         regs = np.unique(clusters)
         color_map = {reg: cols[acs == reg][0] for reg in regs}
-        r['els'] = [Line2D([0], [0], color=color_map[reg], lw=4, label=f'{reg + 1}')
-                    for reg in regs]
+        r['els'] = [
+            Line2D([0], [0], color=color_map[reg], lw=4, label=f'{reg + 1}')
+            for reg in regs
+        ]
 
         r['Beryl'] = np.array(br.id2acronym(r['ids'], mapping='Beryl'))
         r['acs'] = acs
         r['cols'] = cols
 
     elif mapping == 'cocluster':
-        feat = 'concat_z' if 'concat_z' in r else 'concat'
+        feat = feat_key if feat_key in r else 'concat'
         clusterer = SpectralCoclustering(n_clusters=nclus, random_state=0)
         clusterer.fit(r[feat])
         labels = clusterer.row_labels_
@@ -1107,10 +1069,128 @@ def regional_group(mapping, vers='concat', ephys=False, is_cv_mode=False,
         acs[~mask] = '~layer'
         cols = np.array([pal[reg] for reg in acs])
         regsC = Counter(acs)
-        r['els'] = [Line2D([0], [0], color=pal[reg], lw=4, label=f'{reg} {regsC[reg]}')
-                    for reg in regsC]
+        r['els'] = [
+            Line2D([0], [0], color=pal[reg], lw=4, label=f'{reg} {regsC[reg]}')
+            for reg in regsC
+        ]
         r['acs'] = acs
         r['cols'] = cols
+
+
+    elif mapping == 'rm':
+        feat = feat_key
+        if feat not in r:
+            raise KeyError(f"Feature '{feat}' not found in stack.")
+
+        pth_cache = _rm_cache_path()
+        labels = None
+        isort = None
+
+        # ------------------ try to load cache ------------------
+        if (not rerun) and pth_cache.is_file():
+            try:
+                cached = np.load(pth_cache, allow_pickle=True).flat[0]
+                if (
+                    isinstance(cached, dict)
+                    and cached.get('order_sig') == r['_order_signature']
+                    and 'rm_labels' in cached
+                    and 'isort' in cached
+                ):
+                    labels = np.asarray(cached['rm_labels'], dtype=int).reshape(-1)
+                    isort = np.asarray(cached['isort'], dtype=int).reshape(-1)
+
+                    if labels.shape[0] == r[feat].shape[0]:
+                        print(f"[rm] using cached labels/isort ({pth_cache.name})")
+                    else:
+                        print(
+                            "[rm] cache shape mismatch: "
+                            f"{labels.shape[0]} != {r[feat].shape[0]}, recomputing"
+                        )
+                        labels = None
+                        isort = None
+            except Exception as e:
+                print(f"[rm] cache read error; recomputing Rastermap: {e}")
+                labels = None
+                isort = None
+
+        # ------------------ compute if needed ------------------
+        if labels is None or isort is None:
+            print(f"[rm] computing Rastermap (n_clusters={nclus}) on {feat}")
+            model = Rastermap(
+                n_PCs=200,
+                n_clusters=nclus,
+                grid_upsample=grid_upsample,      # as you wanted
+                locality=0.75,
+                time_lag_window=5,
+                bin_size=1,
+            ).fit(r[feat])
+
+            # exact copies of Rastermap internals:
+            if not hasattr(model, "embedding_clust"):
+                raise AttributeError(
+                    "Rastermap model has no attribute 'embedding_clust'; "
+                    "check Rastermap version / API."
+                )
+
+            labels = np.asarray(model.embedding_clust, dtype=int)
+            # make sure it's 1D (N,) even if Rastermap returns (N,1)
+            if labels.ndim > 1:
+                labels = labels[:, 0]
+            if labels.shape[0] != r[feat].shape[0]:
+                raise ValueError(
+                    f"embedding_clust length {labels.shape[0]} "
+                    f"!= data length {r[feat].shape[0]}"
+                )
+
+            isort = np.asarray(model.isort, dtype=int).reshape(-1)
+            if isort.shape[0] != r[feat].shape[0]:
+                raise ValueError(
+                    f"isort length {isort.shape[0]} != data length {r[feat].shape[0]}"
+                )
+
+            # cache EXACTLY these arrays
+            np.save(
+                pth_cache,
+                {
+                    'rm_labels': labels,
+                    'isort': isort,
+                    'order_sig': r['_order_signature'],
+                },
+                allow_pickle=True,
+            )
+
+        # ------------------ assign colors & legend ------------------
+        # clusters is just a view / copy; r['acs'] keeps the raw labels
+        clusters = labels.copy()
+
+        # robust colormap scaling (does not change labels themselves)
+        unique = np.unique(clusters)
+        if unique.size > 1:
+            denom = float(unique.max())
+            norm_vals = clusters / denom
+        else:
+            # all one cluster -> just zeros
+            norm_vals = np.zeros_like(clusters, dtype=float)
+
+        cmap = mpl.cm.get_cmap('Spectral')
+        cols = cmap(norm_vals)
+
+        regs = unique
+        color_map = {reg: cols[clusters == reg][0] for reg in regs}
+        r['els'] = [
+            Line2D([0], [0], color=color_map[reg], lw=4, label=f'{reg}')
+            for reg in regs
+        ]
+
+        r['Beryl'] = np.array(br.id2acronym(r['ids'], mapping='Beryl'))
+
+        # IMPORTANT: these lines make r['acs'] and r['isort'] EXACT copies
+        # of model.embedding_clust and model.isort (modulo 1D reshape / int cast)
+        r['acs'] = labels          # == embedding_clust
+        r['cols'] = cols
+        r['isort'] = isort         # == isort
+
+
 
     elif mapping == 'clusters_xyz':
         nclus_local = 1000
@@ -1120,18 +1200,23 @@ def regional_group(mapping, vers='concat', ephys=False, is_cv_mode=False,
         r['cols'] = cmap(clusters / nclus_local)
 
     elif ('tts__' in globals()) and (mapping in tts__):
-        feat = 'concat_z' if 'concat_z' in r else 'concat'
+        feat = feat_key if feat_key in r else 'concat'
         seg_names = list(r['len'].keys())
-        seg_lens  = list(r['len'].values())
+        seg_lens = list(r['len'].values())
         if mapping not in seg_names:
             raise KeyError(f"Segment '{mapping}' not in r['len']")
         start_idx = sum(seg_lens[:seg_names.index(mapping)])
-        end_idx   = start_idx + r['len'][mapping]
+        end_idx = start_idx + r['len'][mapping]
         if end_idx <= start_idx:
             raise ValueError(f"Segment '{mapping}' has zero length in saved stack.")
         segment_data = r[feat][:, start_idx:end_idx]
         means = np.mean(np.abs(segment_data), axis=1)
-        rk = pd.Series(means).rank(method='min', ascending=False).astype(int).to_numpy()
+        rk = (
+            pd.Series(means)
+            .rank(method='min', ascending=False)
+            .astype(int)
+            .to_numpy()
+        )
         r['rankings'] = rk
         acs = np.array(br.id2acronym(r['ids'], mapping='Beryl'))
         cmap = mpl.cm.get_cmap('Spectral')
@@ -1146,9 +1231,17 @@ def regional_group(mapping, vers='concat', ephys=False, is_cv_mode=False,
         r['acs'] = acs
         r['cols'] = cmap(norm(scaled))
 
+    elif mapping == 'lz':
+        acs = np.array(br.id2acronym(r['ids'], mapping='Beryl'))
+        scaled = r['lz'] ** 0.1
+        norm = Normalize(vmin=scaled.min(), vmax=scaled.max())
+        cmap = cm.get_cmap('cividis')
+        r['acs'] = acs
+        r['cols'] = cmap(norm(scaled))
+
+
     elif mapping == 'functional':
-        funct = { ... }  # unchanged mapping dict
-        cols0 = { ... }  # unchanged palette
+        # assumes `funct` and `cols0` dicts are defined at module scope
         acs0 = np.array(br.id2acronym(r['ids'], mapping='Beryl'))
         acs = np.array([funct.get(reg, 'Other') for reg in acs0])
         cols = np.array([cols0[k] for k in acs])
@@ -1371,18 +1464,176 @@ def decode_bulk():
     np.save(Path(pth_dmn,'decode.npy'), re, allow_pickle=True)
 
 
+
+def lz76_complexity(s: str) -> int:
+    """
+    Fast LZ76 parser for a binary string.
+    Returns the number of parsed phrases (c).
+    """
+    n = len(s)
+    i = 0
+    c = 0
+    dictionary = set()
+
+    while i < n:
+        k = 1
+        # extend substring as long as it exists
+        while i + k <= n and s[i:i+k] in dictionary:
+            k += 1
+        dictionary.add(s[i:i+k])
+        c += 1
+        i += k
+
+    return c
+
+
+def lzs_pci(x: np.ndarray, rng: np.random.Generator) -> float:
+    """
+    PCI-style Lempel-Ziv complexity as used in Casali et al. (2013).
+    - detrend, z-score
+    - Hilbert envelope
+    - threshold at its mean
+    - binarize to string
+    - compute LZ(s) / LZ(shuffled(s))
+
+    Parameters
+    ----------
+    x : 1D array
+    rng : np.random.Generator for reproducible shuffle
+
+    Returns
+    -------
+    float
+        LZ complexity normalized by shuffled surrogate.
+    """
+    x = np.asarray(x, float)
+
+    # Hilbert envelope
+    env = np.abs(hilbert(x))
+    th = env.mean()
+
+    # binary string
+    s = (env > th).astype(np.uint8)
+    s_str = ''.join('1' if b else '0' for b in s)
+
+    # shuffle surrogate (same 0/1 counts)
+    M = np.array(list(s_str))
+    rng.shuffle(M)
+    w_str = ''.join(M.tolist())
+
+    # LZ complexity
+    c_s = lz76_complexity(s_str)
+    c_w = lz76_complexity(w_str)
+
+    if c_w == 0:
+        return 0.0
+    return c_s / c_w
+
+
+def add_lz_to_stack(vers: str = 'concat',
+                    ephys: bool = False,
+                    cv: bool = False,
+                    cv2: bool = False,
+                    overwrite: bool = True,
+                    seed: int = 0) -> Path:
+    """
+    Load the appropriate 'vers_*' .npy stack, compute LZ complexity per neuron
+    using PCI-style LZs (Hilbert envelope threshold + LZ76 ratio),
+    store as r['lz'], and save back to disk.
+    """
+    rng = np.random.default_rng(seed)
+
+    pth_res = Path(one.cache_dir, 'dmn', 'res')
+
+    def _stack_fname() -> Path:
+        if cv and cv2:
+            raise ValueError("cv and cv2 cannot both be True.")
+        if cv:
+            return pth_res / f"{vers}_cvTrue_ephysFalse.npy"
+        if cv2:
+            return pth_res / f"{vers}_cv2True_ephysFalse.npy"
+        return pth_res / f"{vers}_cvFalse_ephysFalse.npy"
+
+    stack_path = _stack_fname()
+    if not stack_path.is_file():
+        raise FileNotFoundError(stack_path)
+
+    # Load
+    t0 = time.perf_counter()
+    r = np.load(stack_path, allow_pickle=True).flat[0]
+
+    if 'lz' in r and not overwrite:
+        print("[info] lz already exists; skipping computation.")
+        return stack_path
+
+    if 'concat_z' not in r:
+        raise KeyError(f"'concat_z' not found in {stack_path}")
+
+    data = np.asarray(r['concat_z'])
+    if data.ndim != 2:
+        raise ValueError("r['concat_z'] must be 2D (neurons × time).")
+
+    N = data.shape[0]
+    print(f"[info] Computing LZs for {N} neurons…")
+
+    # Compute LZs per neuron
+    t1 = time.perf_counter()
+    lz_vals = np.zeros(N, float)
+    for i in range(N):
+        lz_vals[i] = lzs_pci(data[i], rng)
+
+    t2 = time.perf_counter()
+
+    # Store and save
+    r['lz'] = lz_vals
+    np.save(stack_path, r, allow_pickle=True)
+
+    t3 = time.perf_counter()
+
+    print(f"[timing] load:       {t1 - t0:6.3f} s")
+    print(f"[timing] LZ compute: {t2 - t1:6.3f} s (≈ {(t2 - t1)/N*1000:.2f} ms/neuron)")
+    print(f"[timing] save:       {t3 - t2:6.3f} s")
+    print(f"[timing] total:      {t3 - t0:6.3f} s")
+
+    return stack_path
+
+
 '''
 ##############################################################
 ### bulk processing
 ##############################################################
 '''
 
+
+bad_eids = ['642c97ea-fe89-4ec9-8629-5e492ea4019d', '1b715600-0cbc-442c-bd00-5b0ac2865de1', '3a3ea015-b5f4-4e8b-b189-9364d1fc7435', '09394481-8dd2-4d5c-9327-f2753ede92d7', '25d1920e-a2af-4b6c-9f2e-fc6c65576544', '5ae68c54-2897-4d3a-8120-426150704385', 'f819d499-8bf7-4da0-a431-15377a8319d5', '0c828385-6dd6-4842-a702-c5075f5f5e81', '4e560423-5caf-4cda-8511-d1ab4cd2bf7d', '0a018f12-ee06-4b11-97aa-bbbff5448e9f', '3dd347df-f14e-40d5-9ff2-9c49f84d2157', 'e56541a5-a6d5-4750-b1fe-f6b5257bfe7c', 'e6594a5b-552c-421a-b376-1a1baa9dc4fd', '81a1dca0-cc90-47c5-afe3-c277319c47c8', 'ebe090af-5922-4fcd-8fc6-17b8ba7bad6d', '004d8fd5-41e7-4f1b-a45b-0d4ad76fe446', '9dd72e52-5393-4c08-9eca-f7dace2e59f6', '9fc31d79-b56f-46d0-92a0-e9563caf4a7a', '2d9bfc10-59fb-424a-b699-7c42f86c7871', '88224abb-5746-431f-9c17-17d7ef806e6a', '195443eb-08e9-4a18-a7e1-d105b2ce1429', 'ebe2efe3-e8a1-451a-8947-76ef42427cc9', 'a9138924-4395-4981-83d1-530f6ff7c8fc', '6668c4a0-70a4-4012-a7da-709660971d7a', '0802ced5-33a3-405e-8336-b65ebc5cb07c', 'bb8d9451-fdbd-4f46-b52e-9290e8f84d2e', 'f88d4dd4-ccd7-400e-9035-fa00be3bcfa8', '4a45c8ba-db6f-4f11-9403-56e06a33dfa4', '9a629642-3a9c-42ed-b70a-532db0e86199', '08102cfc-a040-4bcf-b63c-faa0f4914a6f', '14127fdb-2e66-4823-b124-f49c128ba94d', '5455a21c-1be7-4cae-ae8e-8853a8d5f55e', '781b35fd-e1f0-4d14-b2bb-95b7263082bb', '3f6e25ae-c007-4dc3-aa77-450fd5705046', 'dc962048-89bb-4e6a-96a9-b062a2be1426', 'a4a74102-2af5-45dc-9e41-ef7f5aed88be', '2f63c555-eb74-4d8d-ada5-5c3ecf3b46be', '5bcafa14-71cb-42fa-8265-ce5cda1b89e0', 'f7335a49-4a98-46d2-a8ce-d041d2eac1d6', 'd57df551-6dcb-4242-9c72-b806cff5613a', '8c025071-c4f3-426c-9aed-f149e8f75b7b', '196a2adf-ff83-49b2-823a-33f990049c2e', 'f27e6cd6-cdd3-4524-b8e3-8146046e2a7d', '51e53aff-1d5d-4182-a684-aba783d50ae5', 'ff96bfe1-d925-4553-94b5-bf8297adf259', 'c23b4118-db40-4333-af1d-933154b533c6', '28741f91-c837-4147-939e-918d38d849f2', 'e9fc0a2d-c69d-44d1-9fa3-314782387cae', '9545aa05-3945-4054-a5c3-a259f7209d61', 'e49d8ee7-24b9-416a-9d04-9be33b655f40', '30af8629-7b96-45b7-8778-374720ddbc5e', '8928f98a-b411-497e-aa4b-aa752434686d', '62902992-8432-46fb-af12-6392012e58c7', '54238fd6-d2d0-4408-b1a9-d19d24fd29ce', '23c75e0b-05d8-452e-8efb-a3687ab94079', '239dd3c9-35f3-4462-95ee-91b822a22e6b', 'd32876dd-8303-4720-8e7e-20678dc2fd71', '8a3a0197-b40a-449f-be55-c00b23253bbf', 'ca4ecb4c-4b60-4723-9b9e-2c54a6290a53', 'a2ec6341-c55f-48a0-a23b-0ef2f5b1d71e', '3537d970-f515-4786-853f-23de525e110f', 'c728f6fd-58e2-448d-aefb-a72c637b604c', 'a34b4013-414b-42ed-9318-e93fbbc71e7b', '7af49c00-63dd-4fed-b2e0-1b3bd945b20b', 'f8041c1e-5ef4-4ae6-afec-ed82d7a74dc1', 'caa5dddc-9290-4e27-9f5e-575ba3598614', '687017d4-c9fc-458f-a7d5-0979fe1a7470', '4364a246-f8d7-4ce7-ba23-a098104b96e4', '158d5d35-a2ab-4a76-87b0-51048c5d5283', '7f5df7eb-cf36-4589-a20a-14b535441142', '7cc74598-9c1b-436b-84fa-0bf89f31adf6', 'bb6a5aae-2431-401d-8f6a-9fdd6de655a9', 'd85c454e-8737-4cba-b6ad-b2339429d99b', '239cdbb1-68e2-4eb0-91d8-ae5ae4001c7a', '3f859b5c-e73a-4044-b49e-34bb81e96715', 'b69b86be-af7d-4ecf-8cbf-0cd356afa1bd', '549caacc-3bd7-40f1-913d-e94141816547', '4ddb8a95-788b-48d0-8a0a-66c7c796da96', '810b1e07-009e-4ebe-930a-915e4cd8ece4', '2d5f6d81-38c4-4bdc-ac3c-302ea4d5f46e', 'a7eba2cf-427f-4df9-879b-e53e962eae18', '75b6b132-d998-4fba-8482-961418ac957d', '1d4a7bd6-296a-48b9-b20e-bd0ac80750a5', '15948667-747b-4702-9d53-354ac70e9119', '7235b10c-6621-44ea-abe9-01559633472d', 'f25642c6-27a5-4a97-9ea0-06652db79fbd', '6434f2f5-6bce-42b8-8563-d93d493613a2', '6bf810fd-fbeb-4eea-9ea7-b6791d002b22', '0deb75fb-9088-42d9-b744-012fb8fc4afb', '3f71aa98-08c6-4e79-b4c8-00eae4f03eff', '90c61c38-b9fd-4cc3-9795-29160d2f8e55', '8c552ddc-813e-4035-81cc-3971b57efe65', '5339812f-8b91-40ba-9d8f-a559563cc46b', '8c2f7f4d-7346-42a4-a715-4d37a5208535', 'f9860a11-24d3-452e-ab95-39e199f20a93', 'b22f694e-4a34-4142-ab9d-2556c3487086', 'f359281f-6941-4bfd-90d4-940be22ed3c3', 'de905562-31c6-4c31-9ece-3ee87b97eab4', '8a1cf4ef-06e3-4c72-9bc7-e1baa189841b', '58c4bf97-ec3b-45b4-9db4-d5d9515d5b00', '768a371d-7e88-47f8-bf21-4a6a6570dd6e', '61caa69d-088b-465a-b9d0-d75341dabac6', '0cbeae00-e229-4b7d-bdcc-1b0569d7e0c3', 'f99ac31f-171b-4208-a55d-5644c0ad51c3', 'd832d9f7-c96a-4f63-8921-516ba4a7b61f', '251ece37-7798-477c-8a06-2845d4aa270c', '5157810e-0fff-4bcf-b19d-32d4e39c7dfc',
+'1928bf72-2002-46a6-8930-728420402e01',
+  '283ecb4c-e529-409c-9f0a-8ea5191dcf50',
+  '2ab7d2c2-bcb7-4ae6-9626-f3786c22d970',
+  '35ed605c-1a1a-47b1-86ff-2b56144f55af',
+  '5d01d14e-aced-4465-8f8e-9a1c674f62ec',
+  '7be8fec4-406b-4e74-8548-d2885dcc3d5e',
+  '8ca740c5-e7fe-430a-aa10-e74e9c3cbbe8',
+  '91a3353a-2da1-420d-8c7c-fad2fedfdd18',
+  'b52182e7-39f6-4914-9717-136db589706e',
+  'c557324b-b95d-414c-888f-6ee1329a2329',
+  'd23a44ef-1402-4ed7-97f5-47e9a7a504d9',
+  'd2918f52-8280-43c0-924b-029b2317e62c',
+  'd71e565d-4ddb-42df-849e-f99cfdeced52',
+  'd7e60cc3-6020-429e-a654-636c6cc677ea',
+  'e349a2e7-50a3-47ca-bc45-20d1899854ec',
+  'e535fb62-e245-4a48-b119-88ce62a6fe67',
+  'ecb5520d-1358-434c-95ec-93687ecd1396',
+  'f4ffb731-8349-4fe4-806e-0232a84e52dd',
+  'fb70ebf7-8175-42b0-9b7a-7c6e8612226e']
+
+
+
 def get_all_PETHs_parallel(
     eids_plus=None,
     vers: str = 'concat',
     require_all: bool = False,
     n_workers: int = 5,
-    bad_eids: Optional[Sequence[str]] = None,
+    bad_eids: list = bad_eids,
     overwrite: bool = False,
 ):
     """
@@ -1578,12 +1829,12 @@ def _attach_ephys_features(r):
     return dfm, r
 
 
-def stack_concat(vers='concat', get_concat=False, get_tls=False,
+def stack_concat(vers='concat', get_tls=False,cv2=False,
                  ephys=False, concat_only=False, cv=False, min_trials=10):
     """
     Stack concatenated PETHs from per-trial data on disk and optionally compute embeddings.
 
-    - Non-CV:      average trials per segment -> concat time -> one matrix (neurons × time)
+    - Non-CV:      average trials per segment -> concat time -> one matrix (neurons x time)
     - CV (half0/1): split trials per segment into two halves -> train & test matrices
     """
     start_time = time.time()
@@ -1630,7 +1881,7 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
         M = ar.shape[2]
         if M == 0:
             return np.zeros(ar.shape[:2], dtype=np.float32)
-        return ar.mean(axis=2).astype(np.float32)
+        return np.mean(ar,axis=2).astype(np.float32)  # median results in too many zero 
 
     def _extract_trials_3d(D, tname: str) -> np.ndarray:
         """
@@ -1664,6 +1915,167 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
             Xt = _extract_trials_3d(D_sample, t)  # (N,T,M)
             lens.append(int(Xt.shape[1]))
         return lens
+
+    def _half_means_concat(D, ttypes_eff):
+        segs0, segs1 = [], []
+        for t in ttypes_eff:
+            X = _extract_trials_3d(D, t)  # (N,T,M)
+            if X.size:
+                _, mk = _count_real_trials_3d(X)
+                if mk.size:
+                    X = X[:, :, mk]
+
+            M = X.shape[2]
+            if M <= 1:
+                idx0 = np.arange(M, dtype=int)
+                idx1 = np.array([], dtype=int)
+            else:
+                k = (M + 1) // 2
+                idx0 = np.arange(0, k, dtype=int)
+                idx1 = np.arange(k, M, dtype=int)
+
+            A0 = _avg_trials(X[:, :, idx0])
+            A1 = _avg_trials(X[:, :, idx1])
+            segs0.append(A0)
+            segs1.append(A1)
+
+        P0 = np.concatenate(segs0, axis=1) if segs0 else np.empty((0, 0))
+        P1 = np.concatenate(segs1, axis=1) if segs1 else np.empty((0, 0))
+        return P0, P1
+    # =========================================================
+    #                     CV2 PATH (new)
+    # =========================================================
+    if cv2:
+        # --- First run the CV-like loop, but store masks per file ---
+        masks_by_fn = {}         # fn -> common_good mask (len = n_raw for that insertion)
+        r_cv = _init_r_dict()
+        ws_train = []
+        tot0_raw = tot1_raw = tot_after = 0
+
+        lens_eff = _compute_lens_eff_from_sample(D_sample, ttypes_eff)
+
+        for fn in ss:
+            eid = fn.split('_')[0]
+            probe_name = fn.split('_')[1].split('.')[0]
+            pid = pid__(eid, probe_name)
+            D = _load_D(Path(pth, fn))
+
+            # keep the same gating as CV
+            def _count_grouped_trials_cv(tname: str) -> int:
+                X = _extract_trials_3d(D, tname)
+                c, _ = _count_real_trials_3d(X)
+                return int(c)
+
+            counts_cv = {t: _count_grouped_trials_cv(t) for t in ttypes_eff}
+            failing_cv = {t: c for t, c in counts_cv.items() if c < min_trials}
+            if failing_cv:
+                detail = ", ".join(f"{t}={c}" for t, c in sorted(failing_cv.items()))
+                print(f"[CV2 skip] {eid}_{probe_name}: <{min_trials} real trials for types: {detail}")
+                continue
+
+            try:
+                P0, P1 = _half_means_concat(D, ttypes_eff)
+            except Exception as ex:
+                print(f"[CV2] Skipping {eid}_{probe_name}: {type(ex).__name__}: {ex}")
+                continue
+
+            valid0 = (~np.isnan(P0).any(axis=1)) & np.any(P0, axis=1)
+            valid1 = (~np.isnan(P1).any(axis=1)) & np.any(P1, axis=1)
+            common_good = valid0 & valid1
+            if not np.any(common_good):
+                print(f"[CV2] Skipping {eid}_{probe_name}: no valid neurons after joint mask")
+                continue
+
+            masks_by_fn[fn] = common_good  # <-- store mask for later full-data build
+
+            P0c = P0[common_good, :]
+            P1c = P1[common_good, :]
+            ws_train.append(P0c)
+
+            n_raw = len(D['ids'])
+            for ke in r_cv.keys():
+                base = np.array([pid] * n_raw) if ke == 'pid' else np.asarray(D[ke])
+                r_cv[ke].append(base[common_good])
+
+            tot0_raw += n_raw
+            tot1_raw += n_raw
+            tot_after += P0c.shape[0]
+
+        print(len(ws_train), 'CV2 train insertions combined')
+        print(f"[CV2] TOTALS (before cleaning): half0={tot0_raw}, half1={tot1_raw} neurons")
+        print(f"[CV2] TOTALS (after joint mask): kept={tot_after} neurons")
+
+        for ke in r_cv.keys():
+            r_cv[ke] = np.concatenate(r_cv[ke]) if len(r_cv[ke]) else np.array([])
+        X_train = np.concatenate(ws_train, axis=0) if len(ws_train) else np.empty((0, 0))
+
+        Z_train = zscore(X_train, axis=1) if X_train.size else X_train
+
+        print('[CV2] fitting Rastermap on TRAIN (half0)...')
+        model = Rastermap(n_PCs=200, n_clusters=100,
+                          locality=0.75, time_lag_window=5, bin_size=1).fit(Z_train)
+        isort_train = model.isort  # global neuron ordering learned on half-data
+
+        # --- Now rebuild full (non-CV) concat, but apply SAME masks ---
+        ws_full = []
+        r_full = _init_r_dict()
+
+        for fn in ss:
+            if fn not in masks_by_fn:
+                continue  # insertion skipped in CV2
+
+            eid = fn.split('_')[0]
+            probe_name = fn.split('_')[1].split('.')[0]
+            pid = pid__(eid, probe_name)
+            D_ = _load_D(Path(pth, fn))
+
+            common_good = masks_by_fn[fn]
+
+            segs = []
+            for t in ttypes_eff:
+                X = _extract_trials_3d(D_, t)  # (N,T,M)
+                if X.size:
+                    _, mk = _count_real_trials_3d(X)
+                    if mk.size:
+                        X = X[:, :, mk]
+                A = _avg_trials(X)            # (N,T)
+                segs.append(A)
+
+            P_full = np.concatenate(segs, axis=1)  # (N, sum_T)
+            P_full = P_full[common_good, :]        # <-- apply CV2 mask
+            ws_full.append(P_full)
+
+            n_raw = len(D_['ids'])
+            for ke in r_full.keys():
+                base = np.array([pid] * n_raw) if ke == 'pid' else np.asarray(D_[ke])
+                r_full[ke].append(base[common_good])
+
+        for ke in r_full.keys():
+            r_full[ke] = np.concatenate(r_full[ke]) if len(r_full[ke]) else np.array([])
+
+        cs_full = np.concatenate(ws_full, axis=0) if len(ws_full) else np.empty((0, 0))
+        print(f"[CV2] FULL merged size after applying CV mask: {cs_full.shape[0]} neurons, {cs_full.shape[1]} timebins")
+
+        r_full['ttypes'] = list(ttypes_eff)
+        r_full['len'] = dict(zip(ttypes_eff, lens_eff))
+        r_full['fr'] = np.array([np.mean(x) for x in cs_full], dtype=np.float32) if cs_full.size else np.array([], dtype=np.float32)
+        r_full['concat_z'] = zscore(cs_full, axis=1) if cs_full.size else cs_full
+
+        # apply sorting learned on half-data to full-data matrix
+        r_full['isort'] = isort_train
+
+        # (optional) UMAP on full, if you want parity with other outputs
+        print('[CV2] embedding UMAP on FULL concat_z...')
+        r_full['umap_z'] = umap.UMAP(n_components=2, random_state=0,
+                                     n_neighbors=8, min_dist=0.2).fit_transform(r_full['concat_z'])
+
+        out = pth_res / f'{vers}_cv2True_ephys{ephys}.npy'
+        np.save(out, r_full, allow_pickle=True)
+        print(f'saved CV2 combined data to {out}')
+        print(f"Function 'stack_concat' executed in: {time.time() - start_time:.4f} s")
+        return
+
+
 
     # =========================================================
     #                      NON-CV PATH
@@ -1769,8 +2181,20 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
             print('Rastermap failed:', e)
 
         print(f'embedding UMAP on {vers}...')
-        r['umap_z'] = umap.UMAP(n_components=2, random_state=0,
-                                n_neighbors=8, min_dist=0.2).fit_transform(r['concat_z'])
+        r['umap_z'] = umap.UMAP(n_components=2, random_state=0).fit_transform(r['concat_z'])  # n_neighbors=8, min_dist=0.2
+
+        #  more spread out
+        # r['umap_z'] = umap.UMAP(
+        #     n_neighbors=15,
+        #     min_dist=0.05,
+        #     spread=1.2,
+        #     repulsion_strength=1.5,
+        #     negative_sample_rate=10,
+        #     n_epochs=1000,
+        #     metric='euclidean',
+        #     init='spectral',
+        #     random_state=0
+        # ).fit_transform(r['concat_z'])                               
 
         print(f'embedding PCA on {vers}...')
         pca = PCA(n_components=2)
@@ -1785,32 +2209,7 @@ def stack_concat(vers='concat', get_concat=False, get_tls=False,
     # =========================================================
     #                        CV PATH
     # =========================================================
-    def _half_means_concat(D, ttypes_eff):
-        segs0, segs1 = [], []
-        for t in ttypes_eff:
-            X = _extract_trials_3d(D, t)  # (N,T,M)
-            if X.size:
-                _, mk = _count_real_trials_3d(X)
-                if mk.size:
-                    X = X[:, :, mk]
 
-            M = X.shape[2]
-            if M <= 1:
-                idx0 = np.arange(M, dtype=int)
-                idx1 = np.array([], dtype=int)
-            else:
-                k = (M + 1) // 2
-                idx0 = np.arange(0, k, dtype=int)
-                idx1 = np.arange(k, M, dtype=int)
-
-            A0 = _avg_trials(X[:, :, idx0])
-            A1 = _avg_trials(X[:, :, idx1])
-            segs0.append(A0)
-            segs1.append(A1)
-
-        P0 = np.concatenate(segs0, axis=1) if segs0 else np.empty((0, 0))
-        P1 = np.concatenate(segs1, axis=1) if segs1 else np.empty((0, 0))
-        return P0, P1
 
     r = _init_r_dict()
     ws_train, ws_test = [], []
@@ -1911,7 +2310,7 @@ def plot_dim_reduction(algo='umap_z', mapping='kmeans', ephys=False,
                        feat='concat_z', means=False, exa=False, shuf=False,
                        exa_squ=False, vers='concat', ax=None, ds=0.5,
                        axx=None, exa_kmeans=False, leg=False, restr=None,
-                       nclus=13, rerun=False, cv=True, combine_mistake=True):
+                       nclus=7, rerun=False, cv=False):
     """
     2D embedding (e.g., UMAP) colored by mapping.
     Segment boundaries/labels are taken from r['len'] (ordered) and r['peth_dict'].
@@ -1919,8 +2318,7 @@ def plot_dim_reduction(algo='umap_z', mapping='kmeans', ephys=False,
 
     # --- load result dict with the exact data-derived order/labels ---
     r = regional_group(mapping, vers=vers, ephys=ephys,
-                       nclus=nclus, rerun=rerun, cv=cv,
-                       combine_mistake=combine_mistake)
+                       nclus=nclus, rerun=rerun, cv=cv)
 
     if feat not in r:
         raise KeyError(f"Feature '{feat}' not found.")
@@ -1934,6 +2332,7 @@ def plot_dim_reduction(algo='umap_z', mapping='kmeans', ephys=False,
     if ax is None:
         alone = True
         fig, ax = plt.subplots(label=f'{vers}_{mapping}')
+
 
     # --- optional color shuffle ---
     if shuf:
@@ -1977,8 +2376,17 @@ def plot_dim_reduction(algo='umap_z', mapping='kmeans', ephys=False,
     # --- save main figure ---
     if alone:
         fig.tight_layout()
-        cmb_tag = f"_cmb{combine_mistake}"
-        out = Path(one.cache_dir, 'dmn', 'imgs', f'{nclus}_kmeans_umap{cmb_tag}_cv{cv}.png')
+
+
+                # --- SET ACTUAL WINDOW TITLE WITH nclus ---
+        try:
+            fig.canvas.manager.set_window_title(
+                f"umap | {algo} | {mapping} | nclus={nclus} | cv={int(cv)} | {vers}"
+            )
+        except Exception:
+            pass
+
+        out = Path(one.cache_dir, 'dmn', 'imgs', f'{nclus}_kmeans_umap_cv{cv}.png')
         fig.savefig(out, dpi=150)
 
     # --- interactive example ---
@@ -2005,16 +2413,26 @@ def plot_dim_reduction(algo='umap_z', mapping='kmeans', ephys=False,
                         f'Line Plot at ({np.round(x_clicked,2)}, {np.round(y_clicked,2)})')
                     fig_extra.canvas.draw()
 
+
+
         fig.canvas.mpl_connect('pick_event', update_line)
         im.set_picker(5)
 
     # --- cluster mean PETHs (uses r['len'] + r['peth_dict']) ---
     if exa_kmeans:
-        plot_cluster_mean_PETHs(r, mapping, feat, vers=vers, axx=axx, alone=True,
-                                combine_mistake=combine_mistake)
+        plot_cluster_mean_PETHs(r, mapping, feat, vers=vers, axx=axx, alone=True)
         ff = plt.gcf()
+
+                        # --- SET ACTUAL WINDOW TITLE WITH nclus ---
+        try:
+            ff.canvas.manager.set_window_title(
+                f"Avg | {algo} | {mapping} | nclus={nclus} | cv={int(cv)} | {vers}"
+            )
+        except Exception:
+            pass
+
         out2 = Path(one.cache_dir, 'dmn', 'imgs',
-                    f'{nclus}_kmeans_lines_cmb{int(bool(combine_mistake))}_cv{cv}.png')
+                    f'{nclus}_kmeans_lines_cv{cv}.png')
         ff.savefig(out2, dpi=150)
 
     # --- square ROIs and mean/individual PETHs with correct segment order ---
@@ -2064,12 +2482,12 @@ def plot_dim_reduction(algo='umap_z', mapping='kmeans', ephys=False,
                          fontsize=10, color='k', ha='center')
                 h += seg_len
     plt.show()
-
+    #plt.close('all')
 
 
 
 def plot_cluster_mean_PETHs(r, mapping, feat, vers='concat',
-                            axx=None, alone=True, combine_mistake=False, cvk=True): # MODIFIED
+                            axx=None, alone=True): # MODIFIED
     """
     Plot mean PETH per cluster using the segment order/labels from the data file.
     """
@@ -2083,9 +2501,6 @@ def plot_cluster_mean_PETHs(r, mapping, feat, vers='concat',
     if 'peth_dict' not in r:
         r['peth_dict'] = {k: k for k in r['len'].keys()}
 
-    # Check for CV-KMeans requirement and availability
-    cvk_filter = (cvk and 'same_cluster' in r and np.any(r['same_cluster'])) # NEW
-
     clu_vals = np.array(sorted(np.unique(r['acs'])))
     n_clu = len(clu_vals)
     if n_clu > 50:
@@ -2093,7 +2508,7 @@ def plot_cluster_mean_PETHs(r, mapping, feat, vers='concat',
         return
 
     if axx is None:
-        fg, axx = plt.subplots(nrows=n_clu, sharex=True, sharey=False, figsize=(6, 6))
+        fg, axx = plt.subplots(nrows=n_clu, sharex=True, sharey=False, figsize=(6, 10))
     if not isinstance(axx, (list, np.ndarray)):
         axx = [axx]
     if len(axx) != n_clu:
@@ -2109,16 +2524,7 @@ def plot_cluster_mean_PETHs(r, mapping, feat, vers='concat',
 
     for k, clu in enumerate(clu_vals):
         # Determine the base indices for the current cluster
-        base_idx = np.where(r['acs'] == clu)[0] # Keep base_idx separate for clearer logic
-        
-        # Apply the CV-KMeans filter if cvk=True and data is present
-        if cvk_filter:
-            # Only include indices where 'acs' matches AND 'same_cluster' is True (1)
-            idx = np.where(np.bitwise_and(r['acs'] == clu, r['same_cluster']))[0] 
-            print(f"Cluster {clu}: using {len(idx)} neurons after CV-KMeans filter (from {len(base_idx)} total).")
-        else:
-            # Use the base indices if no filter is applied
-            idx = base_idx # MODIFIED (uses the original base_idx for clarity)
+        idx = np.where(r['acs'] == clu)[0] 
 
         if idx.size == 0:
             axx[k].axis('off')
@@ -2142,6 +2548,10 @@ def plot_cluster_mean_PETHs(r, mapping, feat, vers='concat',
         for s in ordered_segments:
             seg_len = r['len'][s]
             xv_bins = h + seg_len
+
+            if xv_bins > n_bins:
+                break   
+
             axx[k].axvline(xv_bins / c_sec, linestyle='--', linewidth=1, color='grey')
             if k == 0:
                 seg_mid = h + seg_len / 2.0
@@ -2150,7 +2560,10 @@ def plot_cluster_mean_PETHs(r, mapping, feat, vers='concat',
                             rotation=90, color='k', fontsize=10, ha='center')
             h += seg_len
 
+        axx[k].set_xlim(0, n_bins / c_sec)
+
     axx[-1].set_xlabel('time [sec]')
+
     if alone:
         plt.tight_layout()
 
@@ -2344,25 +2757,37 @@ def smooth_dist(dim=2, algo='umap_z', mapping='Beryl',
 
 
 def plot_ave_PETHs(feat='concat_z', vers='concat',
-                   rerun=False, anno=True, separate_cols=False,
-                   combine_mistake=False, mapping_for_load='kmeans', cv=False, ephys=False, nclus=13):
+                   rerun=False, anno=True, separate_cols=False, mapping_for_load='kmeans', cv=False, ephys=False, nclus=7):
     """
     Average PETHs across cells and plot.
     Critically: segment order and labels come from the data file (r['len'], r['peth_dict']).
     """
-
-    import itertools
-    from matplotlib.cm import get_cmap
 
     # mean timing between task events (unchanged)
     evs = {'stimOn_times': 'gray',
            'firstMovement_times': 'cyan',
            'feedback_times': 'orange'}
 
-    def _build_event_stats():
+    # === Load combined matrix first (so we can get pids/eids from r) ===
+    r = regional_group(mapping_for_load, vers=vers, ephys=ephys,
+                       nclus=nclus, rerun=False, cv=cv)
+
+    # --- NEW: get eids directly from r['pid'] via one.pid2eid ---
+    pids = np.unique(np.asarray(r['pid']))
+    eids_from_r = []
+    for pid in pids:
+        try:
+            out = one.pid2eid(pid)
+            # pid2eid usually returns (eid, probe), handle both tuple and scalar
+            eid = out[0] if isinstance(out, (tuple, list, np.ndarray)) else out
+            eids_from_r.append(eid)
+        except Exception:
+            continue
+    eids_from_r = list(np.unique(eids_from_r))
+
+    def _build_event_stats(eids):
         pth_dmnm = Path(Path(one.cache_dir, 'dmn'), 'mean_event_diffs.npy')
         if (not pth_dmnm.is_file()) or rerun:
-            eids = list(np.unique(bwm_query(one)['eid']))
             diffs = []
             for eid in eids:
                 try:
@@ -2383,12 +2808,9 @@ def plot_ave_PETHs(feat='concat_z', vers='concat',
             np.save(pth_dmnm, d, allow_pickle=True)
         return np.load(pth_dmnm, allow_pickle=True).flat[0]
 
-    d = _build_event_stats()
+    # now build stats using only eids present in r
+    d = _build_event_stats(eids_from_r)
 
-    # === Load the combined matrix using the pipeline that carries order/labels ===
-    r = regional_group(mapping_for_load, vers=vers, ephys=ephys,
-                       nclus=nclus, rerun=False, cv=cv,
-                       combine_mistake=combine_mistake)
     if feat not in r:
         raise KeyError(f"Feature '{feat}' not found in combined data (try 'concat_z').")
 
@@ -2441,7 +2863,7 @@ def plot_ave_PETHs(feat='concat_z', vers='concat',
 
 def plot_xyz(mapping='Beryl', vers='concat', add_cents=False,
              restr=False, ax=None, axoff=True, exa=True,
-             combine_mistake=False, ephys=False, nclus=13, cv=False):
+             combine_mistake=False, ephys=False, nclus=7, cv=False):
     """
     3D scatter of cell features with optional example traces.
     Segment boundaries/labels (in example traces) come from r['len'] and r['peth_dict'].
@@ -3534,7 +3956,7 @@ def plot_dist_clusters(anno=True, axs=None):
 
 
 def plot_single_feature(algo='umap_z', vers='concat', mapping='Beryl',
-                        reg='MOp', combine_mistake=True, ephys=False, nclus=8, cv=True):
+                        reg='MOp', ephys=False, nclus=8, cv=False):
     """
     For a single cell, plot its feature vector with PETH labels.
     Segment order and labels are taken from r['len'] and r['peth_dict'].
@@ -3542,7 +3964,7 @@ def plot_single_feature(algo='umap_z', vers='concat', mapping='Beryl',
 
     feat = 'concat_z' if algo.endswith('z') else 'concat'
     r = regional_group(mapping, vers=vers, ephys=ephys, nclus=nclus,
-                       cv=cv, combine_mistake=combine_mistake)
+                       cv=cv)
 
     # guard against empty region
     idxs = np.where(np.asarray(r['acs']) == reg)[0]
@@ -3596,11 +4018,11 @@ def _draw_peth_boundaries(ax, r, vers, yy_max, c_sec):
         h += d2[sec]
 
 
-def plot_features_by_acs(n: int,
+def plot_example_neurons(n: int,
                          vers: str = 'concat',
                          mapping: str = 'kmeans',
                          seed: Optional[int] = None,
-                         max_categories: int = 20,
+                         max_categories: int = 100,
                          offset_scale: float = 4.0,
                          linewidth: float = 1.3,
                          savefig: bool = True,
@@ -3611,20 +4033,28 @@ def plot_features_by_acs(n: int,
                          label_key: str = 'Beryl',
                          label_fontsize: int = 8,
                          label_pad_frac: float = 0.01,
-                         cv=False):
+                         nclus: int = 7,
+                         cv: bool = False,
+                         # --- NEW ARGUMENTS ---
+                         min_max_fr: Optional[Tuple[float, float]] = [0.1,100],
+                         min_max_lz: Optional[Tuple[float, float]] = [0,0.6]):
     """
-    Adds per-neuron labels (default: r['Beryl'][i]) at the start of each plotted line.
-    For n example neurons per 'acs' category in the specified mapping,
-    plot their feature vectors (PETHs) stacked vertically with offsets.
-    Useful for visualizing variability within anatomical categories.
+    Adds per-neuron labels. Now supports filtering by firing-rate (fr)
+    and Lempel-Ziv (lz) ranges via min_max_fr / min_max_lz.
     """
+
     if seed is not None:
         random.seed(seed); np.random.seed(seed)
 
     feat = 'concat_z'
-    r = regional_group(mapping, vers=vers, cv=cv)
+    r = regional_group(mapping, vers=vers, cv=cv, nclus=nclus)
     if feat not in r:
         raise KeyError(f"Feature '{feat}' not in r. Available: {list(r.keys())}")
+
+    if 'fr' not in r:
+        raise KeyError("'fr' (firing rate) not found in r.")
+    if 'lz' not in r:
+        raise KeyError("'lz' (Lempel–Ziv complexity) not found in r.")
 
     acs_vals = np.asarray(r['acs'])
     cats = np.unique(acs_vals)
@@ -3638,20 +4068,33 @@ def plot_features_by_acs(n: int,
         print(f"[info] Figures will be saved to {save_dir}")
 
     xx = np.arange(r[feat].shape[1]) / c_sec  # seconds
-    x_span = xx[-1] - xx[0]
-    x0_annot = xx[0] + label_pad_frac * x_span  # small pad from left
 
     for cat in cats:
+        # -----------------------------
+        # NEW: filtering by FR and LZ
+        # -----------------------------
         idx_all = np.where(acs_vals == cat)[0]
-        if idx_all.size == 0: 
+
+        # apply firing rate filter
+        if min_max_fr is not None:
+            lo, hi = min_max_fr
+            idx_all = idx_all[(r['fr'][idx_all] >= lo) & (r['fr'][idx_all] <= hi)]
+
+        # apply LZ filter
+        if min_max_lz is not None:
+            lo, hi = min_max_lz
+            idx_all = idx_all[(r['lz'][idx_all] >= lo) & (r['lz'][idx_all] <= hi)]
+        # -----------------------------
+
+        if idx_all.size == 0:
             continue
+
         k = min(n, idx_all.size)
         samp = np.random.choice(idx_all, size=k, replace=False) if idx_all.size >= k \
                else np.array(random.choices(idx_all, k=k))
 
         fig, ax = plt.subplots(figsize=(7.6, 10), constrained_layout=True)
         try:
-            # vertical spacing
             stds = [np.nanstd(r[feat][i]) for i in samp]
             base_off = 2.0 * (np.nanmedian(stds) if len(stds) else 1.0)
             off = base_off * offset_scale
@@ -3660,46 +4103,89 @@ def plot_features_by_acs(n: int,
             for j, i in enumerate(samp):
                 yi = r[feat][i]
                 yy = yi + j * off
-                color = r['cols'][i] if 'cols' in r else None
-                ax.plot(xx, yy, linewidth=linewidth, color=color, alpha=0.9)
+                lbl = str(r[label_key][i])
+                color = pal[lbl]
+
+                ax.plot(xx, yy, linewidth=linewidth, color='black', alpha=0.9)
                 y_max_seen = max(y_max_seen, np.nanmax(yy))
 
-                # --- Beryl label placed just left of the line ---
-                if annotate and (label_key in r):
-                    x_offset = xx[0] - 0.02 * (xx[-1] - xx[0])  # 2% left of data
+                if annotate:
+                    # region label
+                    x_offset = xx[0] - 0.02 * (xx[-1] - xx[0])
                     prefix = max(1, int(0.02 * yi.size))
                     y0 = np.nanmedian(yi[:prefix]) + j * off
-                    lbl = str(r[label_key][i])
+
                     ax.text(x_offset, y0, lbl,
                             fontsize=label_fontsize,
                             va='center', ha='right',
-                            color=color if color is not None else 'black',
+                            color=color,
                             alpha=0.95,
+                            clip_on=False)
+
+                    # FR + LZ annotation
+                    fr_val = float(r['fr'][i])
+                    lz_val = float(r['lz'][i])
+                    info_txt = f"{fr_val:.2f}, {lz_val:.2f}"
+                    y1 = y0 - 0.3 * off
+                    ax.text(x_offset, y1, info_txt,
+                            fontsize=label_fontsize - 1,
+                            va='center', ha='right',
+                            color=color,
+                            alpha=0.9,
                             clip_on=False)
 
             _draw_peth_boundaries(ax, r, vers, y_max_seen, c_sec)
 
-            fig.suptitle(f"{mapping} = {cat}   (n={k} of {idx_all.size} neurons)", fontsize=12, weight='bold')
             ax.set_xlabel("time [s]")
             ax.set_ylabel("z-scored firing rate (stacked)")
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
-            ax.spines['left'].set_visible(False)            
+            ax.spines['left'].set_visible(False)
+            ax.yaxis.set_ticks([])
 
+            # ensure left space for labels
+            ax.set_xlim(-0.5, xx[-1])
 
-            # leave room for y-label + suptitle
+            # base counts
+            N0 = np.sum(acs_vals == cat)            # count BEFORE any filters
+            N1 = len(idx_all)                       # count AFTER both filters (current)
+            # We need counts after *only* FR filter, before LZ:
+            if min_max_fr is None:
+                N_fr = N0
+            else:
+                lo, hi = min_max_fr
+                fr_mask = (r['fr'][acs_vals == cat] >= lo) & (r['fr'][acs_vals == cat] <= hi)
+                N_fr = int(np.sum(fr_mask))
+
+            # Title header
+            title = f"{mapping} = {cat} of {nclus}, (n={k} of {N1} neurons)"
+
+            # FR line
+            if min_max_fr is not None:
+                lo, hi = min_max_fr
+                title += f"\nFR ∈ [{lo:.2f}, {hi:.2f}]   ({N0} → {N_fr})"
+
+            # LZ line
+            if min_max_lz is not None:
+                lo, hi = min_max_lz
+                title += f"\nLZ ∈ [{lo:.2f}, {hi:.2f}]   ({N_fr} → {N1})"
+
+            fig.suptitle(title, fontsize=12, weight='bold')
+
             fig.subplots_adjust(left=0.12, top=0.90)
 
             if savefig:
                 for fmt in save_formats:
-                    fn = save_dir / f"{mapping}_{cat}_n{n}.{fmt}"
+                    fn = save_dir / f"{mapping}_{cat}_of{nclus}_n{n}.{fmt}"
                     fig.savefig(fn, dpi=dpi, bbox_inches='tight')
-                print(f"  saved: {mapping}_{cat}_n{n}_cv{cv}.{save_formats[0]}")
+                print(f"  saved: {mapping}_{cat}_of_{nclus}_n{n}_cv{cv}.{save_formats[0]}")
 
             if show:
                 plt.show(block=False)
+
         finally:
-            gc.collect() 
+            gc.collect()
+
     
 def var_expl(minreg=20):
 
@@ -3751,14 +4237,14 @@ def var_expl(minreg=20):
   
 
     
-def clus_freqs(foc='kmeans', nmin=50, nclus=13, vers='concat', get_res=False,
+def clus_freqs(foc='kmeans', nmin=50, nclus=7, vers='concat', get_res=False,
                rerun=False, norm_=True, save_=True, single_regions=[],
                axs = None):
 
     '''
-    For each k-means cluster, show an Allen region bar plot of frequencies,
-    or vice versa
-    foc: focus, either kmeans or Allen
+
+
+    foc: kmeans, Berly, dec
     get_res: return results
     norm_: normalize distribution so they all sum up to 1
     save_: save results to file
@@ -4135,10 +4621,9 @@ def compare_two_goups(vers='concat', filt = 'VISp'):
 
 
 def plot_rastermap(vers='concat', feat='concat_z', regex='ECT', 
-                   exa = True, mapping='kmeans', bg=False, img_only=False,
-                   interp='antialiased', single_reg=False, cv=True,
-                   bg_bright = 0.99, vmax=2, rerun=False, sort_method='rastermap',
-                   combine_mistake=True, nclus=13):
+                   exa = False, mapping='kmeans', bg=False, img_only=False,
+                   interp='antialiased', single_reg=False, cv=False, cv2=False,
+                   bg_bright = 0.99, vmax=2, rerun=False, sort_method='rastermap',nclus=7, clsfig=False, bounds=True):
     """
     Function to plot a rastermap with vertical segment boundaries 
     and labels positioned above the segments.
@@ -4157,10 +4642,10 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
         - 'pca': sort by first PCA dimension
     """
     r = regional_group(mapping, vers=vers, ephys=False, nclus=nclus, 
-                       rerun=rerun, cv=cv, combine_mistake=combine_mistake)
+                       rerun=rerun, cv=cv, cv2=cv2)
 
     if exa:
-        plot_cluster_mean_PETHs(r,mapping, feat, combine_mistake=combine_mistake)
+        plot_cluster_mean_PETHs(r,mapping, feat)
 
 
     spks = r[feat]
@@ -4243,6 +4728,21 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
         del rgba_overlay
         gc.collect()
 
+    if mapping == 'rm' and bg and bounds:
+        # row_colors already reordered by isort (and possibly filtered by single_reg)
+        rc = np.asarray(row_colors)
+        if rc.ndim == 2 and rc.shape[0] > 1:
+            # find indices where the color (cluster) changes between consecutive rows
+            color_changes = np.any(np.diff(rc, axis=0) != 0, axis=1)
+            boundaries = np.where(color_changes)[0] + 0.5  # between rows i and i+1
+
+            for y in boundaries:
+                ax.axhline(
+                    y,
+                    color='k',
+                    linewidth=0.6,
+                    zorder=5
+                )
 
     if feat != 'ephysTF':
         if 'len' not in r or not isinstance(r['len'], dict) or len(r['len']) == 0:
@@ -4261,6 +4761,10 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
         for seg in ordered_segments:
             seg_len = r['len'][seg]
             xv = h + seg_len
+
+            if xv > n_cols:
+                break           
+
             ax.axvline(xv, linestyle='--', linewidth=1, color='grey')
 
             midpoint = h + seg_len / 2.0
@@ -4293,13 +4797,14 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
             ax.text(0.5, 1.05, f'{regex} ({n_ex})', ha='center', va='bottom',
                     fontsize=12, color=pal[regex], transform=ax.transAxes)
 
+    ax.set_xlim(0, n_cols)
     plt.tight_layout()  # Adjust the layout to prevent clipping
     # plt.show()
 
     # --- build descriptive filename and window title ---
     descriptor = (
-        f"{mapping} | cv={int(cv)}| cm={combine_mistake} | "
-        f"bg={int(bg)} | nclus={nclus} | {vers}")
+        f"{mapping}_cv{int(cv)}"
+        f"_bg{int(bg)}_nclus{nclus}_{vers}")
 
     fname = "rastermap_" + descriptor.replace(" | ", "_").replace("=", "") + ".png"
 
@@ -4312,6 +4817,9 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
     out_path = pth_dmn.parent / "imgs" / fname
     fig.savefig(out_path, dpi=150, bbox_inches='tight', facecolor='white')
 
+    if clsfig:
+        # close figure
+        plt.close(fig)
 
     for v in ("sig","img_array","isort","r"):
         if v in locals(): 
@@ -4653,7 +5161,7 @@ def plot_three_swansons():
 
 
 
-def scat_dec_clus(norm_=True, ari=False, harris=False,
+def scat_dec_clus(norm_=True, harris=False, nclus=10, corr_only=False,
                   log_scale=True, axs=None, compare='clu'):
     '''
     Scatter plots comparing specialization scores from clustering and decoding,
@@ -4663,8 +5171,6 @@ def scat_dec_clus(norm_=True, ari=False, harris=False,
     ----------
     norm_ : bool
         Placeholder; not used in current implementation.
-    ari : bool
-        If True, use ARI-based decoding scores instead of flatness.
     harris : bool
         If True, compare specialization scores to Harris hierarchy.
     log_scale : bool
@@ -4676,14 +5182,9 @@ def scat_dec_clus(norm_=True, ari=False, harris=False,
     '''
 
     # Load specialization scores
-    be = flatness_entropy_score(clus_freqs(foc='Beryl', get_res=True))
-
-    if ari:
-        d0 = np.load('/home/mic/wasserstein_fromflatdist_13_concat_nd2.npy',
-                     allow_pickle=True).flat[0]
-        de = {reg: d0['res'][k] for k, reg in enumerate(d0['regs'])}
-    else:
-        de = flatness_entropy_score(clus_freqs(foc='dec', get_res=True))
+    be = flatness_entropy_score(clus_freqs(foc='Beryl', get_res=True,       
+        nclus=nclus))
+    de = flatness_entropy_score(clus_freqs(foc='dec', get_res=True))
 
     if axs is None:
         fig, axs = plt.subplots(figsize=(3, 3))
@@ -4706,13 +5207,6 @@ def scat_dec_clus(norm_=True, ari=False, harris=False,
         if log_scale:
             ax.set_xscale('log')
             ax.set_yscale('log')
-            # # Ensure x and y limits match
-            # min_val = min(min(x), min(y))
-            # max_val = max(max(x), max(y))
-            # ax.set_xlim(min_val, max_val)
-            # ax.set_ylim(min_val, max_val)
-
-            # ax.set_aspect('equal', adjustable='box')
 
         ax.set_xlabel(xlabel, fontsize=10)
         ax.set_ylabel(ylabel, fontsize=10)
@@ -4753,21 +5247,38 @@ def scat_dec_clus(norm_=True, ari=False, harris=False,
         else:
             raise ValueError("compare must be 'clu' or 'dec'")
 
+        if corr_only:
+            # Just compute and print correlation
+            plt.gcf().clear()
+            corr, pval = pearsonr(x_vals, y_vals)
+            print(f'{nclus} clusters; compare {compare} to Harris')
+            print(f"Pearson r = {corr:.2f}, p = {pval:.4g}")
+            return corr, pval
+
         scatter_panel(axs, x_vals, y_vals, xlabel, ylabel, labels, colors)
 
     else:
         common = set(be) & set(de)
         x_vals = [be[r] for r in common]
         y_vals = [de[r] for r in common]
+
+
+        if corr_only:
+            # Just compute and print correlation
+            corr, pval = pearsonr(x_vals, y_vals)
+            print(f'{nclus} clusters; compare to dec')
+            print(f"Pearson r = {corr:.2f}, p = {pval:.4g}")
+            return corr, pval
+
+
         labels = list(common)
         colors = [pal[r] for r in labels]
         xlabel = 'log(Specialization (clu))' if log_scale else 'Specialization (clu)'
         ylabel = (
-            'log(Specialization (dec))' if log_scale and not ari else
-            'Specialization (dec)' if not ari else
-            'ARI non-flatness'
+            'log(Specialization (dec))' if log_scale else
+            'Specialization (dec)'
         )
-        save_name = 'scat_clu_vs_dec.svg' if not ari else 'scat_clu_vs_ari.svg'
+        save_name = 'scat_clu_vs_dec.svg'
 
         scatter_panel(axs, x_vals, y_vals, xlabel, ylabel, labels, colors)
 
@@ -4777,97 +5288,57 @@ def scat_dec_clus(norm_=True, ari=False, harris=False,
     plt.show()
 
 
+def plot_cluster_pearson(ax=None, r_squared=False):
+    """
+    Plot Pearson's r as a function of k-means cluster number.
 
-def scatter_harris_correlation(acronyms=False, axs=None):
+    Parameters
+    ----------
+    results : list
+        List like:
+        [
+          [cluster_id, (np.float64(r_value), np.float64(p_value))],
+          ...
+        ]
+    ax : matplotlib.axes.Axes, optional
+        Existing axes to plot into. If None, a new figure/axes is created.
 
-    # File paths based on the image names
+    Returns
+    -------
+    ax : matplotlib.axes.Axes
+        The axes with the plot.
+    """
 
-    nets = ['concat']
-    # , 'motor_init', 'pre-stim-prior', 
-    #     'stim_all', 'stim_surp_con', 'stim_surp_incon']
+    results = []
+    for i in range(3,18):
+        results.append([i,scat_dec_clus(nclus=i,corr_only=True)]) 
 
-    file_paths = [Path(one.cache_dir, 'dmn', 
-        f'wasserstein_fromflatdist_13_{net}_nd2.npy') for net in nets]
+    # Extract cluster IDs and r-values
+    clusters = []
+    r_values = []
+    for cluster_id, (r_val, p_val) in results:
+        clusters.append(int(cluster_id))
+        r_values.append(float(r_val) if r_squared == False else float(r_val**2))
 
+    clusters = np.array(clusters)
+    r_values = np.array(r_values)
 
-    # Load Harris hierarchy scores
-    harris_hierarchy_scores = {region: idx for idx, region in enumerate(harris_hierarchy)}
+    # Sort by cluster number, just in case input is unsorted
+    order = np.argsort(clusters)
+    clusters = clusters[order]
+    r_values = r_values[order]
 
-    # Prepare data for each file
-    datasets = []
-    for path in file_paths:
-        data = np.load(path, allow_pickle=True).flat[0]
-        de = {}
-        for k, reg in enumerate(data['regs']):
-            de[reg] = data['res'][k]
-        datasets.append(de)
+    # Prepare axis
+    if ax is None:
+        fig, ax = plt.subplots()
 
-    # Identify common regions across all datasets and Harris scores
-    common_regions = set.intersection(*(set(dataset.keys()) for dataset in datasets), set(harris_hierarchy_scores.keys()))
+    # Plot
+    ax.plot(clusters, r_values, marker="o")
+    ax.axhline(0, linestyle="--", linewidth=1)  # zero reference
 
-    # Extract merged data for scatter plots
-    merged_data = []
-    for dataset in datasets:
-        merged_data.append({region: (dataset[region], harris_hierarchy_scores[region]) for region in common_regions})
-
-    alone = False
-    if axs is None:
-        alone = True
-        # Set up subplots (1 row, 6 columns)
-        fig, axs = plt.subplots(3, 2, figsize=(7, 10),sharey=True)
-        axes = axs.flatten()
-
-    # Define scatter plot function for reuse
-    def scatter_panel(ax, x, y, labels, colors, xlabel, ylabel, title):
-
-        # Pearson correlation
-        corr, p = pearsonr(x, y)
-
-        # Fit regression line
-        slope, intercept, r_value, _, _ = linregress(x, y)
-        xx = np.linspace(min(x), max(x), 100)
-        yy = slope * xx + intercept
-        ax.plot(xx, yy, color='black', linestyle='--',linewidth=0.5 if p > 0.05 else 1, 
-            label=f'Fit: y={slope:.2f}x+{intercept:.2f}')
-
-        # if p < 0.05:
-        #     # put an astreics at the end of lie plot    
-        #     ax.text(0.95, 0.95, '*', transform=ax.transAxes, fontsize=20, verticalalignment='top')
-
-        # Scatter points with region-specific colors and labels
-        for i, region in enumerate(labels):
-            ax.scatter(x[i], y[i], color=colors[i])
-            if acronyms:
-                ax.text(x[i], y[i], region, color=colors[i], ha='left')
-
-        # Set labels and title
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel(ylabel)
-        # put tile left
-        #ax.set_title(f"{title}", fontsize=10, loc="left")  
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-
-    # Generate scatter plots for each dataset
-    for i, data in enumerate(merged_data):
-        x = [data[region][0] for region in data]
-        y = [data[region][1] for region in data]
-        labels = list(data.keys())
-        colors = [pal[region] for region in labels]  # Assume `pal` maps regions to colors
-        print( 'i', i)
-        scatter_panel(
-            axs[i], x, y, labels, colors,
-            xlabel='specialization' if i == 0 else '',
-            ylabel='hierarchy score',
-            title=f'{nets[i].replace("_", " ").title()}'
-        )
-        if i != 0:
-           axs[i].set_ylabel('')
-
-    if alone:
-        # Adjust layout and show
-        plt.tight_layout()
-        plt.show()
+    ax.set_xlabel("k-means cluster")
+    ax.set_ylabel("Pearson's r with dec specialisation score" if not r_squared else "R squared with dec specialisation score")
+    ax.set_title("Cluster-wise correlation")
 
 
 def plot_brain_region_counts(start=None, end=None, nmin=50):
@@ -5107,14 +5578,14 @@ def save_rastermap_pdf(
     feat: str = 'concat_z',
     mapping: str = 'kmeans',
     bg: bool = False,
-    cv: bool = True,
+    cv: bool = False,
     shrink: bool = False,
     shrink_alpha: float = 0.0,
-    combine_mistake: bool = False,
     vers: str = 'concat',
     ephys: bool = False,
     nclus: int = 13,
     rerun: bool = False,
+    bounds: bool = True
 ):
     """
     Save a rastermap image as a PDF, optionally with colored row background.
@@ -5129,7 +5600,6 @@ def save_rastermap_pdf(
         nclus=nclus,
         rerun=rerun,
         cv=cv,
-        combine_mistake=combine_mistake,
     )
 
     spks = r[feat]
@@ -5162,6 +5632,33 @@ def save_rastermap_pdf(
                 + alpha_overlay * overlay[None, :].astype(np.float32)
             ).astype(np.uint8)
 
+    if mapping == 'rm' and bg and bounds:
+        rc = np.asarray(r['cols'])[isort]
+        if rc.ndim == 2 and rc.shape[0] > 1:
+            color_changes = np.any(np.diff(rc, axis=0) != 0, axis=1)
+            boundaries = np.where(color_changes)[0] + 1  # pixel row index
+
+            # draw black lines directly into the RGB image
+            for y in boundaries:
+                if 0 <= y < image_rgba.shape[0]:
+                    image_rgba[y, :, 0] = 0
+                    image_rgba[y, :, 1] = 0
+                    image_rgba[y, :, 2] = 0
+
+    if 'len' in r and isinstance(r['len'], dict) and len(r['len']) > 0:
+        h = 0
+        for seg, seg_len in r['len'].items():
+            x = int(h + seg_len)
+            if x >= image_rgba.shape[1]:
+                break
+
+            # dotted line: every 2nd pixel set to black
+            image_rgba[::2, x, 0] = 0
+            image_rgba[::2, x, 1] = 0
+            image_rgba[::2, x, 2] = 0
+
+            h += seg_len
+
     # ---- write PDF (drop alpha channel) ----
     img = Image.fromarray(image_rgba[..., :3], mode='RGB')
 
@@ -5172,8 +5669,8 @@ def save_rastermap_pdf(
         f"_cv{int(cv)}"
         f"_shrink{int(shrink)}"
         f"_alpha{shrink_alpha:.2f}"
-        f"_cm{int(combine_mistake)}"
         f"_bg{int(bg)}"
+        f"_nclus{nclus}"
         f".pdf"
     )
 
@@ -5456,3 +5953,95 @@ def reaction_time_hist():
     plt.legend(frameon=False)
     plt.tight_layout()
     plt.show()
+
+
+def make_contact_sheet_a4_sorted(
+    in_dir,
+    out_png="contact_sheet_A4.png",
+    out_pdf="contact_sheet_A4.pdf",
+    max_images=100,
+    dpi=300,
+    margin_mm=10,
+):
+    in_dir = Path(in_dir)
+
+    def extract_nclus(path: Path) -> int:
+        """
+        Extract integer after 'nclus' in filename, e.g.
+        'rastermap_rm_cv0_bg1_nclus7_concat.png' -> 7
+        """
+        m = re.search(r"nclus(\d+)", path.name)
+        if not m:
+            raise ValueError(f"No 'nclus' number found in filename: {path}")
+        return int(m.group(1))
+
+
+    # --- collect and sort PNG files by nclus ---
+    files = sorted(in_dir.glob("*.png"), key=extract_nclus)
+    if not files:
+        raise FileNotFoundError(f"No PNG files found in: {in_dir}")
+
+    files = files[:max_images]
+    n_images = len(files)
+    nclus_vals = [extract_nclus(p) for p in files]
+
+    # --- A4 size in pixels ---
+    MM_PER_INCH = 25.4
+    a4_width_px  = int(210 / MM_PER_INCH * dpi)
+    a4_height_px = int(297 / MM_PER_INCH * dpi)
+
+    # --- margins in pixels ---
+    margin_px = int(margin_mm / MM_PER_INCH * dpi)
+
+    # --- grid layout ---
+    cols = math.ceil(math.sqrt(n_images))
+    rows = math.ceil(n_images / cols)
+
+    usable_width  = a4_width_px  - 2 * margin_px
+    usable_height = a4_height_px - 2 * margin_px
+    cell_w = usable_width  // cols
+    cell_h = usable_height // rows
+    if cell_w <= 0 or cell_h <= 0:
+        raise ValueError("Grid too dense for chosen DPI/margins.")
+
+    # --- canvas ---
+    sheet = Image.new("RGB", (a4_width_px, a4_height_px), "white")
+    draw = ImageDraw.Draw(sheet)
+
+    # font size relative to cell
+    font_size = int(min(cell_w, cell_h) * 0.18)
+    try:
+        font = ImageFont.truetype("DejaVuSans-Bold.ttf", font_size)
+    except OSError:
+        font = ImageFont.load_default()
+
+    # --- paste images and draw labels ---
+    for i, (path, nclus) in enumerate(zip(files, nclus_vals)):
+        img = Image.open(path).convert("RGB")
+        # fit into cell
+        img.thumbnail((cell_w, cell_h), Image.LANCZOS)
+
+        row = i // cols
+        col = i % cols
+
+        x0 = margin_px + col * cell_w
+        y0 = margin_px + row * cell_h
+
+        # center image in its cell
+        x_img = x0 + (cell_w - img.width) // 2
+        y_img = y0 + (cell_h - img.height) // 2
+        sheet.paste(img, (x_img, y_img))
+
+        # nclus label at top-left of the *cell*
+        text = str(nclus)
+        tx = x0 + int(cell_w * 0.03)
+        ty = y0 + int(cell_h * 0.03)
+
+        # pseudo-bold: draw several times with small offsets
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1), (0, 0)]:
+            draw.text((tx + dx, ty + dy), text, fill="black", font=font)
+
+    # --- save ---
+    sheet.save(out_png, dpi=(dpi, dpi))
+    sheet.save(out_pdf, "PDF", resolution=dpi)
+    print(f"Saved {out_png} and {out_pdf}")
