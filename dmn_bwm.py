@@ -86,7 +86,7 @@ import matplotlib.ticker as ticker
 from matplotlib import cm
 from matplotlib.colors import to_rgba
 from matplotlib.cm import ScalarMappable
-from typing import Optional, List, Tuple, Dict, Sequence
+from typing import Optional, List, Tuple, Dict, Sequence, Union
 from collections import OrderedDict
 
 import warnings
@@ -897,7 +897,8 @@ def print_full_structure_tree(filename='structure_tree.pdf'):
 
 
 def regional_group(mapping, vers='concat', ephys=False,grid_upsample=0,
-                   nclus=100, rerun=False, cv=False, cv2=False):
+                   nclus=20, rerun=False, cv=False, cv2=False, locality=0.75,
+                   time_lag_window=5, symmetric=False):
     """
     Group / color neurons for visualization and downstream analyses.
     """
@@ -957,7 +958,10 @@ def regional_group(mapping, vers='concat', ephys=False,grid_upsample=0,
             base += "_cvFalse_ephysFalse"
 
         base += f"_n{int(nclus)}"
-        return pth_res / (base + ".npy")    
+        # NEW: encode grid_upsample in the filename
+        base += f"_grid{int(grid_upsample)}"
+
+        return pth_res / (base + ".npy") 
 
 
     stack_path = _stack_fname()
@@ -1120,9 +1124,10 @@ def regional_group(mapping, vers='concat', ephys=False,grid_upsample=0,
                 n_PCs=200,
                 n_clusters=nclus,
                 grid_upsample=grid_upsample,      # as you wanted
-                locality=0.75,
-                time_lag_window=5,
+                locality=locality,
+                time_lag_window=time_lag_window,
                 bin_size=1,
+                symmetric=symmetric,
             ).fit(r[feat])
 
             # exact copies of Rastermap internals:
@@ -2157,6 +2162,25 @@ def stack_concat(vers='concat', get_tls=False,cv2=False,
             return
 
         r['fr'] = np.array([np.mean(x) for x in cs], dtype=np.float32)
+
+        data = np.asarray(r['concat_z'])
+        rng = np.random.default_rng(0)
+   
+        if data.ndim != 2:
+            raise ValueError("r['concat_z'] must be 2D (neurons x time).")
+
+        N = data.shape[0]
+        print(f"[info] Computing LZs for {N} neurons…")
+
+        # Compute LZs per neuron
+        t1 = time.perf_counter()
+        lz_vals = np.zeros(N, float)
+        for i in range(N):
+            lz_vals[i] = lzs_pci(data[i], rng)
+
+        # Store and save
+        r['lz'] = lz_vals
+
         r['concat_z'] = zscore(cs, axis=1)
 
         if ephys and len(r['uuids']):
@@ -2280,6 +2304,24 @@ def stack_concat(vers='concat', get_tls=False,cv2=False,
     r['concat_z'] = zscore(X_test, axis=1) if X_test.size else X_test
     r['fr'] = np.array([np.mean(x) for x in X_test], dtype=np.float32) if X_test.size else np.array([], dtype=np.float32)
 
+    data = np.asarray(r['concat_z'])
+    rng = np.random.default_rng(0)
+
+    if data.ndim != 2:
+        raise ValueError("r['concat_z'] must be 2D (neurons x time).")
+
+    N = data.shape[0]
+    print(f"[info] Computing LZs for {N} neurons…")
+
+    # Compute LZs per neuron
+    lz_vals = np.zeros(N, float)
+    for i in range(N):
+        lz_vals[i] = lzs_pci(data[i], rng)
+
+    # Store and save
+    r['lz'] = lz_vals
+
+
     r['ttypes'] = list(ttypes_eff)
     r['len'] = dict(zip(ttypes_eff, lens_eff))
 
@@ -2306,15 +2348,19 @@ def stack_concat(vers='concat', get_tls=False,cv2=False,
 '''
         
 
-def plot_dim_reduction(algo='umap_z', mapping='kmeans', ephys=False,
+def plot_dim_reduction(algo='umap_z', mapping='rm', ephys=False,
                        feat='concat_z', means=False, exa=False, shuf=False,
                        exa_squ=False, vers='concat', ax=None, ds=0.5,
                        axx=None, exa_kmeans=False, leg=False, restr=None,
-                       nclus=7, rerun=False, cv=False):
+                       nclus=7, rerun=False, cv=False, save_only=False):
     """
     2D embedding (e.g., UMAP) colored by mapping.
     Segment boundaries/labels are taken from r['len'] (ordered) and r['peth_dict'].
     """
+
+    if save_only:
+        plt.ioff()
+
 
     # --- load result dict with the exact data-derived order/labels ---
     r = regional_group(mapping, vers=vers, ephys=ephys,
@@ -2386,8 +2432,11 @@ def plot_dim_reduction(algo='umap_z', mapping='kmeans', ephys=False,
         except Exception:
             pass
 
-        out = Path(one.cache_dir, 'dmn', 'imgs', f'{nclus}_kmeans_umap_cv{cv}.png')
+        out = Path(one.cache_dir, 'dmn', 'imgs', f'{nclus}_{mapping}_umap_cv{cv}.png')
         fig.savefig(out, dpi=150)
+        if save_only:
+            plt.close(fig)
+            
 
     # --- interactive example ---
     if exa:
@@ -2432,8 +2481,10 @@ def plot_dim_reduction(algo='umap_z', mapping='kmeans', ephys=False,
             pass
 
         out2 = Path(one.cache_dir, 'dmn', 'imgs',
-                    f'{nclus}_kmeans_lines_cv{cv}.png')
+                    f'{nclus}_{mapping}_lines_cv{cv}.png')
         ff.savefig(out2, dpi=150)
+        if save_only:
+            plt.close(ff)
 
     # --- square ROIs and mean/individual PETHs with correct segment order ---
     if exa_squ:
@@ -2755,9 +2806,42 @@ def smooth_dist(dim=2, algo='umap_z', mapping='Beryl',
     return res, regs_aug
 
 
+def _build_event_stats(rerun=False):
+    pth_dmnm = Path(Path(one.cache_dir, 'dmn'), 'mean_event_diffs.npy')
+    if (not pth_dmnm.is_file()) or rerun:
+
+        pids = np.unique(np.asarray(r['pid']))
+
+        eids_from_r = []
+
+        diffs = []
+        for pid in pids:
+            try:
+                eid = one.pid2eid(pid)
+                if eid in eids_from_r:
+                    continue
+                eids_from_r.append(eid)
+
+                trials, mask = load_trials_and_mask(one, eid, revision='2024-07-10')
+                trials = trials[mask][:-100]
+                diffs.append(np.mean(np.diff(trials[list(evs.keys())]), axis=0))
+            except Exception:
+                continue
+
+        d = {}
+        d['mean'] = np.nanmean(diffs, axis=0)
+        d['std'] = np.nanstd(diffs, axis=0)
+        d['diffs'] = diffs
+        d['av_tr_times'] = [np.cumsum([0] + list(x)) for x in d['diffs']]
+        d['av_times'] = dict(zip(list(evs.keys()),
+                                    zip(np.cumsum([0] + list(d['mean'])),
+                                        np.cumsum([0] + list(d['std'])))))
+        np.save(pth_dmnm, d, allow_pickle=True)
+    return np.load(pth_dmnm, allow_pickle=True).flat[0]
+
 
 def plot_ave_PETHs(feat='concat_z', vers='concat',
-                   rerun=False, anno=True, separate_cols=False, mapping_for_load='kmeans', cv=False, ephys=False, nclus=7):
+                   rerun=False, anno=True, separate_cols=False, cv=False):
     """
     Average PETHs across cells and plot.
     Critically: segment order and labels come from the data file (r['len'], r['peth_dict']).
@@ -2769,61 +2853,32 @@ def plot_ave_PETHs(feat='concat_z', vers='concat',
            'feedback_times': 'orange'}
 
     # === Load combined matrix first (so we can get pids/eids from r) ===
-    r = regional_group(mapping_for_load, vers=vers, ephys=ephys,
-                       nclus=nclus, rerun=False, cv=cv)
-
-    # --- NEW: get eids directly from r['pid'] via one.pid2eid ---
-    pids = np.unique(np.asarray(r['pid']))
-    eids_from_r = []
-    for pid in pids:
-        try:
-            out = one.pid2eid(pid)
-            # pid2eid usually returns (eid, probe), handle both tuple and scalar
-            eid = out[0] if isinstance(out, (tuple, list, np.ndarray)) else out
-            eids_from_r.append(eid)
-        except Exception:
-            continue
-    eids_from_r = list(np.unique(eids_from_r))
-
-    def _build_event_stats(eids):
-        pth_dmnm = Path(Path(one.cache_dir, 'dmn'), 'mean_event_diffs.npy')
-        if (not pth_dmnm.is_file()) or rerun:
-            diffs = []
-            for eid in eids:
-                try:
-                    trials, mask = load_trials_and_mask(one, eid, revision='2024-07-10')
-                    trials = trials[mask][:-100]
-                    diffs.append(np.mean(np.diff(trials[list(evs.keys())]), axis=0))
-                except Exception:
-                    continue
-
-            d = {}
-            d['mean'] = np.nanmean(diffs, axis=0)
-            d['std'] = np.nanstd(diffs, axis=0)
-            d['diffs'] = diffs
-            d['av_tr_times'] = [np.cumsum([0] + list(x)) for x in d['diffs']]
-            d['av_times'] = dict(zip(list(evs.keys()),
-                                     zip(np.cumsum([0] + list(d['mean'])),
-                                         np.cumsum([0] + list(d['std'])))))
-            np.save(pth_dmnm, d, allow_pickle=True)
-        return np.load(pth_dmnm, allow_pickle=True).flat[0]
+    r = regional_group('rm',cv=cv)
 
     # now build stats using only eids present in r
-    d = _build_event_stats(eids_from_r)
+    d = _build_event_stats()
 
     if feat not in r:
         raise KeyError(f"Feature '{feat}' not found in combined data (try 'concat_z').")
 
     r['mean'] = np.mean(r[feat], axis=0)
 
+    # get alignement event per PETH from example session
+    tts = concat_PETHs('8d661567-49f3-4547-997d-a345c0ffe2dd',get_tts=True)
+    align_dict = {k: [tts[k][0],tts[k][-1]] for k in tts.keys()}
+    # anchors for events relative to stimOn (stimOn = 0)
+    stim_anchor = 0.0
+    move_anchor = float(d['av_times']['firstMovement_times'][0])
+    fb_anchor   = float(d['av_times']['feedback_times'][0])
+
     # plotting
     fig, ax = plt.subplots(figsize=(7, 2.75))
 
-    # segment order & labels from file
+    # segment order & labels
     ordered_segments = list(r['len'].keys())
     labels = r.get('peth_dict', {k: k for k in ordered_segments})
 
-    # color handling for lines/labels
+    # color handling
     import itertools
     if separate_cols:
         cmap = get_cmap('tab10')
@@ -2832,30 +2887,92 @@ def plot_ave_PETHs(feat='concat_z', vers='concat',
         colors = itertools.cycle(['k'])
 
     yys = []
-    st = 0
+    st = 0  # index into the concatenated feature dimension
+
     for seg in ordered_segments:
-        color = next(colors)
-        seg_len = r['len'][seg]
-        # align x-window using average task timing if available; fall back to uniform binning
-        # we place each segment consecutively in time with bin width T_BIN
-        xx = np.linspace(0, seg_len * T_BIN, seg_len) + st * T_BIN
-        yy = r['mean'][st: st + seg_len]; yys.append(max(yy))
+        seg_len = int(r['len'][seg])
+
+        # mean activity for this segment
+        yy = r['mean'][st: st + seg_len]
         st += seg_len
+
+        # skip if we don't know how this segment is aligned
+        if seg not in align_dict:
+            continue
+
+        align_event, window = align_dict[seg]
+        window = np.asarray(window, dtype=float).ravel()
+        if window.size != 2:
+            # malformed window spec
+            continue
+
+        pre_mag, offset_signed = float(window[0]), float(window[1])
+
+        # window length in seconds, as you specified
+        window_len_sec = pre_mag + offset_signed
+
+        # time axis RELATIVE TO THE ALIGNMENT EVENT:
+        # infer start/end relative to event from pre_mag and offset_signed
+        start_rel_event = -pre_mag
+        end_rel_event   = offset_signed
+
+        # build segment time axis in seconds (seg_len bins)
+        # (this ensures that the total span equals window_len_sec)
+        t_rel = np.linspace(start_rel_event, end_rel_event, seg_len)
+
+        # anchor in global time (stimOn = 0)
+        if align_event == 'stimOn_times':
+            t_anchor = stim_anchor
+        elif align_event == 'firstMovement_times':
+            t_anchor = move_anchor
+        elif align_event == 'feedback_times':
+            t_anchor = fb_anchor
+        else:
+            # nothing to do for unknown anchor
+            continue
+
+        # global time axis for this segment
+        xx = t_rel + t_anchor
+
+        # (defensive) shape consistency
+        if xx.shape[0] != yy.shape[0]:
+            L = min(xx.shape[0], yy.shape[0])
+            xx = xx[:L]
+            yy = yy[:L]
+
+        color = next(colors)
+        yys.append(np.nanmax(yy))
         ax.plot(xx, yy, label=seg, color=color)
         if anno:
-            ax.annotate(labels.get(seg, seg), (xx[-1], yy[-1]), color=color, fontsize=8)
+            ax.annotate(
+                labels.get(seg, seg),
+                (xx[-1], yy[-1]),
+                color=color,
+                fontsize=8,
+            )
 
-    # event lines (global anchors)
-    for ev in d['av_times']:
-        if ev == 'intervals_1':
+    # event lines at their mean times
+    ymax = max(yys) if len(yys) > 0 else 1.0
+    for ev, col in evs.items():
+        if ev not in d['av_times']:
             continue
-        ax.axvline(x=d['av_times'][ev][0], label=ev, color=evs[ev], linestyle='-')
+        t_ev = float(d['av_times'][ev][0])
+        ax.axvline(x=t_ev, label=ev, color=col, linestyle='-')
         if anno:
-            ax.annotate(ev, (d['av_times'][ev][0], 0.8 * max(yys)),
-                        color=evs[ev], rotation=90, textcoords='offset points', xytext=(-15, 0), fontsize=8)
+            ax.annotate(
+                ev,
+                (t_ev, 0.8 * ymax),
+                color=col,
+                rotation=90,
+                textcoords='offset points',
+                xytext=(-15, 0),
+                fontsize=8,
+            )
 
-    ax.spines['right'].set_visible(False); ax.spines['top'].set_visible(False)
-    ax.set_xlabel('time [sec]'); ax.set_ylabel('trial-averaged z')
+    ax.spines['right'].set_visible(False)
+    ax.spines['top'].set_visible(False)
+    ax.set_xlabel('time [sec]')
+    ax.set_ylabel('trial-averaged z')
     fig.canvas.manager.set_window_title('PETHs averaged across all BWM cells')
     fig.tight_layout()
 
@@ -3956,7 +4073,7 @@ def plot_dist_clusters(anno=True, axs=None):
 
 
 def plot_single_feature(algo='umap_z', vers='concat', mapping='Beryl',
-                        reg='MOp', ephys=False, nclus=8, cv=False):
+                        reg='MOp', ephys=False, nclus=20, cv=False):
     """
     For a single cell, plot its feature vector with PETH labels.
     Segment order and labels are taken from r['len'] and r['peth_dict'].
@@ -4018,33 +4135,45 @@ def _draw_peth_boundaries(ax, r, vers, yy_max, c_sec):
         h += d2[sec]
 
 
-def plot_example_neurons(n: int,
-                         vers: str = 'concat',
-                         mapping: str = 'kmeans',
-                         seed: Optional[int] = None,
-                         max_categories: int = 100,
-                         offset_scale: float = 4.0,
-                         linewidth: float = 1.3,
-                         savefig: bool = True,
-                         save_formats: tuple = ('png',),
-                         dpi: int = 200,
-                         show: bool = True,
-                         annotate: bool = True,
-                         label_key: str = 'Beryl',
-                         label_fontsize: int = 8,
-                         label_pad_frac: float = 0.01,
-                         nclus: int = 7,
-                         cv: bool = False,
-                         # --- NEW ARGUMENTS ---
-                         min_max_fr: Optional[Tuple[float, float]] = [0.1,100],
-                         min_max_lz: Optional[Tuple[float, float]] = [0,0.6]):
+def plot_example_neurons(
+        n: int,
+        vers: str = 'concat',
+        mapping: str = 'rm',
+        seed: Optional[int] = None,
+        max_categories: int = 101,
+        offset_scale: float = 4.0,
+        linewidth: float = 1.3,
+        savefig: bool = True,
+        save_formats: tuple = ('png',),
+        dpi: int = 200,
+        show: bool = True,
+        annotate: bool = True,
+        label_key: str = 'Beryl',
+        label_fontsize: int = 8,
+        label_pad_frac: float = 0.01,
+        nclus: int = 7,
+        cv: bool = False,
+        # new: choose one cluster or all
+        sing_clus: Union[bool, int] = False,
+        # --- NEW ARGUMENTS ---
+        no_filts=False,
+        min_max_fr: Optional[Tuple[float, float]] = (0.1, 100),
+        min_max_lz: Optional[Tuple[float, float]] = (0.0, 0.6),
+):
     """
-    Adds per-neuron labels. Now supports filtering by firing-rate (fr)
-    and Lempel-Ziv (lz) ranges via min_max_fr / min_max_lz.
+    Plot example neurons per cluster (mapping categories).
+
+    If sing_clus is an int, only that cluster ID is plotted.
+    If sing_clus is False (default), all clusters are plotted.
     """
 
+    if no_filts:
+        min_max_fr = None
+        min_max_lz = None
+
     if seed is not None:
-        random.seed(seed); np.random.seed(seed)
+        random.seed(seed)
+        np.random.seed(seed)
 
     feat = 'concat_z'
     r = regional_group(mapping, vers=vers, cv=cv, nclus=nclus)
@@ -4062,36 +4191,44 @@ def plot_example_neurons(n: int,
         print(f"[info] Found {cats.size} 'acs' categories (>= {max_categories}). Skipping.")
         return
 
+    # restrict to single cluster, if requested
+    if sing_clus is not False:
+        sing_clus_int = int(sing_clus)
+        if sing_clus_int not in cats:
+            print(f"[info] sing_clus={sing_clus_int} not present in categories {cats}. Nothing to plot.")
+            return
+        cats = np.array([sing_clus_int])
+
     # saving
     if savefig:
-        save_dir = Path(one.cache_dir, 'dmn', 'figs'); save_dir.mkdir(parents=True, exist_ok=True)
+        save_dir = Path(one.cache_dir, 'dmn', 'figs')
+        save_dir.mkdir(parents=True, exist_ok=True)
         print(f"[info] Figures will be saved to {save_dir}")
 
     xx = np.arange(r[feat].shape[1]) / c_sec  # seconds
 
     for cat in cats:
         # -----------------------------
-        # NEW: filtering by FR and LZ
+        # filtering by FR and LZ
         # -----------------------------
         idx_all = np.where(acs_vals == cat)[0]
 
-        # apply firing rate filter
         if min_max_fr is not None:
             lo, hi = min_max_fr
             idx_all = idx_all[(r['fr'][idx_all] >= lo) & (r['fr'][idx_all] <= hi)]
 
-        # apply LZ filter
         if min_max_lz is not None:
             lo, hi = min_max_lz
             idx_all = idx_all[(r['lz'][idx_all] >= lo) & (r['lz'][idx_all] <= hi)]
-        # -----------------------------
 
         if idx_all.size == 0:
             continue
 
         k = min(n, idx_all.size)
-        samp = np.random.choice(idx_all, size=k, replace=False) if idx_all.size >= k \
-               else np.array(random.choices(idx_all, k=k))
+        if idx_all.size >= k:
+            samp = np.random.choice(idx_all, size=k, replace=False)
+        else:
+            samp = np.array(random.choices(idx_all, k=k))
 
         fig, ax = plt.subplots(figsize=(7.6, 10), constrained_layout=True)
         try:
@@ -4110,7 +4247,6 @@ def plot_example_neurons(n: int,
                 y_max_seen = max(y_max_seen, np.nanmax(yy))
 
                 if annotate:
-                    # region label
                     x_offset = xx[0] - 0.02 * (xx[-1] - xx[0])
                     prefix = max(1, int(0.02 * yi.size))
                     y0 = np.nanmedian(yi[:prefix]) + j * off
@@ -4122,7 +4258,6 @@ def plot_example_neurons(n: int,
                             alpha=0.95,
                             clip_on=False)
 
-                    # FR + LZ annotation
                     fr_val = float(r['fr'][i])
                     lz_val = float(r['lz'][i])
                     info_txt = f"{fr_val:.2f}, {lz_val:.2f}"
@@ -4143,13 +4278,11 @@ def plot_example_neurons(n: int,
             ax.spines['left'].set_visible(False)
             ax.yaxis.set_ticks([])
 
-            # ensure left space for labels
             ax.set_xlim(-0.5, xx[-1])
 
-            # base counts
-            N0 = np.sum(acs_vals == cat)            # count BEFORE any filters
-            N1 = len(idx_all)                       # count AFTER both filters (current)
-            # We need counts after *only* FR filter, before LZ:
+            # counts
+            N0 = np.sum(acs_vals == cat)
+            N1 = len(idx_all)
             if min_max_fr is None:
                 N_fr = N0
             else:
@@ -4157,28 +4290,22 @@ def plot_example_neurons(n: int,
                 fr_mask = (r['fr'][acs_vals == cat] >= lo) & (r['fr'][acs_vals == cat] <= hi)
                 N_fr = int(np.sum(fr_mask))
 
-            # Title header
             title = f"{mapping} = {cat} of {nclus}, (n={k} of {N1} neurons)"
-
-            # FR line
             if min_max_fr is not None:
                 lo, hi = min_max_fr
                 title += f"\nFR ∈ [{lo:.2f}, {hi:.2f}]   ({N0} → {N_fr})"
-
-            # LZ line
             if min_max_lz is not None:
                 lo, hi = min_max_lz
                 title += f"\nLZ ∈ [{lo:.2f}, {hi:.2f}]   ({N_fr} → {N1})"
 
             fig.suptitle(title, fontsize=12, weight='bold')
-
             fig.subplots_adjust(left=0.12, top=0.90)
 
             if savefig:
                 for fmt in save_formats:
-                    fn = save_dir / f"{mapping}_{cat}_of{nclus}_n{n}.{fmt}"
+                    fn = save_dir / f"{mapping}_{cat}_of{nclus}_n{n}_cv{int(cv)}.{fmt}"
                     fig.savefig(fn, dpi=dpi, bbox_inches='tight')
-                print(f"  saved: {mapping}_{cat}_of_{nclus}_n{n}_cv{cv}.{save_formats[0]}")
+                print(f"  saved: {mapping}_{cat}_of{nclus}_n{n}_cv{cv}.{save_formats[0]}")
 
             if show:
                 plt.show(block=False)
@@ -4237,14 +4364,12 @@ def var_expl(minreg=20):
   
 
     
-def clus_freqs(foc='kmeans', nmin=50, nclus=7, vers='concat', get_res=False,
+def clus_freqs(foc='rm', nmin=50, nclus=20, vers='concat', get_res=False,
                rerun=False, norm_=True, save_=True, single_regions=[],
                axs = None):
 
     '''
-
-
-    foc: kmeans, Berly, dec
+    foc: rm, Berly, dec
     get_res: return results
     norm_: normalize distribution so they all sum up to 1
     save_: save results to file
@@ -4263,9 +4388,9 @@ def clus_freqs(foc='kmeans', nmin=50, nclus=7, vers='concat', get_res=False,
 
     
     r_a = regional_group('Beryl', vers=vers, nclus=nclus)    
-    r_k = regional_group('kmeans', vers=vers, nclus=nclus)
+    r_k = regional_group('rm', vers=vers, nclus=nclus)
 
-    if foc == 'kmeans':
+    if foc == 'rm':
 
         # --- cluster ids as integers (avoid '0' vs 0 mismatches) ---
         clus_ids = np.asarray(r_k['acs'])
@@ -4284,7 +4409,7 @@ def clus_freqs(foc='kmeans', nmin=50, nclus=7, vers='concat', get_res=False,
         
         fig.canvas.manager.set_window_title(
             f'Frequency of Beryl region label per'
-            f' kmeans cluster ({nclus}); vers ={vers}')    
+            f' rm cluster ({nclus}); vers ={vers}')    
 
 
 
@@ -4426,7 +4551,7 @@ def clus_freqs(foc='kmeans', nmin=50, nclus=7, vers='concat', get_res=False,
 
         if alone:
             fig.canvas.manager.set_window_title(
-                f'Frequency of kmeans cluster ({nclus}) per'
+                f'Frequency of rm cluster ({nclus}) per'
                 f' Beryl region label; vers = {vers}')
             fig.tight_layout()
 
@@ -4514,6 +4639,207 @@ def clus_freqs(foc='kmeans', nmin=50, nclus=7, vers='concat', get_res=False,
         np.save(pthres, d, allow_pickle=True)
     if get_res:
         return d
+
+
+def plot_rm_cluster_profile(clus,
+                            vers='concat',
+                            nclus=20,
+                            grid_upsample=0,
+                            cv=False,
+                            cv2=False,
+                            ephys=False,
+                            axs=None,
+                            norm_reg_count: bool = False,
+                            savefig: bool = True):
+    """
+    For a given Rastermap cluster (clus), plot:
+
+    Top panel:
+        - Average PETH-style feature vector (e.g. concat_z) for neurons in this
+          rm cluster, with PETH boundaries drawn via _draw_peth_boundaries,
+          using r['peth_dict'] as defined in regional_group.
+
+    Bottom panel:
+        - Bar plot of Beryl regions represented in this cluster.
+
+          If norm_reg_count=False (default):
+              bar height = # cells from that region in this cluster,
+              sorted by descending count.
+
+          If norm_reg_count=True:
+              bar height = (# cells from that region in this cluster) /
+                           (# cells from that region in the whole population),
+              sorted by descending normalized value (enrichment).
+    """
+    # ---- load rm clusters and Beryl labels via regional_group ----
+    r_rm = regional_group(
+        mapping='rm',
+        vers=vers,
+        ephys=ephys,
+        grid_upsample=grid_upsample,
+        nclus=nclus,
+        rerun=False,
+        cv=cv,
+        cv2=cv2,
+    )
+    r_B = regional_group(
+        mapping='Beryl',
+        vers=vers,
+        ephys=ephys,
+        grid_upsample=grid_upsample,
+        nclus=nclus,
+        rerun=False,
+        cv=cv,
+        cv2=cv2,
+    )
+
+    # ---- cluster mask (robust to str/int) ----
+    clus_ids = np.asarray(r_rm['acs'])
+    try:
+        clus_ids = clus_ids.astype(int)
+    except Exception:
+        clus_ids = np.array([int(x) for x in clus_ids])
+
+    clus = int(clus)
+    mask = (clus_ids == clus)
+    n_in_clus = int(mask.sum())
+    if n_in_clus == 0:
+        raise ValueError(f"No neurons found in rm cluster {clus}.")
+
+    # ---- feature matrix and average PETH-like trace ----
+    feat_key = 'concat_z' if 'concat_z' in r_rm else 'concat'
+    feat_mat = np.asarray(r_rm[feat_key])  # shape (N_cells, T)
+    if feat_mat.ndim != 2:
+        raise ValueError(f"{feat_key} has shape {feat_mat.shape}, expected 2D (cells × time).")
+
+    feat_cluster = feat_mat[mask, :]              # (n_in_clus, T)
+    feat_mean = feat_cluster.mean(axis=0)         # (T,)
+
+    # PETH-style time axis, consistent with plot_example_neurons
+    xx = np.arange(feat_mat.shape[1]) / c_sec
+
+    # ---- region distribution (Beryl) within this cluster ----
+    acs_B = np.asarray(r_B['acs'])    # global Beryl labels (all cells)
+    cols_B = np.asarray(r_B['cols'])
+
+    regs_in_clus = acs_B[mask]        # Beryl labels only for this cluster
+    # global base counts per region (all cells)
+    global_counts = Counter(acs_B)
+
+    # per-cluster counts
+    counts = Counter(regs_in_clus)
+
+    # consistent color mapping
+    reg2col = {}
+    for reg, col in zip(acs_B, cols_B):
+        if reg not in reg2col:
+            reg2col[reg] = col
+
+    # --- compute raw and (optionally) normalized values per region ---
+    regs = list(counts.keys())
+    raw_vals = np.array([counts[r] for r in regs], dtype=float)
+
+    if norm_reg_count:
+        # normalize each region count by its global abundance
+        vals = []
+        for rname, v in zip(regs, raw_vals):
+            base = global_counts.get(rname, 0)
+            if base > 0:
+                vals.append(v / float(base))
+            else:
+                vals.append(0.0)
+        vals = np.array(vals, dtype=float)
+    else:
+        vals = raw_vals
+
+    # --- sort by the values we actually plot (normalized or raw) ---
+    sort_idx = sorted(
+        range(len(regs)),
+        key=lambda i: (-vals[i], str(regs[i]))
+    )
+
+    reg_sorted  = [regs[i] for i in sort_idx]
+    vals_sorted = vals[sort_idx]
+    cols_sorted = [reg2col[r] for r in reg_sorted]
+
+    # ---- prepare axes ----
+    alone = axs is None
+    if alone:
+        fig, (ax_top, ax_bottom) = plt.subplots(
+            nrows=2, ncols=1, figsize=(20, 6),
+            sharex=False
+        )
+    else:
+        ax_top, ax_bottom = axs
+        fig = ax_top.figure
+
+    # ---- TOP PANEL: average PETH-like trace with PETH boundaries ----
+    ax_top.plot(xx, feat_mean, linewidth=1.2, color='black', alpha=0.9)
+
+    y_max_seen = float(np.nanmax(feat_mean))
+    pad = 0.1 * (np.nanmax(feat_mean) - np.nanmin(feat_mean) + 1e-6)
+    ax_top.set_ylim(np.nanmin(feat_mean) - pad, y_max_seen + pad)
+
+    _draw_peth_boundaries(ax_top, r_rm, vers, y_max_seen, c_sec)
+
+    ax_top.set_xlabel("time [s]")
+    ax_top.set_ylabel("z-scored firing rate (mean over cluster)")
+    ax_top.spines['top'].set_visible(False)
+    ax_top.spines['right'].set_visible(False)
+    ax_top.spines['left'].set_visible(False)
+    ax_top.yaxis.set_ticks([])
+
+    # ---- BOTTOM PANEL: region histogram ----
+    x = np.arange(len(reg_sorted))
+    bars = ax_bottom.bar(x, vals_sorted, color=cols_sorted)
+
+    ax_bottom.set_xticks(x)
+    ax_bottom.set_xticklabels(reg_sorted, rotation=90, fontsize=7)
+
+    if norm_reg_count:
+        ax_bottom.set_ylabel('fraction of region in cluster')
+        title_norm = " (normalized by global region counts)"
+    else:
+        ax_bottom.set_ylabel('# cells in cluster')
+        title_norm = ""
+
+    ax_bottom.set_xlabel('Beryl region')
+    ax_bottom.spines['top'].set_visible(False)
+    ax_bottom.spines['right'].set_visible(False)
+    ax_bottom.set_xlim(-0.5, len(reg_sorted) - 0.5)
+
+    for ticklabel, bar in zip(ax_bottom.get_xticklabels(), bars):
+        ticklabel.set_color(bar.get_facecolor())
+
+    ax_bottom.set_title(
+        f'RM cluster {clus} of {nclus} (n={n_in_clus} neurons)\n'
+        f'vers={vers}, grid={grid_upsample}{title_norm}'
+    )
+
+    if alone:
+        fig.tight_layout()
+        fig.canvas.manager.set_window_title(
+            f'RM cluster {clus}: mean PETH + Beryl composition'
+        )
+
+    if savefig:
+        save_dir = Path(one.cache_dir, 'dmn', 'figs')
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        fstem = (
+            f"rmclus_{clus}_of{nclus}"
+            f"_vers{vers}"
+            f"_grid{grid_upsample}"
+            f"_cv{int(cv)}_cv2{int(cv2)}"
+            f"_ephys{int(ephys)}"
+            f"_normReg{int(norm_reg_count)}"
+        )
+
+        png_path = save_dir / f"{fstem}.png"
+        fig.savefig(png_path, dpi=150, bbox_inches='tight')
+        print(f"[saved] {png_path}")
+        plt.close(fig)
+
 
 
 
@@ -4621,9 +4947,9 @@ def compare_two_goups(vers='concat', filt = 'VISp'):
 
 
 def plot_rastermap(vers='concat', feat='concat_z', regex='ECT', 
-                   exa = False, mapping='kmeans', bg=False, img_only=False,
+                   exa = False, mapping='rm', bg=False, img_only=False,
                    interp='antialiased', single_reg=False, cv=False, cv2=False,
-                   bg_bright = 0.99, vmax=2, rerun=False, sort_method='rastermap',nclus=7, clsfig=False, bounds=True):
+                   bg_bright = 0.99, vmax=2, rerun=False, sort_method='rastermap',nclus=7, clsfig=False, bounds=True, grid_upsample=0, locality=0.75, time_lag_window=5, symmetric=False):
     """
     Function to plot a rastermap with vertical segment boundaries 
     and labels positioned above the segments.
@@ -4642,11 +4968,16 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
         - 'pca': sort by first PCA dimension
     """
     r = regional_group(mapping, vers=vers, ephys=False, nclus=nclus, 
-                       rerun=rerun, cv=cv, cv2=cv2)
+                       rerun=rerun, cv=cv, cv2=cv2, grid_upsample=grid_upsample,
+                       locality=locality, time_lag_window=time_lag_window,
+                       symmetric=symmetric)
 
     if exa:
         plot_cluster_mean_PETHs(r,mapping, feat)
 
+
+    if clsfig:
+        plt.ioff()
 
     spks = r[feat]
     # --- choose sorting algorithm ---
@@ -4728,14 +5059,27 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
         del rgba_overlay
         gc.collect()
 
-    if mapping == 'rm' and bg and bounds:
+    if grid_upsample > 0:
+        bounds = False  # disable boundaries for upsampled grids
+
+    if mapping == 'rm' and bounds:
         # row_colors already reordered by isort (and possibly filtered by single_reg)
         rc = np.asarray(row_colors)
+
+        # cluster labels after sorting (and same masking as data/row_colors)
+        clus_sorted = np.asarray(r['acs'])[isort]
+        if single_reg:
+            # if you filtered by Beryl region, apply same mask to clusters
+            acs_B = np.asarray(r['Beryl'])[isort]
+            mask_reg = (acs_B == regex)
+            clus_sorted = clus_sorted[mask_reg]
+
         if rc.ndim == 2 and rc.shape[0] > 1:
             # find indices where the color (cluster) changes between consecutive rows
             color_changes = np.any(np.diff(rc, axis=0) != 0, axis=1)
             boundaries = np.where(color_changes)[0] + 0.5  # between rows i and i+1
 
+            # draw horizontal lines at cluster boundaries
             for y in boundaries:
                 ax.axhline(
                     y,
@@ -4744,40 +5088,85 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
                     zorder=5
                 )
 
+            # --- NEW: add cluster numbers on the right, x-zoom independent ---
+            # x in axes coordinates (0–1), y in data coordinates
+            trans_right = mpl.transforms.blended_transform_factory(
+                ax.transAxes,   # x in axes coords
+                ax.transData    # y in data coords
+            )
+
+            n_rows = data.shape[0]
+            # define edges of each cluster segment
+            # start at row 0.5, then all boundaries, then last row + 0.5
+            edges = np.concatenate(([0.5], boundaries, [n_rows - 0.5]))
+
+            for i in range(len(edges) - 1):
+                y0, y1 = edges[i], edges[i + 1]
+                mid_y = 0.5 * (y0 + y1)
+
+                # pick a representative row index for this segment
+                row_idx = int(np.clip(np.floor(mid_y), 0, n_rows - 1))
+                cid = int(clus_sorted[row_idx])
+
+                ax.text(
+                    1.01,          # just to the right of the axes
+                    mid_y,
+                    str(cid),
+                    transform=trans_right,
+                    va='center',
+                    ha='left',
+                    fontsize=8,
+                    color='k',
+                    clip_on=False
+                )
+
     if feat != 'ephysTF':
         if 'len' not in r or not isinstance(r['len'], dict) or len(r['len']) == 0:
             raise KeyError("Segment lengths r['len'] missing or empty; cannot draw boundaries/labels.")
 
-        # assert the saved order; Python 3.7+ dict preserves insertion order
         ordered_segments = list(r['len'].keys())
-        labels = r.get('peth_dict', {})  # provided by regional_group
+        labels = r.get('peth_dict', {})
 
-        # (optional) sanity: number of columns equals sum of segment lengths
         if data.shape[1] != sum(r['len'].values()):
             print(f"[warn] data.shape[1] ({data.shape[1]}) != sum(len) ({sum(r['len'].values())})")
 
-        ylim = ax.get_ylim()
+        # --- NEW: blended transform: x in data coords, y in axes coords ---
+        # This keeps labels at a fixed height (e.g. 1.02 above top) regardless of y-zoom.
+        trans_top = mpl.transforms.blended_transform_factory(
+            ax.transData,      # x in data coordinates
+            ax.transAxes       # y in axes coordinates (0–1)
+        )
+
         h = 0
         for seg in ordered_segments:
             seg_len = r['len'][seg]
             xv = h + seg_len
 
             if xv > n_cols:
-                break           
+                break
 
             ax.axvline(xv, linestyle='--', linewidth=1, color='grey')
 
             midpoint = h + seg_len / 2.0
             if not img_only:
-                ax.text(midpoint,
-                        ylim[1] + 0.05 * (ylim[1] - ylim[0]),
-                        labels.get(seg, seg),  # use label from regional_group
-                        rotation=90, color='k', fontsize=10, ha='center')
+                ax.text(
+                    midpoint,
+                    1.02,  # just above top of axes; change to 1.01/1.05 if you prefer
+                    labels.get(seg, seg),
+                    rotation=90,
+                    color='k',
+                    fontsize=10,
+                    ha='center',
+                    va='bottom',
+                    transform=trans_top,  # <-- crucial line
+                    clip_on=False
+                )
             h += seg_len
 
         x_ticks = np.arange(0, n_cols, c_sec)
         ax.set_xticks(x_ticks)
         ax.set_xticklabels([f"{int(tick / c_sec)}" for tick in x_ticks])
+
 
     else:
         ax.set_xticks(range(data.shape[1]))
@@ -4803,8 +5192,10 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
 
     # --- build descriptive filename and window title ---
     descriptor = (
-        f"{mapping}_cv{int(cv)}"
-        f"_bg{int(bg)}_nclus{nclus}_{vers}")
+        f"cv{int(cv)}"
+        f"_nclus{nclus}_"
+        f"locality{locality}_tlw{time_lag_window}"
+        f"_symmetric{int(symmetric)}")
 
     fname = "rastermap_" + descriptor.replace(" | ", "_").replace("=", "") + ".png"
 
@@ -5576,16 +5967,15 @@ def float_array_to_rgba(img_float):
 
 def save_rastermap_pdf(
     feat: str = 'concat_z',
-    mapping: str = 'kmeans',
+    mapping: str = 'rm',
     bg: bool = False,
     cv: bool = False,
-    shrink: bool = False,
-    shrink_alpha: float = 0.0,
     vers: str = 'concat',
     ephys: bool = False,
     nclus: int = 13,
     rerun: bool = False,
-    bounds: bool = True
+    bounds: bool = True,
+    gamma: float | bool = False
 ):
     """
     Save a rastermap image as a PDF, optionally with colored row background.
@@ -5612,8 +6002,20 @@ def save_rastermap_pdf(
     data_max = float(np.max(data))
     norm_data = (data / data_max) if data_max > 0 else np.zeros_like(data)
 
-    # float -> RGBA (uint8); ensure opaque alpha
-    image_rgba = float_array_to_rgba(norm_data)
+    if isinstance(gamma, (float, int)) and gamma is not False:
+        # gamma compression
+        g = norm_data ** float(gamma)
+        gray = 1.0 - g
+    else:
+        # original linear contrast
+        gray = 1.0 - norm_data
+    gray_u8 = (gray * 255).astype(np.uint8)
+
+    # build RGB image
+    image_rgba = np.zeros((*gray_u8.shape, 4), dtype=np.uint8)
+    image_rgba[..., 0] = gray_u8
+    image_rgba[..., 1] = gray_u8
+    image_rgba[..., 2] = gray_u8
     image_rgba[..., 3] = 255
 
     # ---- optional colored background per row ----
@@ -5632,7 +6034,7 @@ def save_rastermap_pdf(
                 + alpha_overlay * overlay[None, :].astype(np.float32)
             ).astype(np.uint8)
 
-    if mapping == 'rm' and bg and bounds:
+    if mapping == 'rm' and bounds:
         rc = np.asarray(r['cols'])[isort]
         if rc.ndim == 2 and rc.shape[0] > 1:
             color_changes = np.any(np.diff(rc, axis=0) != 0, axis=1)
@@ -5667,8 +6069,6 @@ def save_rastermap_pdf(
         f"rastermap_{mapping}"
         f"_feat{feat}"
         f"_cv{int(cv)}"
-        f"_shrink{int(shrink)}"
-        f"_alpha{shrink_alpha:.2f}"
         f"_bg{int(bg)}"
         f"_nclus{nclus}"
         f".pdf"
@@ -6045,3 +6445,85 @@ def make_contact_sheet_a4_sorted(
     sheet.save(out_png, dpi=(dpi, dpi))
     sheet.save(out_pdf, "PDF", resolution=dpi)
     print(f"Saved {out_png} and {out_pdf}")
+
+
+
+def plot_fr_lz_scatter_with_marginals(
+    fr_key="fr",
+    lz_key="lz",
+    reg_key="Beryl",
+    bins=120,
+    s=3,
+    alpha=0.25,
+    rasterized=True):
+    """
+    Scatter: x=fr, y=lz, colored by Beryl region via `pal[reg]`.
+    Marginals: top histogram of fr, right histogram of lz.
+    """
+
+    r = regional_group('rm')
+    fr = np.asarray(r[fr_key]).astype(float)
+    lz = np.asarray(r[lz_key]).astype(float)
+    regs = np.asarray(r[reg_key])
+
+    # Map region -> color (pal values can be RGB tuples in [0,1] or hex strings)
+    cols = np.array([pal[reg] for reg in regs], dtype=object)
+
+    # Filter invalid values (and keep colors aligned)
+    m = np.isfinite(fr) & np.isfinite(lz)
+    fr, lz, cols = fr[m], lz[m], cols[m]
+
+    # Layout: scatter with marginals (no seaborn; pure matplotlib)
+    fig = plt.figure(figsize=(9, 8), constrained_layout=True)
+    gs = fig.add_gridspec(
+        2, 2,
+        width_ratios=(4.0, 1.2),
+        height_ratios=(1.2, 4.0),
+        wspace=0.05, hspace=0.05
+    )
+
+    ax_histx = fig.add_subplot(gs[0, 0])
+    ax_scatt = fig.add_subplot(gs[1, 0], sharex=ax_histx)
+    ax_histy = fig.add_subplot(gs[1, 1], sharey=ax_scatt)
+
+    # Scatter
+    ax_scatt.scatter(fr, lz, c=cols.tolist(), s=s, alpha=alpha, linewidths=0, rasterized=rasterized)
+    ax_scatt.set_xlabel("Firing rate (fr)")
+    ax_scatt.set_ylabel("Lempel-Ziv (lz)")
+
+    # Marginals
+    ax_histx.hist(fr, bins=bins)
+    ax_histy.hist(lz, bins=bins, orientation="horizontal")
+
+    # Clean up tick labels on marginals
+    plt.setp(ax_histx.get_xticklabels(), visible=False)
+    plt.setp(ax_histy.get_yticklabels(), visible=False)
+    ax_histx.tick_params(axis="x", length=0)
+    ax_histy.tick_params(axis="y", length=0)
+
+    # Optional: remove spines for a cleaner marginal look
+    for ax in (ax_histx, ax_histy):
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+    plt.show()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    
