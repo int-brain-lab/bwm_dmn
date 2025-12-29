@@ -4865,7 +4865,7 @@ def raster_grid():
 
     grid_upsample_grid   = [0, 10]
     locality_grid        = [0.1, 0.5, 0.9]
-    ncluss = [20,100]
+    ncluss               = [20,100]
     time_lag_window_grid = [0, 5, 15]
     symmetric_grid       = [True, False]
     cv_grid              = [True, False]
@@ -5668,6 +5668,11 @@ def save_rastermap_pdf(
     Save a rastermap image as a PDF, optionally with colored row background.
     Relies on regional_group(...) for sorting and segment order.
     """
+    
+    
+    if grid_upsample not 0:
+        bounds = False  # disable boundaries if upsampling
+
 
     # ---- load data with the requested switches ----
     r = regional_group(
