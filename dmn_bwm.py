@@ -219,7 +219,7 @@ peth_ila = [
     r"$\mathrm{feedbk0}$"
 ]
 
-peth_dict = dict(zip(tts__, peth_ila))
+peth_dictm = dict(zip(tts__, peth_ila))
 
 PETH_types_dict = {
     'concat': [item for item in tts__],
@@ -925,15 +925,11 @@ def regional_group(
             base += f"_ephys{ephys}"
             return pth_res / (base + ".npy")
 
-        if kind == "rm":
-            base = f"rm_{vers}"
+        if kind in ["rm", 'kmeans']:
+            base = f"{kind}_{vers}"
             base += f"_cv{cv}"
             base += f"_ephys{ephys}"
             base += f"_n{int(nclus)}"
-            base += f"_grid{int(grid_upsample)}"
-            base += f"_loc{float(locality):.3f}"
-            base += f"_tlag{int(time_lag_window)}"
-            base += f"_sym{int(bool(symmetric))}"
             return pth_res / (base + ".npy")
 
         raise ValueError(f"Unknown cache kind: {kind}")
@@ -964,6 +960,7 @@ def regional_group(
         + f"|shape:{r[feat_key].shape}"
     )
 
+    r['peth_dict'] = {x: peth_dictm[x] for x in r['ttypes']}
     # ---------- mapping ----------
     if mapping == "rm":
         feat = feat_key
@@ -1031,8 +1028,8 @@ def regional_group(
         clusters = labels.copy()
         unique = np.unique(clusters)
         norm_vals = clusters / float(unique.max()) if unique.size > 1 else np.zeros_like(clusters, dtype=float)
-        cmap = mpl.cm.get_cmap("Spectral")
-        cols = cmap(norm_vals)
+        cmap = mpl.cm.get_cmap("tab20")
+        cols = cmap(norm_vals % cmap.N)
         regs = unique
         color_map = {reg: cols[clusters == reg][0] for reg in regs}
         r["els"] = [Line2D([0], [0], color=color_map[reg], lw=4, label=f"{reg}") for reg in regs]
@@ -1041,10 +1038,113 @@ def regional_group(
         r["cols"] = cols
         r["isort"] = isort
 
-        return r
+        
+    elif mapping == 'layers':
+        acs = np.array(br.id2acronym(r['ids'], mapping='Allen'))
+        regs0 = Counter(acs)
+        regs = [reg for reg in regs0 if reg[-1].isdigit()]
+        for reg in regs:
+            acs[acs == reg] = reg[-1]
+        names = dict(zip(regs0, [get_name(reg) for reg in regs0]))
+        thal = {x: names[x] for x in names if 'thala' in names[x]}
+        for reg in thal:
+            acs[acs == reg] = 'thal'
+        mask = np.array([(x.isdigit() or x == 'thal') for x in acs])
+        acs[~mask] = '~layer'
+        cols = np.array([pal[reg] for reg in acs])
+        regsC = Counter(acs)
+        r['els'] = [
+            Line2D([0], [0], color=pal[reg], lw=4, label=f'{reg} {regsC[reg]}')
+            for reg in regsC
+        ]
+        r['acs'] = acs
+        r['cols'] = cols
 
-    # other mappings unchanged...
-    # ...
+    elif mapping == 'fr':
+        acs = np.array(br.id2acronym(r['ids'], mapping='Beryl'))
+        scaled = r['fr'] ** 0.1
+        norm = Normalize(vmin=scaled.min(), vmax=scaled.max())
+        cmap = cm.get_cmap('magma')
+        r['acs'] = acs
+        r['cols'] = cmap(norm(scaled))
+
+    elif mapping == 'lz':
+        acs = np.array(br.id2acronym(r['ids'], mapping='Beryl'))
+        scaled = r['lz'] ** 0.1
+        norm = Normalize(vmin=scaled.min(), vmax=scaled.max())
+        cmap = cm.get_cmap('cividis')
+        r['acs'] = acs
+        r['cols'] = cmap(norm(scaled))
+
+    elif mapping == "kmeans":
+        # IMPORTANT: for cv=True, fit on concat_z_train (but labels are for all rows)
+        feat_fit = "concat_z_train" if cv else feat_key
+        if feat_fit not in r:
+            raise KeyError(f"Feature '{feat_fit}' not found in stack.")
+
+        kmeans_cache_path = _cache_path("kmeans")
+        clusters = None
+
+        if (not rerun) and kmeans_cache_path.is_file():
+            try:
+                cached = np.load(kmeans_cache_path, allow_pickle=True).flat[0]
+                if (
+                    isinstance(cached, dict)
+                    and cached.get("order_sig") == r["_order_signature"]
+                    and cached.get("feat_fit") == feat_fit
+                    and cached.get("nclus") == int(nclus)
+                    and "kmeans_labels" in cached
+                ):
+                    clusters = np.asarray(cached["kmeans_labels"], dtype=int).reshape(-1)
+                    if clusters.shape[0] != r[feat_key].shape[0]:
+                        clusters = None
+                    else:
+                        print(f"[kmeans] using cached labels ({kmeans_cache_path.name})")
+            except Exception as e:
+                print(f"[kmeans] cache read error; recomputing KMeans: {e}")
+                clusters = None
+
+        if clusters is None:
+            # Fit on train if cv, then predict labels for all neurons from full concat_z
+            print(f"[kmeans] fitting (n={nclus}) on {feat_fit} (cv={cv})")
+            km = KMeans(n_clusters=nclus, random_state=0)
+            km.fit(r[feat_fit])
+
+            if feat_key not in r:
+                raise KeyError(f"Feature '{feat_key}' not found in stack.")
+            clusters = km.predict(r[feat_key]).astype(int)
+
+            if clusters.shape[0] != r[feat_key].shape[0]:
+                raise ValueError("KMeans labels do not match data length.")
+
+            np.save(
+                kmeans_cache_path,
+                {
+                    "kmeans_labels": clusters,
+                    "order_sig": r["_order_signature"],
+                    "feat_fit": feat_fit,
+                    "nclus": int(nclus),
+                },
+                allow_pickle=True,
+            )
+            print(f"[kmeans] wrote cache ({kmeans_cache_path.name})")
+
+        cmap = mpl.cm.get_cmap("tab20")
+        cols = cmap((clusters / float(nclus)) % cmap.N)
+        acs = clusters.astype(int)
+        regs = np.unique(acs)
+        color_map = {reg: cols[acs == reg][0] for reg in regs}
+        r["els"] = [Line2D([0], [0], color=color_map[reg], lw=4, label=f"{reg + 1}") for reg in regs]
+        r["Beryl"] = np.array(br.id2acronym(r["ids"], mapping="Beryl"))
+        r["acs"] = acs
+        r["cols"] = cols
+
+    else:
+        acs = np.array(br.id2acronym(r['ids'], mapping=mapping))
+        cols = np.array([pal[reg] for reg in acs])
+        r['acs'] = acs
+        r['cols'] = cols
+
     return r
 
 
@@ -2172,10 +2272,20 @@ def plot_dim_reduction(algo='umap_z', mapping='rm', ephys=False,
 
 
 
-def plot_cluster_mean_PETHs(r, mapping, feat, vers='concat',
-                            axx=None, alone=True): # MODIFIED
+def plot_cluster_mean_PETHs(
+    r, mapping, feat, vers='concat',
+    axx=None, alone=True,
+    extraclus=None,  # NEW: list of cluster IDs to overlay
+):
     """
     Plot mean PETH per cluster using the segment order/labels from the data file.
+
+    Parameters
+    ----------
+    extraclus : list[int] or None
+        - If [] or None: keep old behavior (one axis per cluster).
+        - If non-empty list: overlay those cluster mean traces on ONE axis.
+          Cluster IDs must be valid values in r['acs'] (typically 0..nclus-1).
     """
 
     if feat not in r:
@@ -2187,18 +2297,18 @@ def plot_cluster_mean_PETHs(r, mapping, feat, vers='concat',
     if 'peth_dict' not in r:
         r['peth_dict'] = {k: k for k in r['len'].keys()}
 
+    # normalize extraclus
+    if extraclus is None:
+        extraclus = []
+    if not isinstance(extraclus, (list, tuple, np.ndarray)):
+        raise TypeError("extraclus must be a list/tuple/array of integers (or empty).")
+    extraclus = [int(x) for x in extraclus]
+
     clu_vals = np.array(sorted(np.unique(r['acs'])))
     n_clu = len(clu_vals)
-    if n_clu > 50:
+    if n_clu > 50 and len(extraclus) == 0:
         print('too many (>50) line plots!')
         return
-
-    if axx is None:
-        fg, axx = plt.subplots(nrows=n_clu, sharex=True, sharey=False, figsize=(6, 10))
-    if not isinstance(axx, (list, np.ndarray)):
-        axx = [axx]
-    if len(axx) != n_clu:
-        raise ValueError(f"Expected {n_clu} axes, got {len(axx)}.")
 
     n_bins = r[feat].shape[1]
     xx = np.arange(n_bins) / c_sec
@@ -2208,36 +2318,104 @@ def plot_cluster_mean_PETHs(r, mapping, feat, vers='concat',
     if sum(seg_lengths) != n_bins:
         print(f"[warn] sum(r['len'])={sum(seg_lengths)} != n_bins={n_bins}")
 
-    for k, clu in enumerate(clu_vals):
-        # Determine the base indices for the current cluster
-        idx = np.where(r['acs'] == clu)[0] 
+    # -------------------------------
+    # NEW MODE: overlay selected clusters on ONE axis
+    # -------------------------------
+    if len(extraclus) > 0:
+        # Validate requested clusters exist
+        valid = set(int(c) for c in clu_vals.tolist())
+        bad = [c for c in extraclus if c not in valid]
+        if bad:
+            raise ValueError(f"extraclus contains invalid cluster IDs {bad}. Valid: {sorted(valid)}")
 
-        if idx.size == 0:
-            axx[k].axis('off')
-            continue
+        # Prepare single axis
+        if axx is None:
+            fg, ax = plt.subplots(figsize=(6, 3))
+        else:
+            ax = axx if not isinstance(axx, (list, np.ndarray)) else axx[0]
+
+        ymax_global = 0.0
+
+        # Plot each requested cluster on the same axis
+        for clu in extraclus:
+            idx = np.where(r['acs'] == clu)[0]
+            if idx.size == 0:
+                continue
+            yy = np.mean(r[feat][idx, :], axis=0)
+            col = r['cols'][idx[0]]
+            ax.plot(xx, yy, color=col, linewidth=2, label=str(clu))
+            if yy.size:
+                ymax_global = max(ymax_global, float(np.max(yy)))
+
+        # Segment boundaries + labels (draw once)
+        h = 0
+        for s in ordered_segments:
+            seg_len = r['len'][s]
+            xv_bins = h + seg_len
+            if xv_bins > n_bins:
+                break
+            ax.axvline(xv_bins / c_sec, linestyle='--', linewidth=1, color='grey')
+
+            seg_mid = h + seg_len / 2.0
+            ax.text(
+                seg_mid / c_sec,
+                ymax_global,
+                '   ' + r['peth_dict'].get(s, s),
+                rotation=90, color='k', fontsize=10, ha='center'
+            )
+            h += seg_len
+
+        ax.set_xlim(0, n_bins / c_sec)
+        ax.set_xlabel('time [sec]')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+        # Legend showing cluster IDs
+        ax.legend(title="cluster", frameon=False, loc="best")
+
+        if alone:
+            plt.tight_layout()
+
+        return  # important: do not run the old multi-axes path
+
+    # -------------------------------
+    # OLD MODE: one axis per cluster (unchanged behavior)
+    # -------------------------------
+    if axx is None:
+        fg, axx = plt.subplots(nrows=n_clu, sharex=True, sharey=False, figsize=(6, 10))
+    if not isinstance(axx, (list, np.ndarray)):
+        axx = [axx]
+    if len(axx) != n_clu:
+        raise ValueError(f"Expected {n_clu} axes, got {len(axx)}.")
+
+    for k, clu in enumerate(clu_vals):
+        idx = np.where(r['acs'] == clu)[0]
+
+        axx[k].spines['top'].set_visible(False)
+        axx[k].spines['right'].set_visible(False)
+        axx[k].spines['left'].set_visible(False)
+        axx[k].tick_params(left=False, labelleft=False)
+        axx[k].set_ylabel(clu,rotation=0, labelpad=10)
 
         yy = np.mean(r[feat][idx, :], axis=0)
         col = r['cols'][idx[0]]
         axx[k].plot(xx, yy, color=col, linewidth=2)
 
         if k != (n_clu - 1):
-            axx[k].axis('off')
+            axx[k].spines['bottom'].set_visible(False)
+            axx[k].tick_params(bottom=False, labelbottom=False)
         else:
-            axx[k].spines['top'].set_visible(False)
-            axx[k].spines['right'].set_visible(False)
-            axx[k].spines['left'].set_visible(False)
-            axx[k].tick_params(left=False, labelleft=False)
+            # keep bottom axis ticks only for the last panel
+            axx[k].spines['bottom'].set_visible(True)
+            axx[k].tick_params(bottom=True, labelbottom=True)
 
-        # segment boundaries + labels from file order
         h = 0
         ymax = float(np.max(yy)) if yy.size else 0.0
         for s in ordered_segments:
             seg_len = r['len'][s]
             xv_bins = h + seg_len
-
             if xv_bins > n_bins:
-                break   
-
+                break
             axx[k].axvline(xv_bins / c_sec, linestyle='--', linewidth=1, color='grey')
             if k == 0:
                 seg_mid = h + seg_len / 2.0
@@ -2253,6 +2431,12 @@ def plot_cluster_mean_PETHs(r, mapping, feat, vers='concat',
     if alone:
         plt.tight_layout()
 
+    # add information in figure window title
+    fg = plt.gcf()
+    fg.canvas.manager.set_window_title(
+        f"Avg | {feat} | {mapping} | nclus={n_clu}")
+
+    plt.show()
 
 
 def smooth_dist(dim=2, algo='umap_z', mapping='Beryl', 
@@ -3294,315 +3478,6 @@ def plot_venn():
 
 
 
-def swansons_all(metric='latency', minreg=10, annotate=True,
-             vers='contrast', restrict=False, thres=10):
-
-    '''
-    Per window of the BWM, average PETHS, get latency (latency_all) or fr
-    put on swanson, one per aligment event
-    
-    if metric == 'ephysTF', plot region average score
-    of each of the 30 features (or just two if restric=True)
-
-
-    Can also be used as extra figure for BWM rebuttal on latency alternative
-    metric ='latency' with vers = 'contrast'
-    
-    '''
-    if metric == 'latency':
-
-        r = np.load(Path(one.cache_dir, 'dmn', 'stack_simple.npy'),
-                    allow_pickle=True).flat[0]
-
-        xs = {'stim': np.linspace(0,0.15,len(r['MRN']['stim'])),
-              'choice': np.linspace(0,0.15,len(r['MRN']['choice'])),
-              'fback': np.linspace(0,0.15,len(r['MRN']['fback'])),
-              'stim0': np.linspace(0,0.15,len(r['MRN']['stim0']))}
-        
-        del r['root']
-        del r['void']
-        regs2 = list(r.keys())
-        avs = r
-        lattypes = [x for x in r['MRN'].keys() if 'lat' in x][:3]
-        reg = 'MRN'
-        
-        
-    else:
-        r = regional_group('Beryl', vers=vers)    
-
-        # get average z-scored PETHs per Beryl region 
-        regs = Counter(r['acs'])
-        regs2 = [reg for reg in regs if regs[reg]>minreg]
-
-    # average all PETHs per region, then z-score and get latency
-    # plot latency in swanson; put average peths on top
-
-        avs = {}
-        for reg in regs2:
-        
-            if metric == 'ephysTF':
-                orgl = np.mean(r['ephysTF'][r['acs'] == reg],axis=0)
-                avs[reg] = dict(zip(r['fts'],orgl))
-       
-            else:
-                orgl = np.mean(r['concat'][r['acs'] == reg],axis=0)
-                lats = []              
-                for length in r['len'].values():
-                    seg = orgl[:length]
-                    frs.append(np.max(seg))
-                    seg = zscore(seg)
-                    seg = seg - np.min(seg)
-                    loc = np.where(seg > 0.7 * (np.max(seg)))[0][0]
-                    lats.append(loc)
-                    orgl = orgl[length:]     
-                
-                avs[reg] = dict(zip(list(r['len'].keys()),
-                                    lats if metric == 'latency_all' else frs))
-    
-    if metric == 'latency':
-        nrows = 1
-        ncols = 3
-    else:
-        nrows = 3
-        ncols = len(avs[reg].keys())//nrows
-
-    if restrict:                           
-        # restrict to example features
-        features_to_keep = ['psd_alpha', 'trough_time_secs']
-                                
-        restricted_data = {region: {feature: avs[region][feature]
-            for feature in features_to_keep} for region in avs}
-            
-        avs = restricted_data    
-        ncols = len(features_to_keep)
-        nrows = 1
-        
-    fig, axs = plt.subplots(nrows=nrows, ncols=ncols, figsize=(9.72, 8.4),
-                            sharex=True if metric!= 'ephysTF' else False, 
-                            sharey=True if metric!= 'ephysTF' else False)
-    axs = axs.flatten('F')
-    
-
-    
-    if metric!= 'ephysTF':
-        # assure all panels have same scale
-        lats_all = np.array([np.array([avs[x][s] for x in avs]) 
-                    for s in avs[regs2[0]].keys() if 'lat' in s]).flatten()
-        lats_all = lats_all * 1000 # ms    
-        vmin, vmax = (np.nanmin(lats_all), np.nanmax(lats_all))
-   
-    
-    # loop through PETH types
-    k = 0
-    
-    for s in lattypes:
-        
-        if metric == 'latency':
-            #cmap_ = get_cmap_bwm(s).reversed()
-            cmap_ = 'viridis_r'
-        else:
-            cmap_ = 'viridis'        
-        
-
-        lats = np.array([avs[x][s] for x in avs]) * 1000 # ms
-        
-        print(s)
-        asort = np.argsort(lats)
-        print(lats[asort][:10])
-        print(np.array(list(avs.keys()))[asort][:10])
-        
-               
-        vmin = vmin if metric != 'ephysTF' else np.min(lats)
-        vmax = vmax if metric != 'ephysTF' else np.max(lats)
-        norm = mpl.colors.Normalize(vmin=vmin, 
-                                    vmax=vmax)        
-        
-        plot_swanson_vector(np.array(list(avs.keys())),
-                            np.array(lats), 
-                            cmap=cmap_, 
-                            ax=axs[k], br=br, 
-                            orientation='portrait',
-                            vmin=vmin, 
-                            vmax=vmax,
-                            annotate= annotate,
-                            annotate_list=None,
-                            annotate_n=500,
-                            thres=thres)
-
-        axs[k].axes.inpth_dmnvert_xaxis()                     
-        cbar = fig.colorbar(mpl.cm.ScalarMappable(
-                                norm=norm, 
-                                cmap=cmap_), 
-                                ax=axs[k],
-                                location='bottom', pad=0.04)
-        cbar.formatter = ScalarFormatter(useMathText=True)
-        cbar.set_ticks([0, 75, 150])
-        cbar.set_ticklabels(['0', '75', '150'])
-        cbar.set_label('latency [ms]' 
-                       if metric == 'latency' 
-                       else 'fr [Hz]')
-                       
-        axs[k].axis('off')
-        axs[k].set_title(s.split('_')[0])
-        
-        # change annotation fontsize
-        text_objects = axs[k].texts
-        for text_obj in text_objects:
-            text_obj.set_fontsize(8)
-        
-        #put_panel_label(axs[k], k)
-        k+=1
-
-    fig.subplots_adjust(top=.955,
-                        bottom=0.0,
-                        left=0.031,
-                        right=0.977,
-                        hspace=0.2,
-                        wspace=0.106)
-                        
-    print(metric, vers)
-    
-#    fig.savefig(Path(one.cache_dir,'dmn', 'figs', 'intro', 
-#                 'ephysTF_example_swansons.svg'))
-
-    if metric == 'latency':
-#        fig.savefig(Path(one.cache_dir, 'bwm_res', 'bwm_figs_imgs',
-#                         'si', 'n6_supp_figure_peth_latency_swanson.svg'))
-        fig.savefig(Path(one.cache_dir, 'bwm_res', 'bwm_figs_imgs',
-                         'si', 'n6_supp_figure_peth_latency_swanson.pdf'),
-                        dpi=150,bbox_inches='tight')                         
-
-    #verss = ['concat', 'surprise', 'reward', 'resting']
-
-
-
-def swansons_means(minreg=10, annotate=True, nanno=5):
-
-    '''
-    Plot on Swanson's mean PETH for 11 types
-    and differences from concat
-    '''
-    
-    r = regional_group('Beryl', vers='concat')
-     
-    # get average z-scored PETHs per Beryl region 
-    regs = Counter(r['acs'])
-    regs2 = [reg for reg in regs if regs[reg] > minreg]
-
-    # average all PETHs per region, then z-score and get latency
-    # plot latency in swanson; put average peths on top
-    avs = {}
-
-    for reg in regs2:
-    
-        # average across neurons per region
-        orgl = np.mean(r['concat_z'][r['acs'] == reg], axis=0)   
-
-        rd = {}
-
-        # cumulative [start, end] indices of each segment
-        start_end = {}
-        start_idx = 0
-
-        # Calculate cumulative [start, end] indices for each segment
-        for key, length in r['len'].items():
-            end_idx = start_idx + length 
-            start_end[key] = [start_idx, end_idx]
-            start_idx += length
-
-        for subset, segments in PETH_types_dict.items():
-            ranges = []
-            for seg in segments:
-                ranges.append(np.arange(start_end[seg][0], start_end[seg][1]))
-                                        
-            # take mean of subset PETHs (average across time bins)
-            rd[subset] = np.mean(orgl[np.concatenate(ranges)])
-            
-        avs[reg] = rd
-
-    # Compute differences from concat
-    conds = list(avs[reg].keys())
-    avs_d = {}
-    for reg in avs:
-        avs_d[reg] = {f'concat-{c}': abs(avs[reg]['concat'] - avs[reg][c]) for c in conds}
-
-    # New structure: 4 rows
-    first_6 = list(PETH_types_dict.keys())[:6]
-    last_5 = list(PETH_types_dict.keys())[6:]
-
-    nrows = 4
-    ncols = max(len(first_6), len(last_5))
-        
-    fig, axs = plt.subplots(nrows=nrows, ncols=ncols, figsize=[7.09, 8.61])
-
-    cmap_ = 'viridis_r'
-    
-    # Determine global min/max for color scaling
-    lats_all = np.array([avs[x][s] for s in conds for x in avs]).flatten()
-    lats_all_d = np.array([avs_d[x][f'concat-{s}'] for s in conds for x in avs_d]).flatten()
-
-    vmin, vmax = np.nanmin(lats_all), np.nanmax(lats_all)
-    vmin_d, vmax_d = np.nanmin(lats_all_d), np.nanmax(lats_all_d)
-
-    def plot_row(subset_keys, row_idx, is_diff=False):
-        for k, s in enumerate(subset_keys):
-            if is_diff:
-                aord = np.argsort([avs_d[x][f'concat-{s}'] for x in avs_d])
-                values = np.array([avs_d[x][f'concat-{s}'] for x in avs_d])
-                vmin_, vmax_ = vmin_d, vmax_d
-            else:
-                aord = np.argsort([avs[x][s] for x in avs])
-                values = np.array([avs[x][s] for x in avs])
-                vmin_, vmax_ = vmin, vmax
-            
-            print(s, list(reversed(np.array(list(avs.keys()))[aord][-nanno:])))
-
-            plot_swanson_vector(
-                np.array(list(avs.keys()) if not is_diff else list(avs_d.keys())),
-                values, cmap=cmap_, ax=axs[row_idx, k], br=br,
-                orientation='portrait', vmin=vmin_, vmax=vmax_,
-                annotate=annotate, annotate_n=nanno,
-                annotate_order='top')
-
-            norm = mpl.colors.Normalize(vmin=vmin_, vmax=vmax_)
-            locator = MaxNLocator(nbins=3)
-
-            cbar = fig.colorbar(
-                mpl.cm.ScalarMappable(norm=norm, cmap=cmap_),
-                ax=axs[row_idx, k], shrink=0.8, aspect=12, pad=.025,
-                orientation="horizontal", ticks=locator)
-
-            cbar.ax.tick_params(axis='both', which='major', size=6)
-            cbar.outline.set_visible(False)
-            cbar.ax.tick_params(size=2)
-            cbar.ax.xaxis.set_tick_params(pad=5)
-
-            if is_diff:
-                cbar.set_label('firing rate (Hz)')
-
-            axs[row_idx, k].set_title(s)
-            axs[row_idx, k].axis('off')
-
-    # First row: First 6 items
-    plot_row(first_6, row_idx=0, is_diff=False)
-
-    # Second row: Differences of first 6 items
-    plot_row(first_6, row_idx=1, is_diff=True)
-
-    # Third row: Remaining 5 items
-    plot_row(last_5, row_idx=2, is_diff=False)
-
-    # Fourth row: Differences of last 5 items
-    plot_row(last_5, row_idx=3, is_diff=True)
-
-    fig.subplots_adjust(
-        top=0.963, bottom=0.001, left=0.018, right=0.982,
-        hspace=0.0, wspace=0.035)
-
-    fig.savefig(Path(one.cache_dir, 'dmn', 'imgs', 'swansons.svg'))
-    fig.savefig(Path(one.cache_dir, 'dmn', 'imgs', 'swansons.pdf'), dpi=150, bbox_inches='tight')
-
-
 def plot_multi_umap_cell(ds=0.1):
 
     '''
@@ -3801,8 +3676,6 @@ def plot_example_neurons(
     If sing_clus is an int, only that cluster ID is plotted.
     If sing_clus is False (default), all clusters are plotted.
     """
-
-
 
     if no_filts:
         min_max_fr = None
@@ -4004,250 +3877,247 @@ def var_expl(minreg=20):
   
 
     
-def clus_freqs(foc='rm', nmin=50, nclus=20, vers='concat', get_res=False,
-               rerun=False, norm_=True, save_=True, single_regions=[],
-               axs = None):
+def clus_freqs(
+    foc="Beryl",
+    clustering = "rm",
+    nmin=50,
+    nclus=20, # had peak for kmeans at 8
+    vers="concat",
+    get_res=False,
+    rerun=False,
+    norm_=True,
+    save_=True,
+    single_regions=None,
+    axs=None,
+    cv=True,
+    *,
+    pth_dmn=None,          # optional override; otherwise uses global pth_dmn
+    pal=None,              # optional override; otherwise uses global pal
+    label_size=4.0,        # used for region label text
+):
+    """
+    Plot or compute frequencies.
 
-    '''
-    foc: rm, Berly, dec
-    get_res: return results
-    norm_: normalize distribution so they all sum up to 1
-    save_: save results to file
-    single_regions: list of regions to plot separately
+    foc: 'rm', 'Beryl', 'dec'
+    get_res: return results dict (and optionally load cached if present)
+    norm_: normalize distributions to sum to 1 (when denominator > 0)
+    save_: save results + figures
+    single_regions: list of region acronyms to plot separately (only for foc in {'Beryl','dec'})
+    axs: optional axes array to draw into (only supported for foc in {'Beryl','dec'}).
+    cv: passed through to regional_group(...)
+    """
 
-    single_regions=['PA','SIM','MOB','SCm', 'MS','MRN', 
-                    'VISpor','PRNr']
-    '''
-    alone = True if axs is None else False
+    # ---- defaults / guardrails ----
+    if single_regions is None:
+        single_regions = []
 
-    pthres = Path(pth_dmn.parent, f'nclus{nclus}_{foc}_nrm_{norm_}.npy')
-
-    if get_res and not rerun:
-        if pthres.is_file():
-            return np.load(pthres, allow_pickle=True).flat[0]
-
-    
-    r_a = regional_group('Beryl', vers=vers, nclus=nclus)    
-    r_k = regional_group('rm', vers=vers, nclus=nclus)
-
-    if foc == 'rm':
-
-        # --- cluster ids as integers (avoid '0' vs 0 mismatches) ---
-        clus_ids = np.asarray(r_k['acs'])
+    # resolve globals if not provided
+    if pth_dmn is None:
         try:
-            clus_ids = clus_ids.astype(int)
+            pth_dmn = globals()["pth_dmn"]
+        except KeyError as e:
+            raise NameError("pth_dmn must be provided or defined globally.") from e
+
+    if pal is None:
+        pal = globals().get("pal", {})  # allow missing; will fall back to black
+
+    if foc not in ('clustering', "Beryl", "dec"):
+        raise ValueError("foc must be one of {'clustering','Beryl','dec'}")
+
+    # whether we created the figure/axes internally
+    created_axes = axs is None
+
+    # cache path
+    pthres = Path(pth_dmn.parent, f"nclus{nclus}_{foc}_{clustering}_nrm_{norm_}_cv{cv}.npy")
+
+    # fast path: load cached results
+    if get_res and (not rerun) and pthres.is_file():
+        return np.load(pthres, allow_pickle=True).flat[0]
+
+    # ---- load / compute assignments ----
+    r_a = regional_group("Beryl", vers=vers, nclus=nclus, cv=cv)
+    r_k = regional_group(clustering, vers=vers, nclus=nclus, cv=cv)
+
+    # sanity: arrays must align if we’re mixing them cell-wise
+    if len(r_a.get("acs", [])) != len(r_k.get("acs", [])):
+        raise ValueError(
+            "regional_group('Beryl') and regional_group('rm') returned different lengths; "
+            "cannot align region labels with cluster IDs."
+        )
+
+    # canonical region ordering for Beryl
+    p = (Path(iblatlas.__file__).parent / "beryl.npy")
+    regs_can = br.id2acronym(np.load(p), mapping="Beryl")
+
+    fig = None
+    d = {}
+
+    # =========================
+    # foc == 'clustering'
+    # =========================
+    if foc == "clustering":
+        # Note: external axs not supported here (original code overwrote axs anyway)
+        # cluster ids -> int (robust)
+        clus_ids = np.asarray(r_k["acs"])
+        try:
+            clus_ids_int = clus_ids.astype(int)
         except Exception:
-            # robust fallback: map strings like '0' -> 0, else keep as-is then cast
-            clus_ids = np.array([int(x) for x in clus_ids])
+            clus_ids_int = np.array([int(x) for x in clus_ids])
 
-        cluss = np.unique(clus_ids)  # sorted unique cluster ids
+        cluss = np.unique(clus_ids_int)
 
+        fig, axs_local = plt.subplots(
+            nrows=len(cluss),
+            ncols=1,
+            figsize=(18.79, 15),
+            sharex=True,
+            sharey=True if norm_ else False,
+        )
+        axs_local = np.atleast_1d(axs_local)
 
-        fig, axs = plt.subplots(nrows = len(cluss), ncols = 1,
-                               figsize=(18.79,  15),
-                               sharex=True, sharey=True if norm_ else False)
-        
         fig.canvas.manager.set_window_title(
-            f'Frequency of Beryl region label per'
-            f' rm cluster ({nclus}); vers ={vers}')    
+            f"Frequency of Beryl region label per {clustering} cluster ({nclus}); vers={vers}"
+        )
 
-
-
-        # Build region -> color mapping from r_a once (first occurrence wins)
+        # region -> color mapping from r_a once (first occurrence wins)
         cols_dict = {}
-        for reg, col in zip(r_a['acs'], r_a['cols']):
+        for reg, col in zip(r_a["acs"], r_a["cols"]):
             if reg not in cols_dict:
                 cols_dict[reg] = col
 
-        # order regions by canonical list
-        p = (Path(iblatlas.__file__).parent / 'beryl.npy')
-        regs_can = br.id2acronym(np.load(p), mapping='Beryl')
-        regs_ = Counter(r_a['acs'])
+        regs_ = Counter(r_a["acs"])
         reg_ord = [reg for reg in regs_can if reg in regs_]
 
-        d = {}
+        acs_a = np.asarray(r_a["acs"])
+
         for k, clus in enumerate(cluss):
-            mask = (clus_ids == clus)
-            # counts for this cluster across Beryl regions
-            counts = Counter(np.asarray(r_a['acs'])[mask])
+            mask = (clus_ids_int == clus)
+            counts = Counter(acs_a[mask])
 
             reg_order = {reg: counts.get(reg, 0) for reg in reg_ord}
             labels = list(reg_order.keys())
             values = np.array(list(reg_order.values()), float)
 
-            den = values.sum()
+            den = float(values.sum())
             if norm_ and den > 0:
                 values = values / den
 
             x = np.arange(len(labels))
-            colors = [cols_dict[lab] for lab in labels]
-            bars = axs[k].bar(x, values, color=colors)
-            axs[k].set_ylabel(f'clus {int(clus)}')
-            axs[k].set_xticks(x)
-            axs[k].set_xticklabels(labels, rotation=90, fontsize=6)
+            colors = [cols_dict.get(lab, "k") for lab in labels]
+            bars = axs_local[k].bar(x, values, color=colors)
 
-            for ticklabel, bar in zip(axs[k].get_xticklabels(), bars):
+            axs_local[k].set_ylabel(f"clus {int(clus)}")
+            axs_local[k].set_xticks(x)
+            axs_local[k].set_xticklabels(labels, rotation=90, fontsize=6)
+
+            for ticklabel, bar in zip(axs_local[k].get_xticklabels(), bars):
                 ticklabel.set_color(bar.get_facecolor())
 
-            axs[k].set_xlim(-0.5, len(labels) - 0.5)
-            axs[k].spines['top'].set_visible(False)
-            axs[k].spines['right'].set_visible(False)
+            axs_local[k].set_xlim(-0.5, len(labels) - 0.5)
+            axs_local[k].spines["top"].set_visible(False)
+            axs_local[k].spines["right"].set_visible(False)
 
             d[int(clus)] = values.tolist()
-            k += 1
 
-        for ax in axs:
-            if not has_data(ax):
-                ax.set_visible(False) 
-
-        fig.tight_layout()        
-        fig.subplots_adjust(top=0.951,
-                            bottom=0.059,
-                            left=0.037,
-                            right=0.992,
-                            hspace=0.225,
-                            wspace=0.2)
-
-    elif foc == 'Beryl':
-
-        # show frequency of clusters for all regions
-
-        # Load canonical region order
-        p = (Path(iblatlas.__file__).parent / 'beryl.npy')
-        regs_can = br.id2acronym(np.load(p), mapping='Beryl')
-
-        # Determine which regions to plot
-        if single_regions:
-            reg_ord = [reg for reg in single_regions if reg in r_a['acs']]
-            print(f'Plotting {len(reg_ord)} selected regions (single_regions)')
-        else:
-            regs_ = Counter(r_a['acs'])
-            reg_ord = [reg for reg in regs_can if reg in regs_ and regs_[reg] >= nmin]
-            print(f'{len(reg_ord)} regions with at least {nmin} cells')
-
-        ncols = int((len(reg_ord) ** 0.5) + 0.999)
-        nrows = (len(reg_ord) + ncols - 1) // ncols
-
-        if axs is None:
-            fig, axs = plt.subplots(nrows=nrows, 
-                                    ncols=ncols,
-                                    figsize=(18.79,  15),
-                                    sharex=True,
-                                    sharey=True if norm_ else False)
-            
-            axs = axs.flatten()
-                                    
-        clus_ids = np.array(r_k['acs'])
-        clus_cols = np.array(r_k['cols'])
-        clus_unique = np.unique(clus_ids)
-        cols_dict = {int(cid): clus_cols[clus_ids == cid][0] for cid in clus_unique}
-                    
-        cols_dictr = dict(list(Counter(zip(list(r_a['acs']),
-                    [tuple(color) for color in r_a['cols']]))))  
-
-        cluss = sorted(list(Counter(r_k['acs'])))
-        
-        # keep results for output
-        d = {}
-        for k, reg in enumerate(reg_ord):
-            counts = Counter(np.array(r_k['acs'])[r_a['acs'] == reg])
-            clus_order = {clus: 0 for clus in cluss}
-            for clus in cluss:
-                clus_order[clus] = counts.get(clus, 0)
-
-            values = list(clus_order.values())
-            if norm_:
-                values = np.array(values)/float(sum(values))    
-
-            labels = list(clus_order.keys())
-            colors = ([cols_dict[int(label)] for label in labels] 
-                if not single_regions else ['k'] * len(labels))
-
-            d[reg] = values          
-
-            bars = axs[k].bar(labels, values, color=colors)
-            axs[k].text(
-                0.98, 0.98, reg,
-                transform=axs[k].transAxes,
-                ha='right', va='top',
-                fontsize=label_size * 2.5,
-                color=pal[reg]
-            )
-
-            axs[k].set_xticks(labels)
-            axs[k].set_xticklabels(labels, fontsize=8, rotation=90)
-
-            if not single_regions:
-                for ticklabel, bar in zip(axs[k].get_xticklabels(), bars):
-                    ticklabel.set_color(bar.get_facecolor())        
-
-            axs[k].set_xlim(-0.5, len(labels)-0.5)
-            axs[k].spines['top'].set_visible(False)
-            axs[k].spines['right'].set_visible(False)
-
-        for ax in axs:
-            if not has_data(ax):
+        # hide empty axes (robust)
+        for ax in axs_local:
+            if not ax.has_data():
                 ax.set_visible(False)
 
-        if alone:
-            fig.canvas.manager.set_window_title(
-                f'Frequency of rm cluster ({nclus}) per'
-                f' Beryl region label; vers = {vers}')
-            fig.tight_layout()
+        fig.tight_layout()
+        fig.subplots_adjust(
+            top=0.951,
+            bottom=0.059,
+            left=0.037,
+            right=0.992,
+            hspace=0.225,
+            wspace=0.2,
+        )
 
-    elif foc == 'dec':
-        # Get data from get_dec_bwm()
-        d = get_dec_bwm()
-
-        # Load canonical region order
-        p = (Path(iblatlas.__file__).parent / 'beryl.npy')
-        regs_can = br.id2acronym(np.load(p), mapping='Beryl')
-
+    # =========================
+    # foc == 'Beryl'
+    # =========================
+    elif foc == "Beryl":
         # Determine which regions to plot
         if single_regions:
-            reg_ord = [reg for reg in single_regions if reg in d]
-            print(f'Plotting {len(reg_ord)} selected regions (single_regions)')
+            reg_ord = [reg for reg in single_regions if reg in set(r_a["acs"])]
+            # print kept as in original spirit; remove if undesired
+            print(f"Plotting {len(reg_ord)} selected regions (single_regions)")
         else:
-            reg_ord = [reg for reg in regs_can if reg in d]
-            print(f'{len(reg_ord)} regions')
+            regs_ = Counter(r_a["acs"])
+            reg_ord = [reg for reg in regs_can if reg in regs_ and regs_[reg] >= nmin]
+            print(f"{len(reg_ord)} regions with at least {nmin} cells")
 
-        ncols = int((len(reg_ord) ** 0.5) + 0.999)
-        nrows = (len(reg_ord) + ncols - 1) // ncols
+        ncols = int((len(reg_ord) ** 0.5) + 0.999) if len(reg_ord) else 1
+        nrows = (len(reg_ord) + ncols - 1) // ncols if len(reg_ord) else 1
 
-        if axs is None:
-            alone = False
-            fig, axs = plt.subplots(nrows=nrows, 
-                                    ncols=ncols,
-                                    figsize=(18.79,  15),
-                                    sharex=True,
-                                    sharey=True if norm_ else False)
-            
-            axs = axs.flatten()
+        if created_axes:
+            fig, axs = plt.subplots(
+                nrows=nrows,
+                ncols=ncols,
+                figsize=(18.79, 15),
+                sharex=True,
+                sharey=True if norm_ else False,
+            )
+            axs = np.ravel(axs)
+        else:
+            axs = np.ravel(axs)
+            fig = axs[0].figure
 
-        rrcols = ['r', 'g', 'b', 'y', 'c', 'm', 'k', 'o', 'p']
-        cols_dictr = dict(Counter(zip(list(r_a['acs']),
-                                      [tuple(color) for color in r_a['cols']])))
+        # normalize cluster ids -> int and build color map
+        clus_ids = np.asarray(r_k["acs"])
+        clus_cols = np.asarray(r_k["cols"])
+
+        try:
+            clus_ids_int = clus_ids.astype(int)
+        except Exception:
+            clus_ids_int = np.array([int(x) for x in clus_ids])
+
+        cluss = np.unique(clus_ids_int).tolist()
+        cluss.sort()
+
+        cols_dict = {}
+        for cid in np.unique(clus_ids_int):
+            # find first occurrence for color
+            idx = np.where(clus_ids_int == cid)[0]
+            if len(idx):
+                cols_dict[int(cid)] = clus_cols[idx[0]]
+
+        acs_a = np.asarray(r_a["acs"])
+        acs_k_int = clus_ids_int  # aligned by construction
 
         for k, reg in enumerate(reg_ord):
-            values = d[reg]
-            labels = list(range(len(values)))
+            if k >= len(axs):
+                break
 
-            if norm_:
-                values = np.array(values) / float(sum(values))
+            counts = Counter(acs_k_int[acs_a == reg])
 
-            if single_regions:
-                colors = ['k'] * len(labels)
-            else:
-                colors = rrcols[:len(labels)]
+            # full cluster order
+            values = np.array([counts.get(clus, 0) for clus in cluss], dtype=float)
+            den = float(values.sum())
+            if norm_ and den > 0:
+                values = values / den
+
+            labels = cluss
+            colors = (
+                [cols_dict.get(int(label), "k") for label in labels]
+                if not single_regions
+                else ["k"] * len(labels)
+            )
+
+            d[reg] = values.tolist()
 
             bars = axs[k].bar(labels, values, color=colors)
-            # --- place region label like in foc='Beryl' ---
+
             axs[k].text(
-                0.98, 0.98, reg,
+                0.98,
+                0.98,
+                reg,
                 transform=axs[k].transAxes,
-                ha='right', va='top',
+                ha="right",
+                va="top",
                 fontsize=label_size * 2.5,
-                color=pal[reg] if reg in pal else 'k'
+                color=pal.get(reg, "k"),
             )
 
             axs[k].set_xticks(labels)
@@ -4257,59 +4127,152 @@ def clus_freqs(foc='rm', nmin=50, nclus=20, vers='concat', get_res=False,
                 for ticklabel, bar in zip(axs[k].get_xticklabels(), bars):
                     ticklabel.set_color(bar.get_facecolor())
 
-            axs[k].set_xlim(-0.5, len(labels) - 0.5)
-            axs[k].spines['top'].set_visible(False)
-            axs[k].spines['right'].set_visible(False)
+            axs[k].set_xlim(min(labels) - 0.5 if labels else -0.5, (max(labels) + 0.5) if labels else 0.5)
+            axs[k].spines["top"].set_visible(False)
+            axs[k].spines["right"].set_visible(False)
 
+        # hide unused axes
         for ax in axs:
-            if not has_data(ax):
+            if not ax.has_data():
                 ax.set_visible(False)
 
-        if alone:
+        if created_axes:
             fig.canvas.manager.set_window_title(
-                f'Values from get_dec_bwm per Beryl region; vers = {vers}')
+                f"Frequency of {clustering} cluster ({nclus}) per Beryl region label; vers={vers}"
+            )
             fig.tight_layout()
 
+    # =========================
+    # foc == 'dec'
+    # =========================
+    elif foc == "dec":
+        d_src = get_dec_bwm()
+
+        if single_regions:
+            reg_ord = [reg for reg in single_regions if reg in d_src]
+            print(f"Plotting {len(reg_ord)} selected regions (single_regions)")
+        else:
+            reg_ord = [reg for reg in regs_can if reg in d_src]
+            print(f"{len(reg_ord)} regions")
+
+        ncols = int((len(reg_ord) ** 0.5) + 0.999) if len(reg_ord) else 1
+        nrows = (len(reg_ord) + ncols - 1) // ncols if len(reg_ord) else 1
+
+        if created_axes:
+            fig, axs = plt.subplots(
+                nrows=nrows,
+                ncols=ncols,
+                figsize=(18.79, 15),
+                sharex=True,
+                sharey=True if norm_ else False,
+            )
+            axs = np.ravel(axs)
+        else:
+            axs = np.ravel(axs)
+            fig = axs[0].figure
+
+        # use a colormap (avoid invalid color codes)
+        cmap = plt.get_cmap("tab10")
+
+        for k, reg in enumerate(reg_ord):
+            if k >= len(axs):
+                break
+
+            values = np.asarray(d_src[reg], dtype=float)
+            labels = list(range(len(values)))
+
+            den = float(values.sum())
+            if norm_ and den > 0:
+                values = values / den
+
+            if single_regions:
+                colors = ["k"] * len(labels)
+            else:
+                colors = [cmap(i % cmap.N) for i in labels]
+
+            axs[k].bar(labels, values, color=colors)
+
+            axs[k].text(
+                0.98,
+                0.98,
+                reg,
+                transform=axs[k].transAxes,
+                ha="right",
+                va="top",
+                fontsize=label_size * 2.5,
+                color=pal.get(reg, "k"),
+            )
+
+            axs[k].set_xticks(labels)
+            axs[k].set_xticklabels(labels, fontsize=8, rotation=90)
+
+            axs[k].set_xlim(-0.5, (len(labels) - 0.5) if labels else 0.5)
+            axs[k].spines["top"].set_visible(False)
+            axs[k].spines["right"].set_visible(False)
+
+            d[reg] = values.tolist()
+
+        for ax in axs:
+            if not ax.has_data():
+                ax.set_visible(False)
+
+        if created_axes:
+            fig.canvas.manager.set_window_title(f"dec per Beryl region; vers={vers}")
+            fig.tight_layout()
+
+    # ---- save outputs ----
     if save_:
-        fig.tight_layout() 
-        fig.savefig(Path(pth_dmn.parent, 'imgs',
-                        f'{foc}_{nclus}_{vers}_nrm_{norm_}.svg'), dpi=150)
-        fig.savefig(Path(pth_dmn.parent, 'imgs',
-                        f'{foc}_{nclus}_{vers}_nrm_{norm_}.pdf'), dpi=150)
+        if fig is None:
+            # cannot save without a figure (happens if user passes axs=None but branch failed to create fig)
+            raise RuntimeError("save_=True but no figure is available to save.")
+
+        outdir = Path(pth_dmn.parent, "imgs")
+        outdir.mkdir(parents=True, exist_ok=True)
+
+        fig.tight_layout()
+        fig.savefig(outdir / f"{foc}_{clustering}_{nclus}_{vers}_nrm_{norm_}_cv{cv}.svg", dpi=150)
+        fig.savefig(outdir / f"{foc}_{clustering}_{nclus}_{vers}_nrm_{norm_}_cv{cv}.pdf", dpi=150)
+
         np.save(pthres, d, allow_pickle=True)
+
     if get_res:
         return d
 
 
-def plot_rm_cluster_profile(clus,
-                            vers='concat',
-                            nclus=20,
-                            grid_upsample=0,
-                            cv=True,
-                            cv2=False,
-                            ephys=False,
-                            axs=None,
-                            norm_reg_count: bool = False,
-                            savefig: bool = True):
+
+def plot_rm_cluster_profile(
+    clus,
+    vers='concat',
+    nclus=20,
+    grid_upsample=0,
+    cv=True,
+    ephys=False,
+    axs=None,                    # expects (ax_left, ax_right) or None (kept for backward compat; ignored if None)
+    norm_reg_count: bool = True,
+    savefig: bool = False,
+):
     """
-    For a given Rastermap cluster (clus), plot:
+    For a given Rastermap cluster (clus), plot a 2-panel figure:
 
-    Top panel:
-        - Average PETH-style feature vector (e.g. concat_z) for neurons in this
-          rm cluster, with PETH boundaries drawn via _draw_peth_boundaries,
-          using r['peth_dict'] as defined in regional_group.
+    Left panel:
+        - Polar "pie / wedge" chart of region fractions in the cluster.
+        - Each wedge colored by the Beryl color for that region.
+        - Region labels placed outside the circle at the radial end of each wedge,
+          colored in the same region color, with fontsize scaled by wedge size.
 
-    Bottom panel:
-        - Bar plot of Beryl regions represented in this cluster.
+    Right panel:
+        - Average PETH-style feature vector (mean over cells in cluster),
+          with PETH boundaries via _draw_peth_boundaries.
 
-          If norm_reg_count=False (default):
-              bar height = # cells from that region in this cluster,
-              sorted by descending count.
+    Additionally:
+        - Removes cells whose Beryl label is 'root' or 'void' (case-insensitive)
+          consistently from BOTH r_rm and r_B at the start.
 
-          If norm_reg_count=True:
-              bar height = (# cells from that region in this cluster) /
-                           (# cells from that region in the whole population),
-              sorted by descending normalized value (enrichment).
+    Changes (integrated):
+        - If axs is None: create TWO separate figures (polar + line) instead of a 2-panel figure.
+        - Skip suptitle; print the title to terminal instead.
+        - If axs is provided: still draw into the provided (ax_left, ax_right) axes (single figure),
+          but do not set suptitle; print it instead.
     """
     # ---- load rm clusters and Beryl labels via regional_group ----
     r_rm = regional_group(
@@ -4320,7 +4283,6 @@ def plot_rm_cluster_profile(clus,
         nclus=nclus,
         rerun=False,
         cv=cv,
-        cv2=cv2,
     )
     r_B = regional_group(
         mapping='Beryl',
@@ -4330,8 +4292,31 @@ def plot_rm_cluster_profile(clus,
         nclus=nclus,
         rerun=False,
         cv=cv,
-        cv2=cv2,
     )
+
+    # ---- remove root/void cells up front (must be consistent across dicts) ----
+    acs_B_all = np.asarray(r_B['acs'])
+    n_all = acs_B_all.shape[0]
+    if np.asarray(r_rm['acs']).shape[0] != n_all:
+        raise ValueError(
+            f"r_rm and r_B have different N (rm={np.asarray(r_rm['acs']).shape[0]}, "
+            f"beryl={n_all}). Cannot apply consistent root/void filtering."
+        )
+
+    bad = {'root', 'void'}
+    keep = np.array([str(x).strip().lower() not in bad for x in acs_B_all], dtype=bool)
+
+    def _filter_r(rdict, keep_mask):
+        out = dict(rdict)
+        for k, v in rdict.items():
+            if isinstance(v, (list, np.ndarray)):
+                arr = np.asarray(v)
+                if arr.shape[0] == keep_mask.shape[0]:
+                    out[k] = arr[keep_mask]
+        return out
+
+    r_rm = _filter_r(r_rm, keep)
+    r_B  = _filter_r(r_B,  keep)
 
     # ---- cluster mask (robust to str/int) ----
     clus_ids = np.asarray(r_rm['acs'])
@@ -4344,7 +4329,7 @@ def plot_rm_cluster_profile(clus,
     mask = (clus_ids == clus)
     n_in_clus = int(mask.sum())
     if n_in_clus == 0:
-        raise ValueError(f"No neurons found in rm cluster {clus}.")
+        raise ValueError(f"No neurons found in rm cluster {clus} (after root/void filtering).")
 
     # ---- feature matrix and average PETH-like trace ----
     feat_key = 'concat_z' if 'concat_z' in r_rm else 'concat'
@@ -4352,133 +4337,208 @@ def plot_rm_cluster_profile(clus,
     if feat_mat.ndim != 2:
         raise ValueError(f"{feat_key} has shape {feat_mat.shape}, expected 2D (cells × time).")
 
-    feat_cluster = feat_mat[mask, :]              # (n_in_clus, T)
-    feat_mean = feat_cluster.mean(axis=0)         # (T,)
-
-    # PETH-style time axis, consistent with plot_example_neurons
+    feat_mean = np.asarray(feat_mat[mask, :]).mean(axis=0)
     xx = np.arange(feat_mat.shape[1]) / c_sec
 
     # ---- region distribution (Beryl) within this cluster ----
-    acs_B = np.asarray(r_B['acs'])    # global Beryl labels (all cells)
+    if 'peth_dict' not in r_rm:
+        r_rm['peth_dict'] = {k: k for k in r_rm.get('len', {}).keys()}
+
+    acs_B = np.asarray(r_B['acs'])
     cols_B = np.asarray(r_B['cols'])
 
-    regs_in_clus = acs_B[mask]        # Beryl labels only for this cluster
-    # global base counts per region (all cells)
+    regs_in_clus = acs_B[mask]
+    counts = Counter(regs_in_clus)
     global_counts = Counter(acs_B)
 
-    # per-cluster counts
-    counts = Counter(regs_in_clus)
-
-    # consistent color mapping
+    # consistent region->color mapping (first occurrence)
     reg2col = {}
     for reg, col in zip(acs_B, cols_B):
         if reg not in reg2col:
             reg2col[reg] = col
 
-    # --- compute raw and (optionally) normalized values per region ---
     regs = list(counts.keys())
-    raw_vals = np.array([counts[r] for r in regs], dtype=float)
+    raw = np.array([counts[r] for r in regs], dtype=float)
 
     if norm_reg_count:
-        # normalize each region count by its global abundance
-        vals = []
-        for rname, v in zip(regs, raw_vals):
-            base = global_counts.get(rname, 0)
-            if base > 0:
-                vals.append(v / float(base))
-            else:
-                vals.append(0.0)
-        vals = np.array(vals, dtype=float)
+        vals = np.array(
+            [(v / float(global_counts.get(rname, 1))) if global_counts.get(rname, 0) > 0 else 0.0
+             for rname, v in zip(regs, raw)],
+            dtype=float
+        )
+        title_norm = " (normalized by global region counts)"
+        frac = vals / (vals.sum() + 1e-12)  # wedges need a true partition
+        frac_label = "enrichment fraction"
     else:
-        vals = raw_vals
+        frac = raw / (raw.sum() + 1e-12)
+        title_norm = ""
+        frac_label = "fraction of cells"
 
-    # --- sort by the values we actually plot (normalized or raw) ---
-    sort_idx = sorted(
-        range(len(regs)),
-        key=lambda i: (-vals[i], str(regs[i]))
-    )
-
-    reg_sorted  = [regs[i] for i in sort_idx]
-    vals_sorted = vals[sort_idx]
+    # sort wedges by fraction (desc), tie-break by name
+    sort_idx = sorted(range(len(regs)), key=lambda i: (-frac[i], str(regs[i])))
+    reg_sorted = [regs[i] for i in sort_idx]
+    frac_sorted = np.asarray(frac[sort_idx], dtype=float)
     cols_sorted = [reg2col[r] for r in reg_sorted]
 
-    # ---- prepare axes ----
-    alone = axs is None
-    if alone:
-        fig, (ax_top, ax_bottom) = plt.subplots(
-            nrows=2, ncols=1, figsize=(20, 6),
-            sharex=False
-        )
-    else:
-        ax_top, ax_bottom = axs
-        fig = ax_top.figure
+    # ---- title: print to terminal (no suptitle) ----
+    title = f"RM cluster {clus} of {nclus} (n={n_in_clus} neurons){title_norm}"
+    print(title)
 
-    # ---- TOP PANEL: average PETH-like trace with PETH boundaries ----
-    ax_top.plot(xx, feat_mean, linewidth=1.2, color='black', alpha=0.9)
+    # ---- axes / figures ----
+    using_external_axes = axs is not None
+    if using_external_axes:
+        ax_left, ax_right = axs
+        fig_pie = ax_left.figure
+        fig_line = ax_right.figure
+    else:
+        # separate figures (requested)
+        fig_pie = plt.figure(figsize=(4, 4))
+        ax_left = fig_pie.add_subplot(111, projection='polar')
+
+        fig_line = plt.figure(figsize=(6, 3))
+        ax_right = fig_line.add_subplot(111)
+
+    # ---- LEFT: polar wedges with OUTSIDE radial labels ----
+    frac_sorted = frac_sorted / (frac_sorted.sum() + 1e-12)
+
+    theta_edges = np.concatenate(([0.0], 2 * np.pi * np.cumsum(frac_sorted)))
+    theta = theta_edges[:-1]
+    widths = np.diff(theta_edges)
+
+    ax_left.bar(
+        theta,
+        np.ones_like(theta),
+        width=widths,
+        bottom=0.0,
+        align='edge',
+        color=cols_sorted,
+        edgecolor='none',
+        alpha=1.0,
+        linewidth=0
+    )
+
+    # --- TOP-LEFT CORNER TEXT (cluster index) ---
+    ax_left.text(
+        -0.02, 1.02,
+        f"{clus}/{nclus}",
+        transform=ax_left.transAxes,
+        ha='left',
+        va='top',
+        fontsize=11,
+        fontweight='bold'
+    )
+
+    ax_left.set_yticks([])
+    ax_left.set_xticks([])
+    ax_left.spines['polar'].set_visible(False)
+    # ax_left.set_ylim(0, 1.6)
+
+    # --- OUTSIDE labels (LINEAR fontsize vs wedge size; omit if too small) ---
+    w_norm = widths / (2 * np.pi + 1e-12)  # wedge fraction in [0,1]
+    w0, w1 = float(np.min(w_norm)), float(np.max(w_norm))
+    denom = (w1 - w0) if (w1 - w0) > 1e-12 else 1.0
+
+    fs_min, fs_max = 3, 15.0
+    r_label = 1.12
+
+    for reg, col, t0, w, wn in zip(reg_sorted, cols_sorted, theta, widths, w_norm):
+        mid = t0 + 0.5 * w
+        ang = np.degrees(mid)
+
+        if 90 < ang < 270:
+            rot = ang + 180
+            ha = 'right'
+        else:
+            rot = ang
+            ha = 'left'
+
+        t = (float(wn) - w0) / denom
+        t = float(np.clip(t, 0.0, 1.0))
+        fontsize = fs_min + (fs_max - fs_min) * t
+
+        if fontsize < 5.0:
+            continue
+
+        ax_left.text(
+            mid,
+            r_label,
+            str(reg),
+            rotation=rot,
+            rotation_mode='anchor',
+            ha=ha,
+            va='center',
+            fontsize=float(fontsize),
+            fontweight='normal',
+            color=col,
+            clip_on=False,
+            zorder=10
+        )
+
+    # ---- RIGHT: mean PETH-like trace ----
+    ax_right.plot(xx, feat_mean, linewidth=1.2, color='black', alpha=0.9)
 
     y_max_seen = float(np.nanmax(feat_mean))
     pad = 0.1 * (np.nanmax(feat_mean) - np.nanmin(feat_mean) + 1e-6)
-    ax_top.set_ylim(np.nanmin(feat_mean) - pad, y_max_seen + pad)
+    ax_right.set_ylim(np.nanmin(feat_mean) - pad, y_max_seen + pad)
 
-    _draw_peth_boundaries(ax_top, r_rm, vers, y_max_seen, c_sec)
+    _draw_peth_boundaries(ax_right, r_rm, vers, y_max_seen, c_sec)
 
-    ax_top.set_xlabel("time [s]")
-    ax_top.set_ylabel("z-scored firing rate (mean over cluster)")
-    ax_top.spines['top'].set_visible(False)
-    ax_top.spines['right'].set_visible(False)
-    ax_top.spines['left'].set_visible(False)
-    ax_top.yaxis.set_ticks([])
+    ax_right.set_xlabel("time [s]")
+    ax_right.set_ylabel("mean z-scored activity")
+    ax_right.spines['top'].set_visible(False)
+    ax_right.spines['right'].set_visible(False)
+    ax_right.spines['left'].set_visible(False)
+    ax_right.yaxis.set_ticks([])
 
-    # ---- BOTTOM PANEL: region histogram ----
-    x = np.arange(len(reg_sorted))
-    bars = ax_bottom.bar(x, vals_sorted, color=cols_sorted)
+    # ---- layout / window titles ----
+    if not using_external_axes:
+        fig_pie.tight_layout()
+        fig_line.tight_layout()
+        try:
+            fig_pie.canvas.manager.set_window_title("RM cluster profile: region fractions (polar)")
+            fig_line.canvas.manager.set_window_title("RM cluster profile: mean PETH")
+        except Exception:
+            pass
 
-    ax_bottom.set_xticks(x)
-    ax_bottom.set_xticklabels(reg_sorted, rotation=90, fontsize=7)
+    # ---- show ----
+    plt.show()
 
-    if norm_reg_count:
-        ax_bottom.set_ylabel('fraction of region in cluster')
-        title_norm = " (normalized by global region counts)"
-    else:
-        ax_bottom.set_ylabel('# cells in cluster')
-        title_norm = ""
-
-    ax_bottom.set_xlabel('Beryl region')
-    ax_bottom.spines['top'].set_visible(False)
-    ax_bottom.spines['right'].set_visible(False)
-    ax_bottom.set_xlim(-0.5, len(reg_sorted) - 0.5)
-
-    for ticklabel, bar in zip(ax_bottom.get_xticklabels(), bars):
-        ticklabel.set_color(bar.get_facecolor())
-
-    ax_bottom.set_title(
-        f'RM cluster {clus} of {nclus} (n={n_in_clus} neurons)\n'
-        f'vers={vers}, grid={grid_upsample}{title_norm}'
-    )
-
-    if alone:
-        fig.tight_layout()
-        fig.canvas.manager.set_window_title(
-            f'RM cluster {clus}: mean PETH + Beryl composition'
-        )
-
+    # ---- save ----
     if savefig:
         save_dir = Path(one.cache_dir, 'dmn', 'figs')
         save_dir.mkdir(parents=True, exist_ok=True)
 
         fstem = (
             f"rmclus_{clus}_of{nclus}"
-            f"_vers{vers}"
-            f"_grid{grid_upsample}"
-            f"_cv{int(cv)}_cv2{int(cv2)}"
-            f"_ephys{int(ephys)}"
-            f"_normReg{int(norm_reg_count)}"
+            f"_cv{cv}"
+            f"_normReg{norm_reg_count}"
+            f"_noRootVoidTrue"
         )
 
-        png_path = save_dir / f"{fstem}.png"
-        fig.savefig(png_path, dpi=150, bbox_inches='tight')
-        print(f"[saved] {png_path}")
-        plt.close(fig)
+        if using_external_axes:
+            # save the figures that own the provided axes
+            png_pie = save_dir / f"{fstem}_polar.svg"
+            png_line = save_dir / f"{fstem}_peth.svg"
+            fig_pie.savefig(png_pie, dpi=150, bbox_inches='tight')
+            fig_line.savefig(png_line, dpi=150, bbox_inches='tight')
+            print(f"[saved] {png_pie}")
+            print(f"[saved] {png_line}")
+        else:
+            png_pie = save_dir / f"{fstem}_polar.svg"
+            png_line = save_dir / f"{fstem}_peth.svg"
+            fig_pie.savefig(png_pie, dpi=150, bbox_inches='tight')
+            fig_line.savefig(png_line, dpi=150, bbox_inches='tight')
+            print(f"[saved] {png_pie}")
+            print(f"[saved] {png_line}")
+
+        plt.close(fig_pie)
+        plt.close(fig_line)
+
+
+    #return (ax_left, ax_right)
+
+    
+
 
 
 
@@ -4525,71 +4585,71 @@ def count_trials():
     ax.set_xlabel('peth types')    
     
     
-def compare_two_goups(vers='concat', filt = 'VISp'):
+# def compare_two_goups(vers='concat', filt = 'VISp'):
 
-    '''
-    compare average feature vector for two groups of cells
-    '''
+#     '''
+#     compare average feature vector for two groups of cells
+#     '''
 
-    r = regional_group('Beryl', vers=vers)        
-    df = pd.DataFrame({'acs': r['acs'], 'x': r['xyz'][:,0]})    
-    regs = np.unique(r['acs'])
+#     r = regional_group('Beryl', vers=vers)        
+#     df = pd.DataFrame({'acs': r['acs'], 'x': r['xyz'][:,0]})    
+#     regs = np.unique(r['acs'])
     
     
-    vis = [x for x in regs if filt in x]
-    print(vis)
+#     vis = [x for x in regs if filt in x]
+#     print(vis)
     
-    colsd = {'left': blue_left, 'right': red_right}
+#     colsd = {'left': blue_left, 'right': red_right}
     
-    fig, axs = plt.subplots(nrows=2, sharex=True, sharey=True,
-                            figsize=[18 , 7.63])
+#     fig, axs = plt.subplots(nrows=2, sharex=True, sharey=True,
+#                             figsize=[18 , 7.63])
     
-    kk = 0
-    for hem in ['left', 'right']:
-        idc = np.bitwise_and(df['acs'].isin(vis), 
-            (df['x'] < 0) if (hem == 'left') else (df['x'] >= 0))
+#     kk = 0
+#     for hem in ['left', 'right']:
+#         idc = np.bitwise_and(df['acs'].isin(vis), 
+#             (df['x'] < 0) if (hem == 'left') else (df['x'] >= 0))
 
-        n_cells = sum(idc)
-        yy = np.mean(r['concat_bd'][idc],axis=0)
-        xx = np.arange(len(yy)) /c_sec
-        axs[kk].plot(xx, yy,
-                 color=colsd[hem],
-                 linewidth=2, 
-                 label=f'{n_cells} cells'
-                       f' in {filt} areas in {hem} hemisphere')                     
+#         n_cells = sum(idc)
+#         yy = np.mean(r['concat_bd'][idc],axis=0)
+#         xx = np.arange(len(yy)) /c_sec
+#         axs[kk].plot(xx, yy,
+#                  color=colsd[hem],
+#                  linewidth=2, 
+#                  label=f'{n_cells} cells'
+#                        f' in {filt} areas in {hem} hemisphere')                     
 
-        axs[kk].spines['top'].set_visible(False)
-        axs[kk].spines['right'].set_visible(False)
-        axs[kk].set_xlabel('time [sec]')
-        axs[kk].set_ylabel('firing rate')
+#         axs[kk].spines['top'].set_visible(False)
+#         axs[kk].spines['right'].set_visible(False)
+#         axs[kk].set_xlabel('time [sec]')
+#         axs[kk].set_ylabel('firing rate')
             
-        axs[kk].legend(loc='lower right')    
-        d2 = {}
-        for sec in PETH_types_dict[vers]:
-            d2[sec] = r['len'][sec]
+#         axs[kk].legend(loc='lower right')    
+#         d2 = {}
+#         for sec in PETH_types_dict[vers]:
+#             d2[sec] = r['len'][sec]
                             
-        # plot vertical boundaries for windows
-        h = 0
-        for i in d2:
+#         # plot vertical boundaries for windows
+#         h = 0
+#         for i in d2:
         
-            xv = d2[i] + h
-            axs[kk].axvline(xv/c_sec, linestyle='--', linewidth=1,
-                        color='grey')
+#             xv = d2[i] + h
+#             axs[kk].axvline(xv/c_sec, linestyle='--', linewidth=1,
+#                         color='grey')
             
-            if kk == 0: 
-                axs[kk].text(xv/c_sec - d2[i]/(2*c_sec), max(yy),
-                         '   '+i, rotation=90, color='k', 
-                         fontsize=10, ha='center')        
-            h += d2[i]
-        kk += 1
+#             if kk == 0: 
+#                 axs[kk].text(xv/c_sec - d2[i]/(2*c_sec), max(yy),
+#                          '   '+i, rotation=90, color='k', 
+#                          fontsize=10, ha='center')        
+#             h += d2[i]
+#         kk += 1
 
-    fig.tight_layout()
+#     fig.tight_layout()
 
 
 def plot_rastermap(vers='concat', feat='concat_z', regex='ECT', 
                    exa = False, mapping='rm', bg=False, img_only=False,
                    interp='antialiased', single_reg=False, cv=True,
-                   bg_bright = 0.99, vmax=2, rerun=False, sort_method='rastermap',nclus=100, clsfig=False, bounds=True, grid_upsample=0, locality=0.75, time_lag_window=5, symmetric=False):
+                   bg_bright = 0.99, vmax=2, rerun=False, sort_method='rastermap',nclus=100, clsfig=False, bounds=True, grid_upsample=0, locality=0.75, time_lag_window=5, symmetric=False, clabels='all'):
     """
     Function to plot a rastermap with vertical segment boundaries 
     and labels positioned above the segments.
@@ -4615,7 +4675,7 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
     if exa:
         plot_cluster_mean_PETHs(r,mapping, feat)
 
-
+    plt.ion()
     if clsfig:
         plt.ioff()
 
@@ -4634,6 +4694,7 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
 
     data = spks[isort]
     row_colors = np.array(r['cols'])[isort]
+    clus_sorted = np.asarray(r['acs'])[isort]
 
     del spks
     gc.collect()        
@@ -4650,6 +4711,7 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
 
         data = data[acs == regex]
         row_colors = row_colors[acs == regex]
+        clus_sorted = clus_sorted[acs == regex]
         print(f'filtering rastermap for {regex} cells only')
 
         del acs
@@ -4706,13 +4768,6 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
         # row_colors already reordered by isort (and possibly filtered by single_reg)
         rc = np.asarray(row_colors)
 
-        # cluster labels after sorting (and same masking as data/row_colors)
-        clus_sorted = np.asarray(r['acs'])[isort]
-        if single_reg:
-            # if you filtered by Beryl region, apply same mask to clusters
-            acs_B = np.asarray(r['Beryl'])[isort]
-            mask_reg = (acs_B == regex)
-            clus_sorted = clus_sorted[mask_reg]
 
         if rc.ndim == 2 and rc.shape[0] > 1:
             # find indices where the color (cluster) changes between consecutive rows
@@ -4728,6 +4783,7 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
                     zorder=5
                 )
 
+
             # --- NEW: add cluster numbers on the right, x-zoom independent ---
             # x in axes coordinates (0–1), y in data coordinates
             trans_right = mpl.transforms.blended_transform_factory(
@@ -4740,25 +4796,62 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
             # start at row 0.5, then all boundaries, then last row + 0.5
             edges = np.concatenate(([0.5], boundaries, [n_rows - 0.5]))
 
-            for i in range(len(edges) - 1):
+            n_segments = len(edges) - 1
+
+            # fontzise is a function fo cluster numbers, if 100 it's 3
+            fontsize = np.clip(300 / nclus, 2, 8)
+
+            # --- decide which segment indices to label ---
+            if clabels == 'all':
+                
+                label_idxs = np.arange(n_segments)
+
+            elif isinstance(clabels, int):
+                
+                if clabels < 1:
+                    label_idxs = np.array([], dtype=int)
+                elif clabels == 1:
+                    label_idxs = np.array([0])
+                else:
+                    # always include first and last, evenly spaced in between
+                    label_idxs = np.linspace(
+                        0, n_segments - 1, clabels, dtype=int
+                    )
+
+            else:
+                raise ValueError("clabels must be 'all' or a positive integer")
+
+            # --- draw labels ---
+            for i in label_idxs:
                 y0, y1 = edges[i], edges[i + 1]
                 mid_y = 0.5 * (y0 + y1)
 
-                # pick a representative row index for this segment
                 row_idx = int(np.clip(np.floor(mid_y), 0, n_rows - 1))
                 cid = int(clus_sorted[row_idx])
 
                 ax.text(
-                    1.01,          # just to the right of the axes
+                    1.01,
                     mid_y,
                     str(cid),
                     transform=trans_right,
                     va='center',
                     ha='left',
-                    fontsize=8,
+                    fontsize=fontsize,
                     color='k',
                     clip_on=False
                 )
+            ax.text(
+                1.08,                 # a bit to the right of the cluster numbers
+                0.5,                  # centered vertically
+                "clusters",
+                transform=ax.transAxes,  # both x,y in axes coordinates
+                rotation=90,         # vertical text, reading bottom -> top
+                va='center',
+                ha='center',
+                fontsize=mpl.rcParams['axes.labelsize'],
+                color='k',
+                clip_on=False
+            )
 
     if feat != 'ephysTF':
         if 'len' not in r or not isinstance(r['len'], dict) or len(r['len']) == 0:
@@ -4823,8 +4916,8 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
         ax.axis('off')
         # print region name and number of neurons on top like title
         if single_reg:
-            ax.text(0.5, 1.05, f'{regex} ({n_ex})', ha='center', va='bottom',
-                    fontsize=12, color=pal[regex], transform=ax.transAxes)
+            ax.set_title(f'{regex} ({n_ex})', fontsize=25, color=pal[regex],    
+                transform=ax.transAxes)
 
     ax.set_xlim(0, n_cols)
     plt.tight_layout()  # Adjust the layout to prevent clipping
@@ -4832,12 +4925,16 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
 
     # --- build descriptive filename and window title ---
     descriptor = (
-        f"cv{int(cv)}"
+        f"mapping{mapping}"
+        f"_cv{cv}"
         f"_nclus{nclus}"
         f"_locality{locality}"
         f"_timelag{time_lag_window}"
         f"_upsample{grid_upsample}"
         f"_symmetric{symmetric}")
+
+    if single_reg:
+        descriptor += f"_reg{regex}"    
 
     fname = "rastermap_" + descriptor.replace(" | ", "_").replace("=", "") + ".png"
 
@@ -4896,9 +4993,6 @@ def raster_grid():
                             )
 
 
-
-
-
 def plot_region_counts_svg():
     '''
     for rasterplot figure, get single reg rasterplot titles as svg
@@ -4921,32 +5015,32 @@ def plot_region_counts_svg():
     fig.savefig(filename, format='svg', bbox_inches='tight')
 
 
-def non_flatness_score(d, get_cells=False, norm_=True):
-    '''
-    for each item compute the non-flatness score as the 
-    wasserstein metric to a flat distibution
-    i.e. zero when flat, high when far from it
-    d: dict with region acronyms as keys and distributions as values
-    norm_: distribution sums to 1
-    '''
+# def non_flatness_score(d, get_cells=False, norm_=True):
+#     '''
+#     for each item compute the non-flatness score as the 
+#     wasserstein metric to a flat distibution
+#     i.e. zero when flat, high when far from it
+#     d: dict with region acronyms as keys and distributions as values
+#     norm_: distribution sums to 1
+#     '''
 
-    scores = {}
-    for reg in d:
+#     scores = {}
+#     for reg in d:
 
-        n_cells = np.sum(d[reg])
-        if norm_:
-            d[reg] = np.array(d[reg])/n_cells
+#         n_cells = np.sum(d[reg])
+#         if norm_:
+#             d[reg] = np.array(d[reg])/n_cells
 
-        flat_dist = [np.sum(d[reg])/len(d[reg])] * len(d[reg])
+#         flat_dist = [np.sum(d[reg])/len(d[reg])] * len(d[reg])
 
-        emd = wasserstein_distance(d[reg], flat_dist)
+#         emd = wasserstein_distance(d[reg], flat_dist)
         
-        if get_cells:
-            scores[reg] = [n_cells, emd]
-        else:    
-            scores[reg] = emd
+#         if get_cells:
+#             scores[reg] = [n_cells, emd]
+#         else:    
+#             scores[reg] = emd
 
-    return dict(sorted(scores.items(), key=lambda item: item[1]))
+#     return dict(sorted(scores.items(), key=lambda item: item[1]))
 
 
 def flatness_entropy_score(d, get_cells=False):
@@ -4972,84 +5066,84 @@ def flatness_entropy_score(d, get_cells=False):
 
 
 
-def plot_xyz_cents(foc='Beryl', ax=None, norm_=True):
+# def plot_xyz_cents(foc='Beryl', ax=None, norm_=True):
 
-    '''
-    3d plot of feature per Beryl region centroid
-    stars for region volumes and centroids
-    colored by 'Beryl' and 'foc',
-    score in 'clus_flat', 'dec_flat'
-    i.e. flatness of distribution of clusters or decoding scores
-    '''
+#     '''
+#     3d plot of feature per Beryl region centroid
+#     stars for region volumes and centroids
+#     colored by 'Beryl' and 'foc',
+#     score in 'clus_flat', 'dec_flat'
+#     i.e. flatness of distribution of clusters or decoding scores
+#     '''
     
-    alone = False
-    if not ax:
-        alone = True
-        fig = plt.figure(figsize=(8.43,7.26), label=f'{foc}')
-        ax = fig.add_subplot(111,projection='3d')
+#     alone = False
+#     if not ax:
+#         alone = True
+#         fig = plt.figure(figsize=(8.43,7.26), label=f'{foc}')
+#         ax = fig.add_subplot(111,projection='3d')
 
-    if foc == 'Beryl':
-        d = clus_freqs(foc=foc, get_res=True, norm_=norm_) 
+#     if foc == 'Beryl':
+#         d = clus_freqs(foc=foc, get_res=True, norm_=norm_) 
 
-    elif foc == 'dec':
-        d = get_dec_bwm()
+#     elif foc == 'dec':
+#         d = get_dec_bwm()
 
-    else:
-        print('??? what score')
-        return
+#     else:
+#         print('??? what score')
+#         return
 
-    fs = non_flatness_score(d, norm_=norm_)
+#     fs = non_flatness_score(d, norm_=norm_)
 
-    regs = list(Counter(fs.keys()))
-    centsd = get_centroids()
-    cents = np.array([centsd[x] for x in regs])
-    xyz = cents          
-    volsd = get_volume()
-    vols = [volsd[x] for x in regs]
+#     regs = list(Counter(fs.keys()))
+#     centsd = get_centroids()
+#     cents = np.array([centsd[x] for x in regs])
+#     xyz = cents          
+#     volsd = get_volume()
+#     vols = [volsd[x] for x in regs]
     
-    scale = 5000
-    vols = scale * np.array(vols)/np.max(vols)
+#     scale = 5000
+#     vols = scale * np.array(vols)/np.max(vols)
     
 
-    colsB = [pal[reg] for reg in regs]
+#     colsB = [pal[reg] for reg in regs]
 
 
-    cmap = plt.cm.Blues
-    scores = [fs[reg] for reg in fs] 
-    norm = plt.Normalize(vmin=min(scores), vmax=max(scores))
-    cols = cmap(norm(scores))
+#     cmap = plt.cm.Blues
+#     scores = [fs[reg] for reg in fs] 
+#     norm = plt.Normalize(vmin=min(scores), vmax=max(scores))
+#     cols = cmap(norm(scores))
 
-    scatter = ax.scatter(cents[:,0], cents[:,1], cents[:,2], linewidths=3,
-                marker='o', s = vols, color=cols, edgecolor=colsB,
-                depthshade=False)
+#     scatter = ax.scatter(cents[:,0], cents[:,1], cents[:,2], linewidths=3,
+#                 marker='o', s = vols, color=cols, edgecolor=colsB,
+#                 depthshade=False)
                        
-    scalef = 1.2                  
-    ax.view_init(elev=45.78, azim=-33.4)
-    ax.set_xlim(min(xyz[:,0])/scalef, max(xyz[:,0])/scalef)
-    ax.set_ylim(min(xyz[:,1])/scalef, max(xyz[:,1])/scalef)
-    ax.set_zlim(min(xyz[:,2])/scalef, max(xyz[:,2])/scalef)
-    ax.xaxis.pane.fill = False
-    ax.yaxis.pane.fill = False
-    ax.zaxis.pane.fill = False
+#     scalef = 1.2                  
+#     ax.view_init(elev=45.78, azim=-33.4)
+#     ax.set_xlim(min(xyz[:,0])/scalef, max(xyz[:,0])/scalef)
+#     ax.set_ylim(min(xyz[:,1])/scalef, max(xyz[:,1])/scalef)
+#     ax.set_zlim(min(xyz[:,2])/scalef, max(xyz[:,2])/scalef)
+#     ax.xaxis.pane.fill = False
+#     ax.yaxis.pane.fill = False
+#     ax.zaxis.pane.fill = False
 
-    fontsize = 14
-    ax.set_xlabel('x [mm]', fontsize = fontsize)
-    ax.set_ylabel('y [mm]', fontsize = fontsize)
-    ax.set_zlabel('z [mm]', fontsize = fontsize)
-    ax.tick_params(axis='both', labelsize=12)
-    ax.grid(False)
-    nbins = 3
-    ax.xaxis.set_major_locator(MaxNLocator(nbins=nbins))
-    ax.yaxis.set_major_locator(MaxNLocator(nbins=nbins))
-    ax.zaxis.set_major_locator(MaxNLocator(nbins=nbins))
+#     fontsize = 14
+#     ax.set_xlabel('x [mm]', fontsize = fontsize)
+#     ax.set_ylabel('y [mm]', fontsize = fontsize)
+#     ax.set_zlabel('z [mm]', fontsize = fontsize)
+#     ax.tick_params(axis='both', labelsize=12)
+#     ax.grid(False)
+#     nbins = 3
+#     ax.xaxis.set_major_locator(MaxNLocator(nbins=nbins))
+#     ax.yaxis.set_major_locator(MaxNLocator(nbins=nbins))
+#     ax.zaxis.set_major_locator(MaxNLocator(nbins=nbins))
 
-    ax.set_title(f'{foc}, norm:{norm_}')
+#     ax.set_title(f'{foc}, norm:{norm_}')
 
-    cbar = fig.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), ax=ax, 
-                        fraction=0.02, pad=0.1)
-    cbar.set_label('the lower the flatter the distribution',
-                   fontsize=fontsize)
-    cbar.ax.tick_params(labelsize=12)
+#     cbar = fig.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), ax=ax, 
+#                         fraction=0.02, pad=0.1)
+#     cbar.set_label('the lower the flatter the distribution',
+#                    fontsize=fontsize)
+#     cbar.ax.tick_params(labelsize=12)
 
 
 def get_dec_bwm(nscores=3):
@@ -5233,8 +5327,9 @@ def plot_three_swansons():
 
 
 
-def scat_dec_clus(norm_=True, harris=False, nclus=10, corr_only=False,
-                  log_scale=True, axs=None, compare='clu'):
+def scat_dec_clus(norm_=True, harris=False, nclus=20, corr_only=False, 
+                  clustering='rm',log_scale=True, axs=None, 
+                  compare='clu', cv=True):
     '''
     Scatter plots comparing specialization scores from clustering and decoding,
     and optionally Harris hierarchy scores.
@@ -5255,8 +5350,9 @@ def scat_dec_clus(norm_=True, harris=False, nclus=10, corr_only=False,
 
     # Load specialization scores
     be = flatness_entropy_score(clus_freqs(foc='Beryl', get_res=True,       
-        nclus=nclus))
-    de = flatness_entropy_score(clus_freqs(foc='dec', get_res=True))
+        nclus=nclus,cv=cv, clustering=clustering))
+    de = flatness_entropy_score(clus_freqs(foc='dec', get_res=True, 
+                                cv=cv, clustering=clustering))
 
     if axs is None:
         fig, axs = plt.subplots(figsize=(3, 3))
@@ -5360,140 +5456,140 @@ def scat_dec_clus(norm_=True, harris=False, nclus=10, corr_only=False,
     plt.show()
 
 
-def plot_cluster_pearson(ax=None, r_squared=False):
-    """
-    Plot Pearson's r as a function of k-means cluster number.
+# def plot_cluster_pearson(ax=None, r_squared=False):
+#     """
+#     Plot Pearson's r as a function of k-means cluster number.
 
-    Parameters
-    ----------
-    results : list
-        List like:
-        [
-          [cluster_id, (np.float64(r_value), np.float64(p_value))],
-          ...
-        ]
-    ax : matplotlib.axes.Axes, optional
-        Existing axes to plot into. If None, a new figure/axes is created.
+#     Parameters
+#     ----------
+#     results : list
+#         List like:
+#         [
+#           [cluster_id, (np.float64(r_value), np.float64(p_value))],
+#           ...
+#         ]
+#     ax : matplotlib.axes.Axes, optional
+#         Existing axes to plot into. If None, a new figure/axes is created.
 
-    Returns
-    -------
-    ax : matplotlib.axes.Axes
-        The axes with the plot.
-    """
+#     Returns
+#     -------
+#     ax : matplotlib.axes.Axes
+#         The axes with the plot.
+#     """
 
-    results = []
-    for i in range(3,18):
-        results.append([i,scat_dec_clus(nclus=i,corr_only=True)]) 
+#     results = []
+#     for i in range(3,18):
+#         results.append([i,scat_dec_clus(nclus=i,corr_only=True)]) 
 
-    # Extract cluster IDs and r-values
-    clusters = []
-    r_values = []
-    for cluster_id, (r_val, p_val) in results:
-        clusters.append(int(cluster_id))
-        r_values.append(float(r_val) if r_squared == False else float(r_val**2))
+#     # Extract cluster IDs and r-values
+#     clusters = []
+#     r_values = []
+#     for cluster_id, (r_val, p_val) in results:
+#         clusters.append(int(cluster_id))
+#         r_values.append(float(r_val) if r_squared == False else float(r_val**2))
 
-    clusters = np.array(clusters)
-    r_values = np.array(r_values)
+#     clusters = np.array(clusters)
+#     r_values = np.array(r_values)
 
-    # Sort by cluster number, just in case input is unsorted
-    order = np.argsort(clusters)
-    clusters = clusters[order]
-    r_values = r_values[order]
+#     # Sort by cluster number, just in case input is unsorted
+#     order = np.argsort(clusters)
+#     clusters = clusters[order]
+#     r_values = r_values[order]
 
-    # Prepare axis
-    if ax is None:
-        fig, ax = plt.subplots()
+#     # Prepare axis
+#     if ax is None:
+#         fig, ax = plt.subplots()
 
-    # Plot
-    ax.plot(clusters, r_values, marker="o")
-    ax.axhline(0, linestyle="--", linewidth=1)  # zero reference
+#     # Plot
+#     ax.plot(clusters, r_values, marker="o")
+#     ax.axhline(0, linestyle="--", linewidth=1)  # zero reference
 
-    ax.set_xlabel("k-means cluster")
-    ax.set_ylabel("Pearson's r with dec specialisation score" if not r_squared else "R squared with dec specialisation score")
-    ax.set_title("Cluster-wise correlation")
+#     ax.set_xlabel("k-means cluster")
+#     ax.set_ylabel("Pearson's r with dec specialisation score" if not r_squared else "R squared with dec specialisation score")
+#     ax.set_title("Cluster-wise correlation")
 
 
-def plot_brain_region_counts(start=None, end=None, nmin=50):
-    """
-    Plot a bar chart of brain region counts, color-coded by a given palette.
+# def plot_brain_region_counts(start=None, end=None, nmin=50):
+#     """
+#     Plot a bar chart of brain region counts, color-coded by a given palette.
     
-    Parameters:
-    - data (dict or Counter): Dictionary or Counter object with region names as keys and counts as values.
-    - norm_ binary, control for total cell counts across regions    
-    Output:
-    - Displays a bar chart with regions sorted by count.
-    """
+#     Parameters:
+#     - data (dict or Counter): Dictionary or Counter object with region names as keys and counts as values.
+#     - norm_ binary, control for total cell counts across regions    
+#     Output:
+#     - Displays a bar chart with regions sorted by count.
+#     """
 
-    r = regional_group('Beryl')
+#     r = regional_group('Beryl')
 
-    start = start if start is not None else 0
-    end = end if end is not None else len(r['acs'])    
-    d0 = Counter(np.array(r['acs'])[r['isort']][start:end])
-    d00 = Counter(np.array(r['acs'])[r['isort']])
+#     start = start if start is not None else 0
+#     end = end if end is not None else len(r['acs'])    
+#     d0 = Counter(np.array(r['acs'])[r['isort']][start:end])
+#     d00 = Counter(np.array(r['acs'])[r['isort']])
 
-    data = {}
-    for reg in d0:
-        if d00[reg] < nmin:
-            continue
-        data[reg] = d0[reg]/d00[reg]
+#     data = {}
+#     for reg in d0:
+#         if d00[reg] < nmin:
+#             continue
+#         data[reg] = d0[reg]/d00[reg]
 
-    # Sort data by values
-    sorted_data = dict(sorted(data.items(), key=lambda item: item[1], reverse=True))
+#     # Sort data by values
+#     sorted_data = dict(sorted(data.items(), key=lambda item: item[1], reverse=True))
 
-    # Extract keys, values, and colors
-    regions = list(sorted_data.keys())
-    values = list(sorted_data.values())
-    colors = [pal[region] for region in regions]
+#     # Extract keys, values, and colors
+#     regions = list(sorted_data.keys())
+#     values = list(sorted_data.values())
+#     colors = [pal[region] for region in regions]
 
-    # Create the bar plot
-    plt.figure(figsize=(17.27,  6.  ))
-    plt.bar(regions, values, color=colors)
+#     # Create the bar plot
+#     plt.figure(figsize=(17.27,  6.  ))
+#     plt.bar(regions, values, color=colors)
 
-    # Customize plot
-    plt.xticks(rotation=90, fontsize=8)
-    plt.ylabel('Count', fontsize=12)
-    plt.title(f'cells {start} to {end} in rastermap ordering', fontsize=14)
-    # Set x-tick labels to the same color as bars
-    ax = plt.gca()
-    for tick, color in zip(ax.get_xticklabels(), colors):
-        tick.set_color(color)
-    # Show the plot
-    plt.tight_layout()
-    plt.show()
+#     # Customize plot
+#     plt.xticks(rotation=90, fontsize=8)
+#     plt.ylabel('Count', fontsize=12)
+#     plt.title(f'cells {start} to {end} in rastermap ordering', fontsize=14)
+#     # Set x-tick labels to the same color as bars
+#     ax = plt.gca()
+#     for tick, color in zip(ax.get_xticklabels(), colors):
+#         tick.set_color(color)
+#     # Show the plot
+#     plt.tight_layout()
+#     plt.show()
 
 
-def embed_histograms_scatter(foc='dec', ax=None):
+# def embed_histograms_scatter(foc='dec', ax=None):
 
-    '''
-    per region, get histogram (bwm dec or PETH based k-means counts)
-    embed in 2d via umap
-    '''
+#     '''
+#     per region, get histogram (bwm dec or PETH based k-means counts)
+#     embed in 2d via umap
+#     '''
 
-    alone = False
-    if not ax:
-        alone = True
-        fig, ax = plt.subplots(figsize=(8.43,7.26), label=f'{foc}')
+#     alone = False
+#     if not ax:
+#         alone = True
+#         fig, ax = plt.subplots(figsize=(8.43,7.26), label=f'{foc}')
 
-    if foc == 'Beryl':
-        d = clus_freqs(foc=foc, get_res=True, norm_=False) 
+#     if foc == 'Beryl':
+#         d = clus_freqs(foc=foc, get_res=True, norm_=False) 
 
-    elif foc == 'dec':
-        d = get_dec_bwm()
+#     elif foc == 'dec':
+#         d = get_dec_bwm()
 
-    regs, data = [reg for reg in d], np.array([d[reg] for reg in d])
-    cols = [pal[reg] for reg in regs]
+#     regs, data = [reg for reg in d], np.array([d[reg] for reg in d])
+#     cols = [pal[reg] for reg in regs]
 
-    emb = umap.UMAP(n_components=2).fit_transform(data)
+#     emb = umap.UMAP(n_components=2).fit_transform(data)
 
-    ax.scatter(emb[:,0], emb[:,1], color='w')
-    # Plot colored text instead of scatter markers
-    for i, reg in enumerate(regs):
-        ax.text(emb[i, 0], emb[i, 1], reg, color=cols[i], 
-            fontsize=9, ha='center', va='center')
+#     ax.scatter(emb[:,0], emb[:,1], color='w')
+#     # Plot colored text instead of scatter markers
+#     for i, reg in enumerate(regs):
+#         ax.text(emb[i, 0], emb[i, 1], reg, color=cols[i], 
+#             fontsize=9, ha='center', va='center')
   
-    ax.set_title(f'embed histograms of {foc}')
-    ax.set_xlabel('umap dim 1')
-    ax.set_ylabel('umap_dim 2')
+#     ax.set_title(f'embed histograms of {foc}')
+#     ax.set_xlabel('umap dim 1')
+#     ax.set_ylabel('umap_dim 2')
 
 
 def plot_decoding_results():
@@ -5668,9 +5764,9 @@ def save_rastermap_pdf(
     Save a rastermap image as a PDF, optionally with colored row background.
     Relies on regional_group(...) for sorting and segment order.
     """
-    
-    
-    if grid_upsample not 0:
+
+
+    if grid_upsample != 0:
         bounds = False  # disable boundaries if upsampling
 
 
