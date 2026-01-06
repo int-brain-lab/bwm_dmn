@@ -4766,92 +4766,90 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
 
     if mapping == 'rm' and bounds:
         # row_colors already reordered by isort (and possibly filtered by single_reg)
-        rc = np.asarray(row_colors)
+        rc = np.asarray(clus_sorted)
 
+        # find indices where the color (cluster) changes between consecutive rows
+        cluster_changes = (np.diff(rc) != 0)
+        boundaries = np.where(cluster_changes)[0] + 0.5  # between rows i and i+1
 
-        if rc.ndim == 2 and rc.shape[0] > 1:
-            # find indices where the color (cluster) changes between consecutive rows
-            color_changes = np.any(np.diff(rc, axis=0) != 0, axis=1)
-            boundaries = np.where(color_changes)[0] + 0.5  # between rows i and i+1
-
-            # draw horizontal lines at cluster boundaries
-            for y in boundaries:
-                ax.axhline(
-                    y,
-                    color='k',
-                    linewidth=0.6,
-                    zorder=5
-                )
-
-
-            # --- NEW: add cluster numbers on the right, x-zoom independent ---
-            # x in axes coordinates (0–1), y in data coordinates
-            trans_right = mpl.transforms.blended_transform_factory(
-                ax.transAxes,   # x in axes coords
-                ax.transData    # y in data coords
+        # draw horizontal lines at cluster boundaries
+        for y in boundaries:
+            ax.axhline(
+                y,
+                color='k',
+                linewidth=0.6,
+                zorder=5
             )
 
-            n_rows = data.shape[0]
-            # define edges of each cluster segment
-            # start at row 0.5, then all boundaries, then last row + 0.5
-            edges = np.concatenate(([0.5], boundaries, [n_rows - 0.5]))
 
-            n_segments = len(edges) - 1
+        # --- NEW: add cluster numbers on the right, x-zoom independent ---
+        # x in axes coordinates (0–1), y in data coordinates
+        trans_right = mpl.transforms.blended_transform_factory(
+            ax.transAxes,   # x in axes coords
+            ax.transData    # y in data coords
+        )
 
-            # fontzise is a function fo cluster numbers, if 100 it's 3
-            fontsize = np.clip(300 / nclus, 2, 8)
+        n_rows = data.shape[0]
+        # define edges of each cluster segment
+        # start at row 0.5, then all boundaries, then last row + 0.5
+        edges = np.concatenate(([0.5], boundaries, [n_rows - 0.5]))
 
-            # --- decide which segment indices to label ---
-            if clabels == 'all':
-                
-                label_idxs = np.arange(n_segments)
+        n_segments = len(edges) - 1
 
-            elif isinstance(clabels, int):
-                
-                if clabels < 1:
-                    label_idxs = np.array([], dtype=int)
-                elif clabels == 1:
-                    label_idxs = np.array([0])
-                else:
-                    # always include first and last, evenly spaced in between
-                    label_idxs = np.linspace(
-                        0, n_segments - 1, clabels, dtype=int
-                    )
+        # fontzise is a function fo cluster numbers, if 100 it's 3
+        fontsize = np.clip(300 / nclus, 2, 8)
 
+        # --- decide which segment indices to label ---
+        if clabels == 'all':
+            
+            label_idxs = np.arange(n_segments)
+
+        elif isinstance(clabels, int):
+            
+            if clabels < 1:
+                label_idxs = np.array([], dtype=int)
+            elif clabels == 1:
+                label_idxs = np.array([0])
             else:
-                raise ValueError("clabels must be 'all' or a positive integer")
-
-            # --- draw labels ---
-            for i in label_idxs:
-                y0, y1 = edges[i], edges[i + 1]
-                mid_y = 0.5 * (y0 + y1)
-
-                row_idx = int(np.clip(np.floor(mid_y), 0, n_rows - 1))
-                cid = int(clus_sorted[row_idx])
-
-                ax.text(
-                    1.01,
-                    mid_y,
-                    str(cid),
-                    transform=trans_right,
-                    va='center',
-                    ha='left',
-                    fontsize=fontsize,
-                    color='k',
-                    clip_on=False
+                # always include first and last, evenly spaced in between
+                label_idxs = np.linspace(
+                    0, n_segments - 1, clabels, dtype=int
                 )
+
+        else:
+            raise ValueError("clabels must be 'all' or a positive integer")
+
+        # --- draw labels ---
+        for i in label_idxs:
+            y0, y1 = edges[i], edges[i + 1]
+            mid_y = 0.5 * (y0 + y1)
+
+            row_idx = int(np.clip(np.floor(mid_y), 0, n_rows - 1))
+            cid = int(clus_sorted[row_idx])
+
             ax.text(
-                1.08,                 # a bit to the right of the cluster numbers
-                0.5,                  # centered vertically
-                "clusters",
-                transform=ax.transAxes,  # both x,y in axes coordinates
-                rotation=90,         # vertical text, reading bottom -> top
+                1.01,
+                mid_y,
+                str(cid),
+                transform=trans_right,
                 va='center',
-                ha='center',
-                fontsize=mpl.rcParams['axes.labelsize'],
+                ha='left',
+                fontsize=fontsize,
                 color='k',
                 clip_on=False
             )
+        ax.text(
+            1.08,                 # a bit to the right of the cluster numbers
+            0.5,                  # centered vertically
+            "clusters",
+            transform=ax.transAxes,  # both x,y in axes coordinates
+            rotation=90,         # vertical text, reading bottom -> top
+            va='center',
+            ha='center',
+            fontsize=mpl.rcParams['axes.labelsize'],
+            color='k',
+            clip_on=False
+        )
 
     if feat != 'ephysTF':
         if 'len' not in r or not isinstance(r['len'], dict) or len(r['len']) == 0:
