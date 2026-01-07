@@ -902,6 +902,7 @@ def regional_group(
     ephys: bool = False,
     grid_upsample: int = 0,
     nclus: int = 100,
+    nclus_rm: int | None = None,          # NEW: Rastermap n_clusters (defaults to nclus)
     cv: bool = True,
     locality: float = 0.75,
     time_lag_window: int = 5,
@@ -910,14 +911,21 @@ def regional_group(
 ):
     """
     Group / color neurons for visualization and downstream analyses.
+
+    Notes
+    -----
+    - nclus controls the main mapping (e.g. KMeans n_clusters).
+    - Rastermap uses nclus_rm if provided; otherwise defaults to nclus.
     """
     pth_res = Path(one.cache_dir, "dmn", "res")
+    nclus_rm_eff = int(nclus) if nclus_rm is None else int(nclus_rm)
 
     def _cache_path(kind: str) -> Path:
         """
         kind:
           - 'stack': precomputed stacked features from stack_concat (DO NOT include rm hyperparams)
-          - 'rm'   : rastermap cache (include rm hyperparams + nclus)
+          - 'rm'   : rastermap cache (include rm hyperparams + nclus_rm)
+          - 'kmeans': kmeans cache (include nclus)
         """
         if kind == "stack":
             base = f"{vers}"
@@ -925,7 +933,14 @@ def regional_group(
             base += f"_ephys{ephys}"
             return pth_res / (base + ".npy")
 
-        if kind in ["rm", 'kmeans']:
+        if kind == "rm":
+            base = f"{kind}_{vers}"
+            base += f"_cv{cv}"
+            base += f"_ephys{ephys}"
+            base += f"_n{int(nclus_rm_eff)}"
+            return pth_res / (base + ".npy")
+
+        if kind == "kmeans":
             base = f"{kind}_{vers}"
             base += f"_cv{cv}"
             base += f"_ephys{ephys}"
@@ -944,8 +959,8 @@ def regional_group(
 
     r = np.load(stack_path, allow_pickle=True).flat[0]
     print(
-        f"mapping {mapping}, vers {vers}, ephys {ephys}, nclus {nclus}, rerun {rerun}, cv {cv}, "
-        f"{len(r['ids'])} neurons loaded."
+        f"mapping {mapping}, vers {vers}, ephys {ephys}, nclus {nclus}, nclus_rm {nclus_rm_eff}, "
+        f"rerun {rerun}, cv {cv}, {len(r['ids'])} neurons loaded."
     )
 
     r["len"] = OrderedDict((k, int(r["len"][k])) for k in r["ttypes"])
@@ -960,7 +975,8 @@ def regional_group(
         + f"|shape:{r[feat_key].shape}"
     )
 
-    r['peth_dict'] = {x: peth_dictm[x] for x in r['ttypes']}
+    r["peth_dict"] = {x: peth_dictm[x] for x in r["ttypes"]}
+
     # ---------- mapping ----------
     if mapping == "rm":
         feat = feat_key
@@ -978,6 +994,7 @@ def regional_group(
                 if (
                     isinstance(cached, dict)
                     and cached.get("order_sig") == r["_order_signature"]
+                    and cached.get("nclus_rm") == int(nclus_rm_eff)
                     and "rm_labels" in cached
                     and "isort" in cached
                 ):
@@ -998,10 +1015,10 @@ def regional_group(
             if feat_used not in r:
                 raise KeyError(f"Feature '{feat_used}' not found in stack.")
 
-            print(f"[rm] computing Rastermap (n_clusters={nclus}) on {feat_used}")
+            print(f"[rm] computing Rastermap (n_clusters={nclus_rm_eff}) on {feat_used}")
             model = Rastermap(
                 n_PCs=200,
-                n_clusters=nclus,
+                n_clusters=nclus_rm_eff,
                 grid_upsample=grid_upsample,
                 locality=locality,
                 time_lag_window=time_lag_window,
@@ -1019,7 +1036,12 @@ def regional_group(
 
             np.save(
                 rm_cache_path,
-                {"rm_labels": labels, "isort": isort, "order_sig": r["_order_signature"]},
+                {
+                    "rm_labels": labels,
+                    "isort": isort,
+                    "order_sig": r["_order_signature"],
+                    "nclus_rm": int(nclus_rm_eff),
+                },
                 allow_pickle=True,
             )
             print(f"[rm] wrote cache ({rm_cache_path.name})")
@@ -1038,43 +1060,42 @@ def regional_group(
         r["cols"] = cols
         r["isort"] = isort
 
-        
-    elif mapping == 'layers':
-        acs = np.array(br.id2acronym(r['ids'], mapping='Allen'))
+    elif mapping == "layers":
+        acs = np.array(br.id2acronym(r["ids"], mapping="Allen"))
         regs0 = Counter(acs)
         regs = [reg for reg in regs0 if reg[-1].isdigit()]
         for reg in regs:
             acs[acs == reg] = reg[-1]
         names = dict(zip(regs0, [get_name(reg) for reg in regs0]))
-        thal = {x: names[x] for x in names if 'thala' in names[x]}
+        thal = {x: names[x] for x in names if "thala" in names[x]}
         for reg in thal:
-            acs[acs == reg] = 'thal'
-        mask = np.array([(x.isdigit() or x == 'thal') for x in acs])
-        acs[~mask] = '~layer'
+            acs[acs == reg] = "thal"
+        mask = np.array([(x.isdigit() or x == "thal") for x in acs])
+        acs[~mask] = "~layer"
         cols = np.array([pal[reg] for reg in acs])
         regsC = Counter(acs)
-        r['els'] = [
-            Line2D([0], [0], color=pal[reg], lw=4, label=f'{reg} {regsC[reg]}')
+        r["els"] = [
+            Line2D([0], [0], color=pal[reg], lw=4, label=f"{reg} {regsC[reg]}")
             for reg in regsC
         ]
-        r['acs'] = acs
-        r['cols'] = cols
+        r["acs"] = acs
+        r["cols"] = cols
 
-    elif mapping == 'fr':
-        acs = np.array(br.id2acronym(r['ids'], mapping='Beryl'))
-        scaled = r['fr'] ** 0.1
+    elif mapping == "fr":
+        acs = np.array(br.id2acronym(r["ids"], mapping="Beryl"))
+        scaled = r["fr"] ** 0.1
         norm = Normalize(vmin=scaled.min(), vmax=scaled.max())
-        cmap = cm.get_cmap('magma')
-        r['acs'] = acs
-        r['cols'] = cmap(norm(scaled))
+        cmap = cm.get_cmap("magma")
+        r["acs"] = acs
+        r["cols"] = cmap(norm(scaled))
 
-    elif mapping == 'lz':
-        acs = np.array(br.id2acronym(r['ids'], mapping='Beryl'))
-        scaled = r['lz'] ** 0.1
+    elif mapping == "lz":
+        acs = np.array(br.id2acronym(r["ids"], mapping="Beryl"))
+        scaled = r["lz"] ** 0.1
         norm = Normalize(vmin=scaled.min(), vmax=scaled.max())
-        cmap = cm.get_cmap('cividis')
-        r['acs'] = acs
-        r['cols'] = cmap(norm(scaled))
+        cmap = cm.get_cmap("cividis")
+        r["acs"] = acs
+        r["cols"] = cmap(norm(scaled))
 
     elif mapping == "kmeans":
         # IMPORTANT: for cv=True, fit on concat_z_train (but labels are for all rows)
@@ -1105,9 +1126,8 @@ def regional_group(
                 clusters = None
 
         if clusters is None:
-            # Fit on train if cv, then predict labels for all neurons from full concat_z
             print(f"[kmeans] fitting (n={nclus}) on {feat_fit} (cv={cv})")
-            km = KMeans(n_clusters=nclus, random_state=0)
+            km = KMeans(n_clusters=int(nclus), random_state=0)
             km.fit(r[feat_fit])
 
             if feat_key not in r:
@@ -1139,14 +1159,73 @@ def regional_group(
         r["acs"] = acs
         r["cols"] = cols
 
+        # NEW: also compute / attach Rastermap order with nclus_rm_eff (and cache separately)
+        rm_cache_path = _cache_path("rm")
+        isort = None
+        if (not rerun) and rm_cache_path.is_file():
+            try:
+                cached = np.load(rm_cache_path, allow_pickle=True).flat[0]
+                if (
+                    isinstance(cached, dict)
+                    and cached.get("order_sig") == r["_order_signature"]
+                    and cached.get("nclus_rm") == int(nclus_rm_eff)
+                    and "isort" in cached
+                ):
+                    isort = np.asarray(cached["isort"], dtype=int).reshape(-1)
+                    if isort.shape[0] != r[feat_key].shape[0]:
+                        isort = None
+                    else:
+                        print(f"[rm] using cached isort ({rm_cache_path.name})")
+            except Exception as e:
+                print(f"[rm] cache read error; recomputing Rastermap isort: {e}")
+                isort = None
+
+        if isort is None:
+            feat_used = "concat_z_train" if cv else feat_key
+            if feat_used not in r:
+                raise KeyError(f"Feature '{feat_used}' not found in stack.")
+
+            print(f"[rm] computing Rastermap isort (n_clusters={nclus_rm_eff}) on {feat_used}")
+            model = Rastermap(
+                n_PCs=200,
+                n_clusters=nclus_rm_eff,
+                grid_upsample=grid_upsample,
+                locality=locality,
+                time_lag_window=time_lag_window,
+                bin_size=1,
+                symmetric=symmetric,
+            ).fit(r[feat_used])
+
+            isort = np.asarray(model.isort, dtype=int).reshape(-1)
+            if isort.shape[0] != r[feat_key].shape[0]:
+                raise ValueError("Rastermap isort does not match data length.")
+
+            # store isort + (optional) labels if you want; keep consistent keys
+            labels_rm = np.asarray(model.embedding_clust, dtype=int)
+            if labels_rm.ndim > 1:
+                labels_rm = labels_rm[:, 0]
+
+            np.save(
+                rm_cache_path,
+                {
+                    "rm_labels": labels_rm,
+                    "isort": isort,
+                    "order_sig": r["_order_signature"],
+                    "nclus_rm": int(nclus_rm_eff),
+                },
+                allow_pickle=True,
+            )
+            print(f"[rm] wrote cache ({rm_cache_path.name})")
+
+        r["isort"] = isort
+
     else:
-        acs = np.array(br.id2acronym(r['ids'], mapping=mapping))
+        acs = np.array(br.id2acronym(r["ids"], mapping=mapping))
         cols = np.array([pal[reg] for reg in acs])
-        r['acs'] = acs
-        r['cols'] = cols
+        r["acs"] = acs
+        r["cols"] = cols
 
     return r
-
 
 
 
@@ -4646,49 +4725,86 @@ def count_trials():
 #     fig.tight_layout()
 
 
-def plot_rastermap(vers='concat', feat='concat_z', regex='ECT', 
-                   exa = False, mapping='rm', bg=False, img_only=False,
+def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
+                   exa=False, mapping='rm', bg=False, img_only=False,
                    interp='antialiased', single_reg=False, cv=True,
-                   bg_bright = 0.99, vmax=2, rerun=False, sort_method='rastermap',nclus=100, clsfig=False, bounds=True, grid_upsample=0, locality=0.75, time_lag_window=5, symmetric=False, clabels='all'):
+                   bg_bright=0.99, vmax=2, rerun=False, sort_method='rastermap',
+                   nclus=100, clsfig=False, bounds=True, grid_upsample=0,
+                   locality=0.75, time_lag_window=5, symmetric=False, clabels='all'):
     """
-    Function to plot a rastermap with vertical segment boundaries 
+    Function to plot a rastermap with vertical segment boundaries
     and labels positioned above the segments.
 
     Extra panel with colors of mapping.
 
     feat = 'single_reg' will show only cells in example region regex
 
-    Most numerous regions for each Cosmos are:
-    ['CP', 'MRN', 'PO', 'CA1', 'MOp', 'CUL4 5', 'IRN', 'PIR', 'ZI', 'BMA']
-    ...
     sort_method : str, default 'rastermap'
         Sorting method for rows. One of:
         - 'rastermap' (default): use r['isort']
         - 'umap': sort by first UMAP dimension
         - 'pca': sort by first PCA dimension
+        - 'acs': sort by r['acs'] (ints or strings) and use that order as isort
     """
-    r = regional_group(mapping, vers=vers, ephys=False, nclus=nclus, 
+    r = regional_group(mapping, vers=vers, ephys=False, nclus=nclus,
                        rerun=rerun, cv=cv, grid_upsample=grid_upsample,
                        locality=locality, time_lag_window=time_lag_window,
                        symmetric=symmetric)
 
     if exa:
-        plot_cluster_mean_PETHs(r,mapping, feat)
+        plot_cluster_mean_PETHs(r, mapping, feat)
 
     plt.ion()
     if clsfig:
         plt.ioff()
 
     spks = r[feat]
+
     # --- choose sorting algorithm ---
     if sort_method == 'rastermap':
         isort = r['isort' if feat != 'ephysTF' else 'isort_e']
+
     elif sort_method == 'umap':
         assert 'umap_z' in r, "r['umap_z'] not found in results."
         isort = np.argsort(r['umap_z'][:, 0])
+
     elif sort_method == 'pca':
         assert 'pca_z' in r, "r['pca_z'] not found in results."
         isort = np.argsort(r['pca_z'][:, 0])
+
+    elif sort_method == 'acs':
+        if 'acs' not in r:
+            raise KeyError("r['acs'] not found in results.")
+
+        acs_arr = np.asarray(r['acs'])
+
+        if mapping == 'Cosmos':
+            # canonical Cosmos ordering (user-specified)
+            regs_can = ['Isocortex', 'OLF', 'HPF', 'CTXsp', 'CNU', 'TH', 'HY', 'MB', 'HB', 'CB', 'void', 'root']
+            rank = {reg: i for i, reg in enumerate(regs_can)}
+            unk = len(regs_can) + 1  # unknowns go to end
+
+            keys = np.array([rank.get(str(a), unk) for a in acs_arr], dtype=int)
+            isort = np.argsort(keys, kind='stable')
+
+        elif mapping == 'Beryl':
+            # canonical region ordering for Beryl
+            p = Path(iblatlas.__file__).parent / "beryl.npy"
+            regs_can = br.id2acronym(np.load(p), mapping="Beryl")
+            rank = {reg: i for i, reg in enumerate(regs_can)}
+            unk = len(regs_can) + 1
+
+            keys = np.array([rank.get(str(a), unk) for a in acs_arr], dtype=int)
+            isort = np.argsort(keys, kind='stable')
+
+        else:
+            # Default: numpy sorts strings lexicographically; ints numerically.
+            # If mixed types occur, fall back to stable string representation.
+            try:
+                isort = np.argsort(acs_arr, kind='stable')
+            except TypeError:
+                isort = np.argsort(acs_arr.astype(str), kind='stable')
+
     else:
         raise ValueError(f"Unknown sort_method: {sort_method}")
 
@@ -4697,11 +4813,9 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
     clus_sorted = np.asarray(r['acs'])[isort]
 
     del spks
-    gc.collect()        
-
+    gc.collect()
 
     if single_reg:
-
         acs = np.array(r['Beryl'])[isort]
 
         # adjust background line width according to example region size
@@ -4715,7 +4829,7 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
         print(f'filtering rastermap for {regex} cells only')
 
         del acs
-        gc.collect()        
+        gc.collect()
 
     n_rows, n_cols = data.shape
 
@@ -4731,9 +4845,9 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
         rgba_bg = np.array([to_rgba(c) for c in row_colors], dtype=np.float32)
         rgba_bg = np.broadcast_to(rgba_bg[:, np.newaxis, :], (*data.shape, 4)).copy()
 
-        rgba_bg[..., :3] = rgba_bg[..., :3] * bg_bright + (1 - bg_bright) 
-        
-        alpha_overlay = gray_scaled 
+        rgba_bg[..., :3] = rgba_bg[..., :3] * bg_bright + (1 - bg_bright)
+
+        alpha_overlay = gray_scaled
 
         # 3. Composite black (0,0,0) with alpha over the colored background
         for c in range(3):  # R, G, B channels
@@ -4764,86 +4878,60 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
     if grid_upsample > 0:
         bounds = False  # disable boundaries for upsampled grids
 
-    if mapping == 'rm' and bounds:
-        # row_colors already reordered by isort (and possibly filtered by single_reg)
+    if bounds:
         rc = np.asarray(clus_sorted)
+        # works for ints and strings
+        cluster_changes = rc[1:] != rc[:-1]
+        boundaries = np.where(cluster_changes)[0] + 0.5
 
-        # find indices where the color (cluster) changes between consecutive rows
-        cluster_changes = (np.diff(rc) != 0)
-        boundaries = np.where(cluster_changes)[0] + 0.5  # between rows i and i+1
-
-        # draw horizontal lines at cluster boundaries
         for y in boundaries:
-            ax.axhline(
-                y,
-                color='k',
-                linewidth=0.6,
-                zorder=5
-            )
+            ax.axhline(y, color='k', linewidth=0.6, zorder=5)
 
-
-        # --- NEW: add cluster numbers on the right, x-zoom independent ---
-        # x in axes coordinates (0–1), y in data coordinates
         trans_right = mpl.transforms.blended_transform_factory(
-            ax.transAxes,   # x in axes coords
-            ax.transData    # y in data coords
+            ax.transAxes, ax.transData
         )
 
         n_rows = data.shape[0]
-        # define edges of each cluster segment
-        # start at row 0.5, then all boundaries, then last row + 0.5
         edges = np.concatenate(([0.5], boundaries, [n_rows - 0.5]))
-
         n_segments = len(edges) - 1
-
-        # fontzise is a function fo cluster numbers, if 100 it's 3
         fontsize = np.clip(300 / nclus, 2, 8)
 
-        # --- decide which segment indices to label ---
         if clabels == 'all':
-            
             label_idxs = np.arange(n_segments)
-
         elif isinstance(clabels, int):
-            
-            if clabels < 1:
-                label_idxs = np.array([], dtype=int)
-            elif clabels == 1:
-                label_idxs = np.array([0])
-            else:
-                # always include first and last, evenly spaced in between
-                label_idxs = np.linspace(
-                    0, n_segments - 1, clabels, dtype=int
-                )
-
+            label_idxs = (
+                np.array([], dtype=int) if clabels < 1 else
+                np.array([0]) if clabels == 1 else
+                np.linspace(0, n_segments - 1, clabels, dtype=int)
+            )
         else:
             raise ValueError("clabels must be 'all' or a positive integer")
 
-        # --- draw labels ---
         for i in label_idxs:
             y0, y1 = edges[i], edges[i + 1]
             mid_y = 0.5 * (y0 + y1)
-
             row_idx = int(np.clip(np.floor(mid_y), 0, n_rows - 1))
-            cid = int(clus_sorted[row_idx])
+
+            # NEW: print region acronyms when sorting by atlas
+            if sort_method == 'acs' and mapping in ('Beryl', 'Cosmos'):
+                label = str(clus_sorted[row_idx])
+            else:
+                label = str(int(clus_sorted[row_idx]))
 
             ax.text(
-                1.01,
-                mid_y,
-                str(cid),
+                1.01, mid_y, label,
                 transform=trans_right,
-                va='center',
-                ha='left',
+                va='center', ha='left',
                 fontsize=fontsize,
                 color='k',
                 clip_on=False
             )
         ax.text(
-            1.08,                 # a bit to the right of the cluster numbers
-            0.5,                  # centered vertically
+            1.08,
+            0.5,
             "clusters",
-            transform=ax.transAxes,  # both x,y in axes coordinates
-            rotation=90,         # vertical text, reading bottom -> top
+            transform=ax.transAxes,
+            rotation=90,
             va='center',
             ha='center',
             fontsize=mpl.rcParams['axes.labelsize'],
@@ -4861,11 +4949,10 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
         if data.shape[1] != sum(r['len'].values()):
             print(f"[warn] data.shape[1] ({data.shape[1]}) != sum(len) ({sum(r['len'].values())})")
 
-        # --- NEW: blended transform: x in data coords, y in axes coords ---
-        # This keeps labels at a fixed height (e.g. 1.02 above top) regardless of y-zoom.
+        # x in data coords, y in axes coords (fixed height)
         trans_top = mpl.transforms.blended_transform_factory(
-            ax.transData,      # x in data coordinates
-            ax.transAxes       # y in axes coordinates (0–1)
+            ax.transData,
+            ax.transAxes
         )
 
         h = 0
@@ -4882,14 +4969,14 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
             if not img_only:
                 ax.text(
                     midpoint,
-                    1.02,  # just above top of axes; change to 1.01/1.05 if you prefer
+                    1.02,
                     labels.get(seg, seg),
                     rotation=90,
                     color='k',
                     fontsize=10,
                     ha='center',
                     va='bottom',
-                    transform=trans_top,  # <-- crucial line
+                    transform=trans_top,
                     clip_on=False
                 )
             h += seg_len
@@ -4898,61 +4985,50 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
         ax.set_xticks(x_ticks)
         ax.set_xticklabels([f"{int(tick / c_sec)}" for tick in x_ticks])
 
-
     else:
         ax.set_xticks(range(data.shape[1]))
-        ax.set_xticklabels(r['fts'], rotation=90)       
+        ax.set_xticklabels(r['fts'], rotation=90)
 
-    ax.set_xlabel('time [sec]')    
+    ax.set_xlabel('time [sec]')
     ax.set_ylabel(f'cells in {regex}' if feat == 'single_reg' else 'cells')
 
-    # Remove top and right spines
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
 
     if img_only:
         ax.axis('off')
-        # print region name and number of neurons on top like title
         if single_reg:
-            ax.set_title(f'{regex} ({n_ex})', fontsize=25, color=pal[regex],    
-                transform=ax.transAxes)
+            ax.set_title(f'{regex} ({n_ex})', fontsize=25, color=pal[regex],
+                         transform=ax.transAxes)
 
     ax.set_xlim(0, n_cols)
-    plt.tight_layout()  # Adjust the layout to prevent clipping
-    # plt.show()
+    plt.tight_layout()
 
-    # --- build descriptive filename and window title ---
     descriptor = (
-        f"mapping{mapping}"
-        f"_cv{cv}"
-        f"_nclus{nclus}"
-        f"_locality{locality}"
-        f"_timelag{time_lag_window}"
-        f"_upsample{grid_upsample}"
-        f"_symmetric{symmetric}")
-
+        f"mapping_{mapping}"
+        f"_cv_{cv}"
+        f"_nclus_{nclus}"
+        f"_feat_{feat}"
+        f"_sort_{sort_method}"
+    )
     if single_reg:
-        descriptor += f"_reg{regex}"    
-
+        descriptor += f"_reg_{regex}"
     fname = "rastermap_" + descriptor.replace(" | ", "_").replace("=", "") + ".png"
 
-    # Set figure window title (useful when many figures open)
     try:
         fig.canvas.manager.set_window_title(f"Rastermap: {descriptor}")
     except Exception:
-        pass  # ignored in non-interactive backends
+        pass
 
     out_path = pth_dmn.parent / "imgs" / fname
     fig.savefig(out_path, dpi=150, bbox_inches='tight', facecolor='white')
 
     if clsfig:
-        # close figure
         plt.close(fig)
 
-    for v in ("sig","img_array","isort","r"):
-        if v in locals(): 
+    for v in ("sig", "img_array", "isort", "r"):
+        if v in locals():
             del locals()[v]
-
 
 
 def raster_grid():
