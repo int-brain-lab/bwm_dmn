@@ -3865,6 +3865,315 @@ def plot_example_neurons(
         finally:
             gc.collect()
 
+
+def plot_rm_cluster_profile(
+    clus,
+    mapping: str = "rm",          # NEW: 'rm' or 'kmeans'
+    vers: str = "concat",
+    nclus: int = 20,              # for kmeans: number of clusters; for rm: used if nclus_rm is None (backward compat)
+    nclus_rm: int | None = None,  # NEW: explicit Rastermap n_clusters (if None -> uses nclus)
+    grid_upsample: int = 0,
+    cv: bool = True,
+    ephys: bool = False,
+    axs=None,                     # expects (ax_left, ax_right) or None (kept for backward compat; ignored if None)
+    norm_reg_count: bool = True,
+    savefig: bool = False,
+):
+    """
+    Inspect either a Rastermap ('rm') cluster or a KMeans ('kmeans') cluster with the same visualization:
+      - Polar wedges: Beryl region fractions (or enrichment-normalized fractions).
+      - Line plot: mean PETH-like feature vector (mean over cells in the chosen cluster), with segment boundaries.
+
+    Notes
+    -----
+    - Backward compatibility:
+        * If mapping='rm' and nclus_rm is None, then nclus_rm := nclus (old behavior where `nclus` acted like RM cluster count).
+    - Root/void filtering:
+        * Removes cells whose Beryl label is 'root' or 'void' (case-insensitive), consistently from BOTH r_map and r_B.
+    - Uses regional_group() for all loading/caching.
+    """
+    mapping = str(mapping).strip().lower()
+    if mapping not in {"rm", "kmeans"}:
+        raise ValueError("mapping must be 'rm' or 'kmeans'.")
+
+    nclus = int(nclus)
+    if nclus_rm is None:
+        nclus_rm = nclus
+    nclus_rm = int(nclus_rm)
+
+    # ---- load clusters (rm or kmeans) and Beryl labels via regional_group ----
+    # r_map supplies 'acs' cluster IDs; r_B supplies per-cell Beryl 'acs' and 'cols' for region colors.
+    if mapping == "rm":
+        r_map = regional_group(
+            mapping="rm",
+            vers=vers,
+            ephys=ephys,
+            grid_upsample=grid_upsample,
+            nclus=nclus,          # unused in rm branch; kept for logging/backward compat
+            nclus_rm=nclus_rm,
+            rerun=False,
+            cv=cv,
+        )
+        nclus_total = nclus_rm
+        title_prefix = "RM"
+        clus_label = "rm"
+    else:
+        r_map = regional_group(
+            mapping="kmeans",
+            vers=vers,
+            ephys=ephys,
+            grid_upsample=grid_upsample,
+            nclus=nclus,
+            nclus_rm=nclus_rm,    # allowed; may attach isort if nclus_rm != 100 in regional_group policy
+            rerun=False,
+            cv=cv,
+        )
+        nclus_total = nclus
+        title_prefix = "KMeans"
+        clus_label = "km"
+
+    r_B = regional_group(
+        mapping="Beryl",
+        vers=vers,
+        ephys=ephys,
+        grid_upsample=grid_upsample,
+        nclus=nclus,
+        nclus_rm=nclus_rm,
+        rerun=False,
+        cv=cv,
+    )
+
+    # ---- remove root/void cells up front (must be consistent across dicts) ----
+    acs_B_all = np.asarray(r_B["acs"])
+    n_all = acs_B_all.shape[0]
+    if np.asarray(r_map["acs"]).shape[0] != n_all:
+        raise ValueError(
+            f"r_map and r_B have different N (map={np.asarray(r_map['acs']).shape[0]}, "
+            f"beryl={n_all}). Cannot apply consistent root/void filtering."
+        )
+
+    bad = {"root", "void"}
+    keep = np.array([str(x).strip().lower() not in bad for x in acs_B_all], dtype=bool)
+
+    def _filter_r(rdict, keep_mask):
+        out = dict(rdict)
+        for k, v in rdict.items():
+            if isinstance(v, (list, np.ndarray)):
+                arr = np.asarray(v)
+                if arr.shape[0] == keep_mask.shape[0]:
+                    out[k] = arr[keep_mask]
+        return out
+
+    r_map = _filter_r(r_map, keep)
+    r_B = _filter_r(r_B, keep)
+
+    # ---- cluster mask (robust to str/int) ----
+    clus_ids = np.asarray(r_map["acs"])
+    try:
+        clus_ids = clus_ids.astype(int)
+    except Exception:
+        clus_ids = np.array([int(x) for x in clus_ids])
+
+    clus = int(clus)
+    mask = (clus_ids == clus)
+    n_in_clus = int(mask.sum())
+    if n_in_clus == 0:
+        raise ValueError(f"No neurons found in {mapping} cluster {clus} (after root/void filtering).")
+
+    # ---- feature matrix and average PETH-like trace ----
+    feat_key = "concat_z" if "concat_z" in r_map else "concat"
+    feat_mat = np.asarray(r_map[feat_key])  # shape (N_cells, T)
+    if feat_mat.ndim != 2:
+        raise ValueError(f"{feat_key} has shape {feat_mat.shape}, expected 2D (cells × time).")
+
+    feat_mean = np.asarray(feat_mat[mask, :]).mean(axis=0)
+    xx = np.arange(feat_mat.shape[1]) / c_sec
+
+    # ---- region distribution (Beryl) within this cluster ----
+    if "peth_dict" not in r_map:
+        r_map["peth_dict"] = {k: k for k in r_map.get("len", {}).keys()}
+
+    acs_B = np.asarray(r_B["acs"])
+    cols_B = np.asarray(r_B["cols"])
+
+    regs_in_clus = acs_B[mask]
+    counts = Counter(regs_in_clus)
+    global_counts = Counter(acs_B)
+
+    # consistent region->color mapping (first occurrence)
+    reg2col = {}
+    for reg, col in zip(acs_B, cols_B):
+        if reg not in reg2col:
+            reg2col[reg] = col
+
+    regs = list(counts.keys())
+    raw = np.array([counts[r] for r in regs], dtype=float)
+
+    if norm_reg_count:
+        vals = np.array(
+            [(v / float(global_counts.get(rname, 1))) if global_counts.get(rname, 0) > 0 else 0.0
+             for rname, v in zip(regs, raw)],
+            dtype=float
+        )
+        title_norm = " (normalized by global region counts)"
+        frac = vals / (vals.sum() + 1e-12)  # wedges need a true partition
+        frac_label = "enrichment fraction"
+    else:
+        frac = raw / (raw.sum() + 1e-12)
+        title_norm = ""
+        frac_label = "fraction of cells"
+
+    # sort wedges by fraction (desc), tie-break by name
+    sort_idx = sorted(range(len(regs)), key=lambda i: (-frac[i], str(regs[i])))
+    reg_sorted = [regs[i] for i in sort_idx]
+    frac_sorted = np.asarray(frac[sort_idx], dtype=float)
+    cols_sorted = [reg2col[r] for r in reg_sorted]
+
+    # ---- title: print to terminal (no suptitle) ----
+    title = f"{title_prefix} cluster {clus} of {nclus_total} (n={n_in_clus} neurons){title_norm}"
+    print(title)
+
+    # ---- axes / figures ----
+    using_external_axes = axs is not None
+    if using_external_axes:
+        ax_left, ax_right = axs
+        fig_pie = ax_left.figure
+        fig_line = ax_right.figure
+    else:
+        # separate figures
+        fig_pie = plt.figure(figsize=(4, 4))
+        ax_left = fig_pie.add_subplot(111, projection="polar")
+
+        fig_line = plt.figure(figsize=(6, 3))
+        ax_right = fig_line.add_subplot(111)
+
+    # ---- LEFT: polar wedges with OUTSIDE radial labels ----
+    frac_sorted = frac_sorted / (frac_sorted.sum() + 1e-12)
+
+    theta_edges = np.concatenate(([0.0], 2 * np.pi * np.cumsum(frac_sorted)))
+    theta = theta_edges[:-1]
+    widths = np.diff(theta_edges)
+
+    ax_left.bar(
+        theta,
+        np.ones_like(theta),
+        width=widths,
+        bottom=0.0,
+        align="edge",
+        color=cols_sorted,
+        edgecolor="none",
+        alpha=1.0,
+        linewidth=0,
+    )
+
+    # --- TOP-LEFT CORNER TEXT (cluster index) ---
+    ax_left.text(
+        -0.02, 1.02,
+        f"{clus}/{nclus_total}",
+        transform=ax_left.transAxes,
+        ha="left",
+        va="top",
+        fontsize=11,
+        fontweight="bold",
+    )
+
+    ax_left.set_yticks([])
+    ax_left.set_xticks([])
+    ax_left.spines["polar"].set_visible(False)
+
+    # --- OUTSIDE labels (LINEAR fontsize vs wedge size; omit if too small) ---
+    w_norm = widths / (2 * np.pi + 1e-12)
+    w0, w1 = float(np.min(w_norm)), float(np.max(w_norm))
+    denom = (w1 - w0) if (w1 - w0) > 1e-12 else 1.0
+
+    fs_min, fs_max = 3, 15.0
+    r_label = 1.12
+
+    for reg, col, t0, w, wn in zip(reg_sorted, cols_sorted, theta, widths, w_norm):
+        mid = t0 + 0.5 * w
+        ang = np.degrees(mid)
+
+        if 90 < ang < 270:
+            rot = ang + 180
+            ha = "right"
+        else:
+            rot = ang
+            ha = "left"
+
+        t = (float(wn) - w0) / denom
+        t = float(np.clip(t, 0.0, 1.0))
+        fontsize = fs_min + (fs_max - fs_min) * t
+
+        if fontsize < 5.0:
+            continue
+
+        ax_left.text(
+            mid,
+            r_label,
+            str(reg),
+            rotation=rot,
+            rotation_mode="anchor",
+            ha=ha,
+            va="center",
+            fontsize=float(fontsize),
+            fontweight="normal",
+            color=col,
+            clip_on=False,
+            zorder=10,
+        )
+
+    # ---- RIGHT: mean PETH-like trace ----
+    ax_right.plot(xx, feat_mean, linewidth=1.2, color="black", alpha=0.9)
+
+    y_max_seen = float(np.nanmax(feat_mean))
+    pad = 0.1 * (np.nanmax(feat_mean) - np.nanmin(feat_mean) + 1e-6)
+    ax_right.set_ylim(np.nanmin(feat_mean) - pad, y_max_seen + pad)
+
+    _draw_peth_boundaries(ax_right, r_map, vers, y_max_seen, c_sec)
+
+    ax_right.set_xlabel("time [s]")
+    ax_right.set_ylabel("mean z-scored activity")
+    ax_right.spines["top"].set_visible(False)
+    ax_right.spines["right"].set_visible(False)
+    ax_right.spines["left"].set_visible(False)
+    ax_right.yaxis.set_ticks([])
+
+    # ---- layout / window titles ----
+    if not using_external_axes:
+        fig_pie.tight_layout()
+        fig_line.tight_layout()
+        try:
+            fig_pie.canvas.manager.set_window_title(f"{title_prefix} cluster profile: region fractions (polar)")
+            fig_line.canvas.manager.set_window_title(f"{title_prefix} cluster profile: mean PETH")
+        except Exception:
+            pass
+
+    plt.show()
+
+    # ---- save ----
+    if savefig:
+        save_dir = Path(one.cache_dir, "dmn", "figs")
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        fstem = (
+            f"{clus_label}clus_{clus}_of{nclus_total}"
+            f"_cv{cv}"
+            f"_normReg{norm_reg_count}"
+            f"_noRootVoidTrue"
+        )
+
+        svg_pie = save_dir / f"{fstem}_polar.svg"
+        svg_line = save_dir / f"{fstem}_peth.svg"
+        fig_pie.savefig(svg_pie, dpi=150, bbox_inches="tight")
+        fig_line.savefig(svg_line, dpi=150, bbox_inches="tight")
+        print(f"[saved] {svg_pie}")
+        print(f"[saved] {svg_line}")
+
+        plt.close(fig_pie)
+        plt.close(fig_line)
+
+
+
     
 def var_expl(minreg=20):
 
@@ -4278,310 +4587,6 @@ def clus_freqs(
         return d
 
 
-
-def plot_rm_cluster_profile(
-    clus,
-    vers='concat',
-    nclus=20,
-    grid_upsample=0,
-    cv=True,
-    ephys=False,
-    axs=None,                    # expects (ax_left, ax_right) or None (kept for backward compat; ignored if None)
-    norm_reg_count: bool = True,
-    savefig: bool = False,
-):
-    """
-    For a given Rastermap cluster (clus), plot a 2-panel figure:
-
-    Left panel:
-        - Polar "pie / wedge" chart of region fractions in the cluster.
-        - Each wedge colored by the Beryl color for that region.
-        - Region labels placed outside the circle at the radial end of each wedge,
-          colored in the same region color, with fontsize scaled by wedge size.
-
-    Right panel:
-        - Average PETH-style feature vector (mean over cells in cluster),
-          with PETH boundaries via _draw_peth_boundaries.
-
-    Additionally:
-        - Removes cells whose Beryl label is 'root' or 'void' (case-insensitive)
-          consistently from BOTH r_rm and r_B at the start.
-
-    Changes (integrated):
-        - If axs is None: create TWO separate figures (polar + line) instead of a 2-panel figure.
-        - Skip suptitle; print the title to terminal instead.
-        - If axs is provided: still draw into the provided (ax_left, ax_right) axes (single figure),
-          but do not set suptitle; print it instead.
-    """
-    # ---- load rm clusters and Beryl labels via regional_group ----
-    r_rm = regional_group(
-        mapping='rm',
-        vers=vers,
-        ephys=ephys,
-        grid_upsample=grid_upsample,
-        nclus=nclus,
-        rerun=False,
-        cv=cv,
-    )
-    r_B = regional_group(
-        mapping='Beryl',
-        vers=vers,
-        ephys=ephys,
-        grid_upsample=grid_upsample,
-        nclus=nclus,
-        rerun=False,
-        cv=cv,
-    )
-
-    # ---- remove root/void cells up front (must be consistent across dicts) ----
-    acs_B_all = np.asarray(r_B['acs'])
-    n_all = acs_B_all.shape[0]
-    if np.asarray(r_rm['acs']).shape[0] != n_all:
-        raise ValueError(
-            f"r_rm and r_B have different N (rm={np.asarray(r_rm['acs']).shape[0]}, "
-            f"beryl={n_all}). Cannot apply consistent root/void filtering."
-        )
-
-    bad = {'root', 'void'}
-    keep = np.array([str(x).strip().lower() not in bad for x in acs_B_all], dtype=bool)
-
-    def _filter_r(rdict, keep_mask):
-        out = dict(rdict)
-        for k, v in rdict.items():
-            if isinstance(v, (list, np.ndarray)):
-                arr = np.asarray(v)
-                if arr.shape[0] == keep_mask.shape[0]:
-                    out[k] = arr[keep_mask]
-        return out
-
-    r_rm = _filter_r(r_rm, keep)
-    r_B  = _filter_r(r_B,  keep)
-
-    # ---- cluster mask (robust to str/int) ----
-    clus_ids = np.asarray(r_rm['acs'])
-    try:
-        clus_ids = clus_ids.astype(int)
-    except Exception:
-        clus_ids = np.array([int(x) for x in clus_ids])
-
-    clus = int(clus)
-    mask = (clus_ids == clus)
-    n_in_clus = int(mask.sum())
-    if n_in_clus == 0:
-        raise ValueError(f"No neurons found in rm cluster {clus} (after root/void filtering).")
-
-    # ---- feature matrix and average PETH-like trace ----
-    feat_key = 'concat_z' if 'concat_z' in r_rm else 'concat'
-    feat_mat = np.asarray(r_rm[feat_key])  # shape (N_cells, T)
-    if feat_mat.ndim != 2:
-        raise ValueError(f"{feat_key} has shape {feat_mat.shape}, expected 2D (cells × time).")
-
-    feat_mean = np.asarray(feat_mat[mask, :]).mean(axis=0)
-    xx = np.arange(feat_mat.shape[1]) / c_sec
-
-    # ---- region distribution (Beryl) within this cluster ----
-    if 'peth_dict' not in r_rm:
-        r_rm['peth_dict'] = {k: k for k in r_rm.get('len', {}).keys()}
-
-    acs_B = np.asarray(r_B['acs'])
-    cols_B = np.asarray(r_B['cols'])
-
-    regs_in_clus = acs_B[mask]
-    counts = Counter(regs_in_clus)
-    global_counts = Counter(acs_B)
-
-    # consistent region->color mapping (first occurrence)
-    reg2col = {}
-    for reg, col in zip(acs_B, cols_B):
-        if reg not in reg2col:
-            reg2col[reg] = col
-
-    regs = list(counts.keys())
-    raw = np.array([counts[r] for r in regs], dtype=float)
-
-    if norm_reg_count:
-        vals = np.array(
-            [(v / float(global_counts.get(rname, 1))) if global_counts.get(rname, 0) > 0 else 0.0
-             for rname, v in zip(regs, raw)],
-            dtype=float
-        )
-        title_norm = " (normalized by global region counts)"
-        frac = vals / (vals.sum() + 1e-12)  # wedges need a true partition
-        frac_label = "enrichment fraction"
-    else:
-        frac = raw / (raw.sum() + 1e-12)
-        title_norm = ""
-        frac_label = "fraction of cells"
-
-    # sort wedges by fraction (desc), tie-break by name
-    sort_idx = sorted(range(len(regs)), key=lambda i: (-frac[i], str(regs[i])))
-    reg_sorted = [regs[i] for i in sort_idx]
-    frac_sorted = np.asarray(frac[sort_idx], dtype=float)
-    cols_sorted = [reg2col[r] for r in reg_sorted]
-
-    # ---- title: print to terminal (no suptitle) ----
-    title = f"RM cluster {clus} of {nclus} (n={n_in_clus} neurons){title_norm}"
-    print(title)
-
-    # ---- axes / figures ----
-    using_external_axes = axs is not None
-    if using_external_axes:
-        ax_left, ax_right = axs
-        fig_pie = ax_left.figure
-        fig_line = ax_right.figure
-    else:
-        # separate figures (requested)
-        fig_pie = plt.figure(figsize=(4, 4))
-        ax_left = fig_pie.add_subplot(111, projection='polar')
-
-        fig_line = plt.figure(figsize=(6, 3))
-        ax_right = fig_line.add_subplot(111)
-
-    # ---- LEFT: polar wedges with OUTSIDE radial labels ----
-    frac_sorted = frac_sorted / (frac_sorted.sum() + 1e-12)
-
-    theta_edges = np.concatenate(([0.0], 2 * np.pi * np.cumsum(frac_sorted)))
-    theta = theta_edges[:-1]
-    widths = np.diff(theta_edges)
-
-    ax_left.bar(
-        theta,
-        np.ones_like(theta),
-        width=widths,
-        bottom=0.0,
-        align='edge',
-        color=cols_sorted,
-        edgecolor='none',
-        alpha=1.0,
-        linewidth=0
-    )
-
-    # --- TOP-LEFT CORNER TEXT (cluster index) ---
-    ax_left.text(
-        -0.02, 1.02,
-        f"{clus}/{nclus}",
-        transform=ax_left.transAxes,
-        ha='left',
-        va='top',
-        fontsize=11,
-        fontweight='bold'
-    )
-
-    ax_left.set_yticks([])
-    ax_left.set_xticks([])
-    ax_left.spines['polar'].set_visible(False)
-    # ax_left.set_ylim(0, 1.6)
-
-    # --- OUTSIDE labels (LINEAR fontsize vs wedge size; omit if too small) ---
-    w_norm = widths / (2 * np.pi + 1e-12)  # wedge fraction in [0,1]
-    w0, w1 = float(np.min(w_norm)), float(np.max(w_norm))
-    denom = (w1 - w0) if (w1 - w0) > 1e-12 else 1.0
-
-    fs_min, fs_max = 3, 15.0
-    r_label = 1.12
-
-    for reg, col, t0, w, wn in zip(reg_sorted, cols_sorted, theta, widths, w_norm):
-        mid = t0 + 0.5 * w
-        ang = np.degrees(mid)
-
-        if 90 < ang < 270:
-            rot = ang + 180
-            ha = 'right'
-        else:
-            rot = ang
-            ha = 'left'
-
-        t = (float(wn) - w0) / denom
-        t = float(np.clip(t, 0.0, 1.0))
-        fontsize = fs_min + (fs_max - fs_min) * t
-
-        if fontsize < 5.0:
-            continue
-
-        ax_left.text(
-            mid,
-            r_label,
-            str(reg),
-            rotation=rot,
-            rotation_mode='anchor',
-            ha=ha,
-            va='center',
-            fontsize=float(fontsize),
-            fontweight='normal',
-            color=col,
-            clip_on=False,
-            zorder=10
-        )
-
-    # ---- RIGHT: mean PETH-like trace ----
-    ax_right.plot(xx, feat_mean, linewidth=1.2, color='black', alpha=0.9)
-
-    y_max_seen = float(np.nanmax(feat_mean))
-    pad = 0.1 * (np.nanmax(feat_mean) - np.nanmin(feat_mean) + 1e-6)
-    ax_right.set_ylim(np.nanmin(feat_mean) - pad, y_max_seen + pad)
-
-    _draw_peth_boundaries(ax_right, r_rm, vers, y_max_seen, c_sec)
-
-    ax_right.set_xlabel("time [s]")
-    ax_right.set_ylabel("mean z-scored activity")
-    ax_right.spines['top'].set_visible(False)
-    ax_right.spines['right'].set_visible(False)
-    ax_right.spines['left'].set_visible(False)
-    ax_right.yaxis.set_ticks([])
-
-    # ---- layout / window titles ----
-    if not using_external_axes:
-        fig_pie.tight_layout()
-        fig_line.tight_layout()
-        try:
-            fig_pie.canvas.manager.set_window_title("RM cluster profile: region fractions (polar)")
-            fig_line.canvas.manager.set_window_title("RM cluster profile: mean PETH")
-        except Exception:
-            pass
-
-    # ---- show ----
-    plt.show()
-
-    # ---- save ----
-    if savefig:
-        save_dir = Path(one.cache_dir, 'dmn', 'figs')
-        save_dir.mkdir(parents=True, exist_ok=True)
-
-        fstem = (
-            f"rmclus_{clus}_of{nclus}"
-            f"_cv{cv}"
-            f"_normReg{norm_reg_count}"
-            f"_noRootVoidTrue"
-        )
-
-        if using_external_axes:
-            # save the figures that own the provided axes
-            png_pie = save_dir / f"{fstem}_polar.svg"
-            png_line = save_dir / f"{fstem}_peth.svg"
-            fig_pie.savefig(png_pie, dpi=150, bbox_inches='tight')
-            fig_line.savefig(png_line, dpi=150, bbox_inches='tight')
-            print(f"[saved] {png_pie}")
-            print(f"[saved] {png_line}")
-        else:
-            png_pie = save_dir / f"{fstem}_polar.svg"
-            png_line = save_dir / f"{fstem}_peth.svg"
-            fig_pie.savefig(png_pie, dpi=150, bbox_inches='tight')
-            fig_line.savefig(png_line, dpi=150, bbox_inches='tight')
-            print(f"[saved] {png_pie}")
-            print(f"[saved] {png_line}")
-
-        plt.close(fig_pie)
-        plt.close(fig_line)
-
-
-    #return (ax_left, ax_right)
-
-    
-
-
-
-
-
 def has_data(ax):
     # Check if there are any plot lines
     if len(ax.lines) > 0:
@@ -4856,7 +4861,7 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
         n_rows = data.shape[0]
         edges = np.concatenate(([0.5], boundaries, [n_rows - 0.5]))
         n_segments = len(edges) - 1
-        fontsize = np.clip(300 / nclus, 3, 8)
+        fontsize = np.clip(300 / nclus, 5, mpl.rcParams['font.size'])
 
         if clabels == 'all':
             label_idxs = np.arange(n_segments)
@@ -5492,141 +5497,6 @@ def scat_dec_clus(norm_=True, harris=False, nclus=20, corr_only=False,
                 format='svg', bbox_inches='tight')
     plt.show()
 
-
-# def plot_cluster_pearson(ax=None, r_squared=False):
-#     """
-#     Plot Pearson's r as a function of k-means cluster number.
-
-#     Parameters
-#     ----------
-#     results : list
-#         List like:
-#         [
-#           [cluster_id, (np.float64(r_value), np.float64(p_value))],
-#           ...
-#         ]
-#     ax : matplotlib.axes.Axes, optional
-#         Existing axes to plot into. If None, a new figure/axes is created.
-
-#     Returns
-#     -------
-#     ax : matplotlib.axes.Axes
-#         The axes with the plot.
-#     """
-
-#     results = []
-#     for i in range(3,18):
-#         results.append([i,scat_dec_clus(nclus=i,corr_only=True)]) 
-
-#     # Extract cluster IDs and r-values
-#     clusters = []
-#     r_values = []
-#     for cluster_id, (r_val, p_val) in results:
-#         clusters.append(int(cluster_id))
-#         r_values.append(float(r_val) if r_squared == False else float(r_val**2))
-
-#     clusters = np.array(clusters)
-#     r_values = np.array(r_values)
-
-#     # Sort by cluster number, just in case input is unsorted
-#     order = np.argsort(clusters)
-#     clusters = clusters[order]
-#     r_values = r_values[order]
-
-#     # Prepare axis
-#     if ax is None:
-#         fig, ax = plt.subplots()
-
-#     # Plot
-#     ax.plot(clusters, r_values, marker="o")
-#     ax.axhline(0, linestyle="--", linewidth=1)  # zero reference
-
-#     ax.set_xlabel("k-means cluster")
-#     ax.set_ylabel("Pearson's r with dec specialisation score" if not r_squared else "R squared with dec specialisation score")
-#     ax.set_title("Cluster-wise correlation")
-
-
-# def plot_brain_region_counts(start=None, end=None, nmin=50):
-#     """
-#     Plot a bar chart of brain region counts, color-coded by a given palette.
-    
-#     Parameters:
-#     - data (dict or Counter): Dictionary or Counter object with region names as keys and counts as values.
-#     - norm_ binary, control for total cell counts across regions    
-#     Output:
-#     - Displays a bar chart with regions sorted by count.
-#     """
-
-#     r = regional_group('Beryl')
-
-#     start = start if start is not None else 0
-#     end = end if end is not None else len(r['acs'])    
-#     d0 = Counter(np.array(r['acs'])[r['isort']][start:end])
-#     d00 = Counter(np.array(r['acs'])[r['isort']])
-
-#     data = {}
-#     for reg in d0:
-#         if d00[reg] < nmin:
-#             continue
-#         data[reg] = d0[reg]/d00[reg]
-
-#     # Sort data by values
-#     sorted_data = dict(sorted(data.items(), key=lambda item: item[1], reverse=True))
-
-#     # Extract keys, values, and colors
-#     regions = list(sorted_data.keys())
-#     values = list(sorted_data.values())
-#     colors = [pal[region] for region in regions]
-
-#     # Create the bar plot
-#     plt.figure(figsize=(17.27,  6.  ))
-#     plt.bar(regions, values, color=colors)
-
-#     # Customize plot
-#     plt.xticks(rotation=90, fontsize=8)
-#     plt.ylabel('Count', fontsize=12)
-#     plt.title(f'cells {start} to {end} in rastermap ordering', fontsize=14)
-#     # Set x-tick labels to the same color as bars
-#     ax = plt.gca()
-#     for tick, color in zip(ax.get_xticklabels(), colors):
-#         tick.set_color(color)
-#     # Show the plot
-#     plt.tight_layout()
-#     plt.show()
-
-
-# def embed_histograms_scatter(foc='dec', ax=None):
-
-#     '''
-#     per region, get histogram (bwm dec or PETH based k-means counts)
-#     embed in 2d via umap
-#     '''
-
-#     alone = False
-#     if not ax:
-#         alone = True
-#         fig, ax = plt.subplots(figsize=(8.43,7.26), label=f'{foc}')
-
-#     if foc == 'Beryl':
-#         d = clus_freqs(foc=foc, get_res=True, norm_=False) 
-
-#     elif foc == 'dec':
-#         d = get_dec_bwm()
-
-#     regs, data = [reg for reg in d], np.array([d[reg] for reg in d])
-#     cols = [pal[reg] for reg in regs]
-
-#     emb = umap.UMAP(n_components=2).fit_transform(data)
-
-#     ax.scatter(emb[:,0], emb[:,1], color='w')
-#     # Plot colored text instead of scatter markers
-#     for i, reg in enumerate(regs):
-#         ax.text(emb[i, 0], emb[i, 1], reg, color=cols[i], 
-#             fontsize=9, ha='center', va='center')
-  
-#     ax.set_title(f'embed histograms of {foc}')
-#     ax.set_xlabel('umap dim 1')
-#     ax.set_ylabel('umap_dim 2')
 
 
 def plot_decoding_results():
