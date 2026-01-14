@@ -19,7 +19,7 @@ from scipy.signal import hilbert
 from scipy import signal
 import pandas as pd
 import numpy as np
-from collections import Counter
+from collections import Counter, OrderedDict
 from sklearn.decomposition import PCA, FastICA
 from sklearn.cluster import KMeans, SpectralClustering, SpectralCoclustering
 from sklearn.manifold import TSNE
@@ -87,7 +87,7 @@ from matplotlib import cm
 from matplotlib.colors import to_rgba
 from matplotlib.cm import ScalarMappable
 from typing import Optional, List, Tuple, Dict, Sequence, Union
-from collections import OrderedDict
+
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -902,7 +902,7 @@ def regional_group(
     ephys: bool = False,
     grid_upsample: int = 0,
     nclus: int = 100,
-    nclus_rm: int | None = None,          # NEW: Rastermap n_clusters (defaults to nclus)
+    nclus_rm: int = 100,
     cv: bool = True,
     locality: float = 0.75,
     time_lag_window: int = 5,
@@ -915,18 +915,18 @@ def regional_group(
     Notes
     -----
     - nclus controls the main mapping (e.g. KMeans n_clusters).
-    - Rastermap uses nclus_rm if provided; otherwise defaults to nclus.
+    - Rastermap uses nclus_rm (default 100).
+    - Policy:
+        * For mapping != 'rm': if nclus_rm != 100, try to load RM cache; if missing, compute+save RM and attach r['isort'].
+        * For mapping == 'rm': load RM cache if present; if missing, compute+save (same code path).
+        * All RM cache filenames include nclus_rm.
+        * All KMeans cache filenames include nclus_rm (even though labels don't depend on it).
     """
     pth_res = Path(one.cache_dir, "dmn", "res")
-    nclus_rm_eff = int(nclus) if nclus_rm is None else int(nclus_rm)
+    nclus = int(nclus)
+    nclus_rm = int(nclus_rm)
 
     def _cache_path(kind: str) -> Path:
-        """
-        kind:
-          - 'stack': precomputed stacked features from stack_concat (DO NOT include rm hyperparams)
-          - 'rm'   : rastermap cache (include rm hyperparams + nclus_rm)
-          - 'kmeans': kmeans cache (include nclus)
-        """
         if kind == "stack":
             base = f"{vers}"
             base += f"_cv{cv}"
@@ -937,17 +937,81 @@ def regional_group(
             base = f"{kind}_{vers}"
             base += f"_cv{cv}"
             base += f"_ephys{ephys}"
-            base += f"_n{int(nclus_rm_eff)}"
+            base += f"_nclusrm{nclus_rm}"
             return pth_res / (base + ".npy")
 
         if kind == "kmeans":
             base = f"{kind}_{vers}"
             base += f"_cv{cv}"
             base += f"_ephys{ephys}"
-            base += f"_n{int(nclus)}"
+            base += f"_n{nclus}"
+            base += f"_nclusrm{nclus_rm}"
             return pth_res / (base + ".npy")
 
         raise ValueError(f"Unknown cache kind: {kind}")
+
+    def _load_rm_cache(rm_cache_path: Path, n_rows: int) -> tuple[np.ndarray | None, np.ndarray | None]:
+        """
+        Returns (labels, isort) or (None, None) if unavailable/invalid.
+        """
+        if rerun or (not rm_cache_path.is_file()):
+            return None, None
+        try:
+            cached = np.load(rm_cache_path, allow_pickle=True).flat[0]
+            if not (
+                isinstance(cached, dict)
+                and cached.get("order_sig") == r["_order_signature"]
+                and cached.get("nclus_rm") == nclus_rm
+                and "rm_labels" in cached
+                and "isort" in cached
+            ):
+                return None, None
+
+            labels = np.asarray(cached["rm_labels"], dtype=int).reshape(-1)
+            isort = np.asarray(cached["isort"], dtype=int).reshape(-1)
+            if labels.shape[0] != n_rows or isort.shape[0] != n_rows:
+                return None, None
+            print(f"[rm] using cached labels/isort ({rm_cache_path.name})")
+            return labels, isort
+        except Exception as e:
+            print(f"[rm] cache read error; will recompute Rastermap: {e}")
+            return None, None
+
+    def _compute_and_save_rm(rm_cache_path: Path, feat_used: str, n_rows: int) -> tuple[np.ndarray, np.ndarray]:
+        if feat_used not in r:
+            raise KeyError(f"Feature '{feat_used}' not found in stack.")
+
+        print(f"[rm] computing Rastermap (n_clusters={nclus_rm}) on {feat_used}")
+        model = Rastermap(
+            n_PCs=200,
+            n_clusters=nclus_rm,
+            grid_upsample=grid_upsample,
+            locality=locality,
+            time_lag_window=time_lag_window,
+            bin_size=1,
+            symmetric=symmetric,
+        ).fit(r[feat_used])
+
+        labels = np.asarray(model.embedding_clust, dtype=int)
+        if labels.ndim > 1:
+            labels = labels[:, 0]
+        isort = np.asarray(model.isort, dtype=int).reshape(-1)
+
+        if labels.shape[0] != n_rows or isort.shape[0] != n_rows:
+            raise ValueError("Rastermap outputs do not match data length.")
+
+        np.save(
+            rm_cache_path,
+            {
+                "rm_labels": labels,
+                "isort": isort,
+                "order_sig": r["_order_signature"],
+                "nclus_rm": nclus_rm,
+            },
+            allow_pickle=True,
+        )
+        print(f"[rm] wrote cache ({rm_cache_path.name})")
+        return labels, isort
 
     # ---------- load stack ----------
     stack_path = _cache_path("stack")
@@ -959,7 +1023,7 @@ def regional_group(
 
     r = np.load(stack_path, allow_pickle=True).flat[0]
     print(
-        f"mapping {mapping}, vers {vers}, ephys {ephys}, nclus {nclus}, nclus_rm {nclus_rm_eff}, "
+        f"mapping {mapping}, vers {vers}, ephys {ephys}, nclus {nclus}, nclus_rm {nclus_rm}, "
         f"rerun {rerun}, cv {cv}, {len(r['ids'])} neurons loaded."
     )
 
@@ -970,6 +1034,9 @@ def regional_group(
     r["nums"] = np.arange(r["xyz"].shape[0], dtype=int)
 
     feat_key = "concat_z"
+    if feat_key not in r:
+        raise KeyError(f"Saved stack lacks '{feat_key}'.")
+
     r["_order_signature"] = (
         "|".join(f"{k}:{r['len'][k]}" for k in r["ttypes"])
         + f"|shape:{r[feat_key].shape}"
@@ -977,84 +1044,28 @@ def regional_group(
 
     r["peth_dict"] = {x: peth_dictm[x] for x in r["ttypes"]}
 
+    n_rows = r[feat_key].shape[0]
+
     # ---------- mapping ----------
     if mapping == "rm":
         feat = feat_key
-        if feat not in r:
-            raise KeyError(f"Feature '{feat}' not found in stack.")
 
         rm_cache_path = _cache_path("rm")
-        labels = None
-        isort = None
-
-        # try load cache; if missing/invalid -> compute from scratch
-        if (not rerun) and rm_cache_path.is_file():
-            try:
-                cached = np.load(rm_cache_path, allow_pickle=True).flat[0]
-                if (
-                    isinstance(cached, dict)
-                    and cached.get("order_sig") == r["_order_signature"]
-                    and cached.get("nclus_rm") == int(nclus_rm_eff)
-                    and "rm_labels" in cached
-                    and "isort" in cached
-                ):
-                    labels = np.asarray(cached["rm_labels"], dtype=int).reshape(-1)
-                    isort = np.asarray(cached["isort"], dtype=int).reshape(-1)
-                    if labels.shape[0] != r[feat].shape[0] or isort.shape[0] != r[feat].shape[0]:
-                        labels = None
-                        isort = None
-                    else:
-                        print(f"[rm] using cached labels/isort ({rm_cache_path.name})")
-            except Exception as e:
-                print(f"[rm] cache read error; recomputing Rastermap: {e}")
-                labels = None
-                isort = None
+        labels, isort = _load_rm_cache(rm_cache_path, n_rows)
 
         if labels is None or isort is None:
             feat_used = "concat_z_train" if cv else feat
-            if feat_used not in r:
-                raise KeyError(f"Feature '{feat_used}' not found in stack.")
+            labels, isort = _compute_and_save_rm(rm_cache_path, feat_used, n_rows)
 
-            print(f"[rm] computing Rastermap (n_clusters={nclus_rm_eff}) on {feat_used}")
-            model = Rastermap(
-                n_PCs=200,
-                n_clusters=nclus_rm_eff,
-                grid_upsample=grid_upsample,
-                locality=locality,
-                time_lag_window=time_lag_window,
-                bin_size=1,
-                symmetric=symmetric,
-            ).fit(r[feat_used])
+        # colors/legend
+        clusters = labels.astype(int, copy=False)
+        unique_sorted = np.sort(np.unique(clusters))
+        cmap = mpl.colormaps["tab20"]
+        u_to_idx = {u: (i % 20) for i, u in enumerate(unique_sorted)}
+        color_map = {u: cmap(u_to_idx[u]) for u in unique_sorted}
+        cols = np.array([color_map[c] for c in clusters])
 
-            labels = np.asarray(model.embedding_clust, dtype=int)
-            if labels.ndim > 1:
-                labels = labels[:, 0]
-            isort = np.asarray(model.isort, dtype=int).reshape(-1)
-
-            if labels.shape[0] != r[feat].shape[0] or isort.shape[0] != r[feat].shape[0]:
-                raise ValueError("Rastermap outputs do not match data length.")
-
-            np.save(
-                rm_cache_path,
-                {
-                    "rm_labels": labels,
-                    "isort": isort,
-                    "order_sig": r["_order_signature"],
-                    "nclus_rm": int(nclus_rm_eff),
-                },
-                allow_pickle=True,
-            )
-            print(f"[rm] wrote cache ({rm_cache_path.name})")
-
-        # colors/legend as before (abbrev; keep your existing block)
-        clusters = labels.copy()
-        unique = np.unique(clusters)
-        norm_vals = clusters / float(unique.max()) if unique.size > 1 else np.zeros_like(clusters, dtype=float)
-        cmap = mpl.cm.get_cmap("tab20")
-        cols = cmap(norm_vals % cmap.N)
-        regs = unique
-        color_map = {reg: cols[clusters == reg][0] for reg in regs}
-        r["els"] = [Line2D([0], [0], color=color_map[reg], lw=4, label=f"{reg}") for reg in regs]
+        r["els"] = [Line2D([0], [0], color=color_map[reg], lw=4, label=f"{reg}") for reg in unique_sorted]
         r["Beryl"] = np.array(br.id2acronym(r["ids"], mapping="Beryl"))
         r["acs"] = labels
         r["cols"] = cols
@@ -1098,7 +1109,6 @@ def regional_group(
         r["cols"] = cmap(norm(scaled))
 
     elif mapping == "kmeans":
-        # IMPORTANT: for cv=True, fit on concat_z_train (but labels are for all rows)
         feat_fit = "concat_z_train" if cv else feat_key
         if feat_fit not in r:
             raise KeyError(f"Feature '{feat_fit}' not found in stack.")
@@ -1113,11 +1123,11 @@ def regional_group(
                     isinstance(cached, dict)
                     and cached.get("order_sig") == r["_order_signature"]
                     and cached.get("feat_fit") == feat_fit
-                    and cached.get("nclus") == int(nclus)
+                    and cached.get("nclus") == nclus
                     and "kmeans_labels" in cached
                 ):
                     clusters = np.asarray(cached["kmeans_labels"], dtype=int).reshape(-1)
-                    if clusters.shape[0] != r[feat_key].shape[0]:
+                    if clusters.shape[0] != n_rows:
                         clusters = None
                     else:
                         print(f"[kmeans] using cached labels ({kmeans_cache_path.name})")
@@ -1127,14 +1137,11 @@ def regional_group(
 
         if clusters is None:
             print(f"[kmeans] fitting (n={nclus}) on {feat_fit} (cv={cv})")
-            km = KMeans(n_clusters=int(nclus), random_state=0)
+            km = KMeans(n_clusters=nclus, random_state=0)
             km.fit(r[feat_fit])
-
-            if feat_key not in r:
-                raise KeyError(f"Feature '{feat_key}' not found in stack.")
             clusters = km.predict(r[feat_key]).astype(int)
 
-            if clusters.shape[0] != r[feat_key].shape[0]:
+            if clusters.shape[0] != n_rows:
                 raise ValueError("KMeans labels do not match data length.")
 
             np.save(
@@ -1143,81 +1150,23 @@ def regional_group(
                     "kmeans_labels": clusters,
                     "order_sig": r["_order_signature"],
                     "feat_fit": feat_fit,
-                    "nclus": int(nclus),
+                    "nclus": nclus,
                 },
                 allow_pickle=True,
             )
             print(f"[kmeans] wrote cache ({kmeans_cache_path.name})")
 
-        cmap = mpl.cm.get_cmap("tab20")
-        cols = cmap((clusters / float(nclus)) % cmap.N)
-        acs = clusters.astype(int)
-        regs = np.unique(acs)
-        color_map = {reg: cols[acs == reg][0] for reg in regs}
-        r["els"] = [Line2D([0], [0], color=color_map[reg], lw=4, label=f"{reg + 1}") for reg in regs]
+        clusters = clusters.astype(int, copy=False)
+        unique_sorted = np.sort(np.unique(clusters))
+        cmap = mpl.colormaps["tab20"]
+        u_to_idx = {u: (i % 20) for i, u in enumerate(unique_sorted)}
+        color_map = {u: cmap(u_to_idx[u]) for u in unique_sorted}
+        cols = np.array([color_map[c] for c in clusters])
+
+        r["els"] = [Line2D([0], [0], color=color_map[reg], lw=4, label=f"{reg + 1}") for reg in unique_sorted]
         r["Beryl"] = np.array(br.id2acronym(r["ids"], mapping="Beryl"))
-        r["acs"] = acs
+        r["acs"] = clusters
         r["cols"] = cols
-
-        # NEW: also compute / attach Rastermap order with nclus_rm_eff (and cache separately)
-        rm_cache_path = _cache_path("rm")
-        isort = None
-        if (not rerun) and rm_cache_path.is_file():
-            try:
-                cached = np.load(rm_cache_path, allow_pickle=True).flat[0]
-                if (
-                    isinstance(cached, dict)
-                    and cached.get("order_sig") == r["_order_signature"]
-                    and cached.get("nclus_rm") == int(nclus_rm_eff)
-                    and "isort" in cached
-                ):
-                    isort = np.asarray(cached["isort"], dtype=int).reshape(-1)
-                    if isort.shape[0] != r[feat_key].shape[0]:
-                        isort = None
-                    else:
-                        print(f"[rm] using cached isort ({rm_cache_path.name})")
-            except Exception as e:
-                print(f"[rm] cache read error; recomputing Rastermap isort: {e}")
-                isort = None
-
-        if isort is None:
-            feat_used = "concat_z_train" if cv else feat_key
-            if feat_used not in r:
-                raise KeyError(f"Feature '{feat_used}' not found in stack.")
-
-            print(f"[rm] computing Rastermap isort (n_clusters={nclus_rm_eff}) on {feat_used}")
-            model = Rastermap(
-                n_PCs=200,
-                n_clusters=nclus_rm_eff,
-                grid_upsample=grid_upsample,
-                locality=locality,
-                time_lag_window=time_lag_window,
-                bin_size=1,
-                symmetric=symmetric,
-            ).fit(r[feat_used])
-
-            isort = np.asarray(model.isort, dtype=int).reshape(-1)
-            if isort.shape[0] != r[feat_key].shape[0]:
-                raise ValueError("Rastermap isort does not match data length.")
-
-            # store isort + (optional) labels if you want; keep consistent keys
-            labels_rm = np.asarray(model.embedding_clust, dtype=int)
-            if labels_rm.ndim > 1:
-                labels_rm = labels_rm[:, 0]
-
-            np.save(
-                rm_cache_path,
-                {
-                    "rm_labels": labels_rm,
-                    "isort": isort,
-                    "order_sig": r["_order_signature"],
-                    "nclus_rm": int(nclus_rm_eff),
-                },
-                allow_pickle=True,
-            )
-            print(f"[rm] wrote cache ({rm_cache_path.name})")
-
-        r["isort"] = isort
 
     else:
         acs = np.array(br.id2acronym(r["ids"], mapping=mapping))
@@ -1225,8 +1174,19 @@ def regional_group(
         r["acs"] = acs
         r["cols"] = cols
 
-    return r
+    # ---------- attach/ensure Rastermap isort for non-rm mappings when requested ----------
+    if mapping != "rm" and nclus_rm != 100:
+        rm_cache_path = _cache_path("rm")
+        labels_rm, isort_rm = _load_rm_cache(rm_cache_path, n_rows)
 
+        if labels_rm is None or isort_rm is None:
+            # Per your request: if no cache exists, compute+save (same as rm branch)
+            feat_used = "concat_z_train" if cv else feat_key
+            labels_rm, isort_rm = _compute_and_save_rm(rm_cache_path, feat_used, n_rows)
+
+        r["isort"] = isort_rm
+
+    return r
 
 
 def get_umap_dist(rerun=False, algo='umap_z', 
@@ -4729,7 +4689,7 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
                    exa=False, mapping='rm', bg=False, img_only=False,
                    interp='antialiased', single_reg=False, cv=True,
                    bg_bright=0.99, vmax=2, rerun=False, sort_method='rastermap',
-                   nclus=100, clsfig=False, bounds=True, grid_upsample=0,
+                   nclus=100, nclus_rm=100, clsfig=False, bounds=False, grid_upsample=0,
                    locality=0.75, time_lag_window=5, symmetric=False, clabels='all'):
     """
     Function to plot a rastermap with vertical segment boundaries
@@ -4746,8 +4706,8 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
         - 'pca': sort by first PCA dimension
         - 'acs': sort by r['acs'] (ints or strings) and use that order as isort
     """
-    r = regional_group(mapping, vers=vers, ephys=False, nclus=nclus,
-                       rerun=rerun, cv=cv, grid_upsample=grid_upsample,
+    r = regional_group(mapping, vers=vers, ephys=False, nclus=nclus, 
+                       nclus_rm=nclus_rm, rerun=rerun, cv=cv, grid_upsample=grid_upsample,
                        locality=locality, time_lag_window=time_lag_window,
                        symmetric=symmetric)
 
@@ -4875,6 +4835,8 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
         del rgba_overlay
         gc.collect()
 
+
+
     if grid_upsample > 0:
         bounds = False  # disable boundaries for upsampled grids
 
@@ -4894,7 +4856,7 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
         n_rows = data.shape[0]
         edges = np.concatenate(([0.5], boundaries, [n_rows - 0.5]))
         n_segments = len(edges) - 1
-        fontsize = np.clip(300 / nclus, 2, 8)
+        fontsize = np.clip(300 / nclus, 3, 8)
 
         if clabels == 'all':
             label_idxs = np.arange(n_segments)
@@ -5019,6 +4981,7 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
         fig.canvas.manager.set_window_title(f"Rastermap: {descriptor}")
     except Exception:
         pass
+
 
     out_path = pth_dmn.parent / "imgs" / fname
     fig.savefig(out_path, dpi=150, bbox_inches='tight', facecolor='white')
