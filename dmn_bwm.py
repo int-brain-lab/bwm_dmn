@@ -87,7 +87,7 @@ from matplotlib import cm
 from matplotlib.colors import to_rgba
 from matplotlib.cm import ScalarMappable
 from typing import Optional, List, Tuple, Dict, Sequence, Union
-
+import datoviz as dv
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -2421,7 +2421,7 @@ def plot_cluster_mean_PETHs(
     # OLD MODE: one axis per cluster (unchanged behavior)
     # -------------------------------
     if axx is None:
-        fg, axx = plt.subplots(nrows=n_clu, sharex=True, sharey=False, figsize=(6, 10))
+        fg, axx = plt.subplots(nrows=n_clu, sharex=True, sharey=False, figsize=(6, 8))
     if not isinstance(axx, (list, np.ndarray)):
         axx = [axx]
     if len(axx) != n_clu:
@@ -2836,149 +2836,287 @@ def plot_ave_PETHs(feat='concat_z', vers='concat',
 
 
 
-def plot_xyz(mapping='Beryl', vers='concat', add_cents=False,
-             restr=False, ax=None, axoff=True, exa=True,
-             combine_mistake=False, ephys=False, nclus=7, cv=True):
+def plot_xyz(
+    mapping: str = "Beryl",
+    vers: str = "concat",
+    add_cents: bool = False,
+    restr=False,
+    ax=None,
+    axoff: bool = True,
+    exa: bool = True,
+    combine_mistake: bool = False,
+    ephys: bool = False,
+    nclus: int = 7,
+    nclus_rm: int = 100,   # NEW: forwarded to regional_group (RM cache + optional isort attach logic)
+    cv: bool = True,
+    *,
+    datoviz: bool = False,           # NEW: if True, use Datoviz for 3D scatter (colored points)
+    dv_point_size: float = 3.0,
+    dv_width: int = 1200,
+    dv_height: int = 900,
+    dv_background: str = "white",
+    dv_depth_test: bool = True,
+    to_mm: bool = True,              # NEW: display coordinates in mm (default matches old behavior)
+):
     """
     3D scatter of cell features with optional example traces.
     Segment boundaries/labels (in example traces) come from r['len'] and r['peth_dict'].
-    """
 
-    r = regional_group(mapping, vers=vers, ephys=ephys, nclus=nclus,
-                       cv=cv, combine_mistake=combine_mistake)
+    Datoviz mode
+    ------------
+    If datoviz=True:
+      - shows a GPU-rendered 3D point cloud (interactive arcball)
+      - ignores Matplotlib axes arguments (ax, axoff, view_init, etc.)
+      - keeps example traces (exa) in Matplotlib (as before)
+    """
+    # ---- load data (respects new nclus/nclus_rm policy in regional_group) ----
+    r = regional_group(
+        mapping,
+        vers=vers,
+        ephys=ephys,
+        nclus=int(nclus),
+        nclus_rm=int(nclus_rm),
+        cv=cv,
+        combine_mistake=combine_mistake,
+    )
 
     # If mapping corresponds to a single PETH (or group), color by ranking if available
-    if ((mapping in tts__) or (mapping in PETH_types_dict)) and ('rankings' in r):
-        cmap = mpl.cm.get_cmap('Spectral')
-        norm = mpl.colors.Normalize(vmin=min(r['rankings']), vmax=max(r['rankings']))
-        r['cols'] = cmap(norm(r['rankings']))
+    if ((mapping in tts__) or (mapping in PETH_types_dict)) and ("rankings" in r):
+        cmap = mpl.cm.get_cmap("Spectral")
+        norm = mpl.colors.Normalize(vmin=float(np.min(r["rankings"])), vmax=float(np.max(r["rankings"])))
+        r["cols"] = cmap(norm(r["rankings"]))
     else:
         cmap = norm = None  # for colorbar logic below
 
-    xyz = r['xyz'] * 1000  # convert to mm
+    xyz = np.asarray(r["xyz"], dtype=float)
 
-    created_fig = False
-    if ax is None:
-        created_fig = True
-        fig = plt.figure(figsize=(8.43, 7.26), label=mapping)
-        ax = fig.add_subplot(111, projection='3d')
-    else:
-        fig = ax.get_figure()
+    # old behavior: xyz was scaled by 1000 and labeled as mm
+    scale = 1000.0 if to_mm else 1.0
+    xyz_plot = xyz * scale
 
+    # ---- optional restriction to subset of labels ----
     if isinstance(restr, list) and len(restr):
-        idcs = np.bitwise_or.reduce([r['acs'] == reg for reg in restr])
-        xyz = xyz[idcs]
-        r['cols'] = np.asarray(r['cols'])[idcs]
-        r['acs']  = np.asarray(r['acs'])[idcs]
+        idcs = np.bitwise_or.reduce([np.asarray(r["acs"]) == reg for reg in restr])
+        xyz_plot = xyz_plot[idcs]
+        r["cols"] = np.asarray(r["cols"])[idcs]
+        r["acs"] = np.asarray(r["acs"])[idcs]
+        if "rankings" in r:
+            r["rankings"] = np.asarray(r["rankings"])[idcs]
 
-    ax.scatter(xyz[:, 0], xyz[:, 1], xyz[:, 2],
-               depthshade=False, marker='o',
-               s=1 if created_fig else 0.5, c=r['cols'])
+    # =========================
+    # Datoviz rendering (3D)
+    # =========================
+    if datoviz:
+        try:
+            import datoviz as dv
+        except Exception as e:
+            raise ImportError(
+                "datoviz=True but Datoviz is not available in this environment. "
+                "Install with: pip install datoviz"
+            ) from e
 
-    if add_cents:
-        if mapping != 'Beryl':
-            print('add cents only for Beryl')
+        pos = np.asarray(xyz_plot, dtype=np.float64, copy=False)  # keep stable numeric range
+        if pos.ndim != 2 or pos.shape[1] != 3:
+            raise ValueError(f"r['xyz'] must be (N,3); got {pos.shape}.")
+
+        col = np.asarray(r["cols"])
+        if col.ndim != 2 or col.shape[1] != 4:
+            raise ValueError("r['cols'] must be RGBA float array (N,4).")
+
+        # Convert RGBA floats [0,1] -> uint8 [0,255], force opaque
+        color = np.clip(np.round(col * 255.0), 0, 255).astype(np.uint8, copy=False)
+        color[:, 3] = 255
+
+        n = pos.shape[0]
+        size = np.full(n, float(dv_point_size), dtype=np.float32)
+
+        # Manual normalization to NDC: map each axis to [-1, +1]
+        # (Datoviz visuals expect positions in 3D NDC space.) :contentReference[oaicite:0]{index=0}
+        mins = np.nanmin(pos, axis=0)
+        maxs = np.nanmax(pos, axis=0)
+        span = np.where((maxs - mins) > 0, (maxs - mins), 1.0)
+        pos_ndc = ((pos - mins) / span) * 2.0 - 1.0
+        pos_ndc = pos_ndc.astype(np.float32, copy=False)
+
+        app = dv.App(background=str(dv_background))
+        fig = app.figure(int(dv_width), int(dv_height))
+        panel = fig.panel()
+
+        # 3D interaction + camera (arcball is the typical 3D control in Datoviz) :contentReference[oaicite:1]{index=1}
+        try:
+            panel.arcball()
+        except Exception:
+            pass
+        try:
+            panel.camera()
+        except Exception:
+            pass
+
+        visual = app.point(
+            position=pos_ndc,
+            color=color,
+            size=size,
+            depth_test=bool(dv_depth_test),
+        )
+        panel.add(visual)
+
+        # Optional centroids are non-trivial in Datoviz (would require separate visuals + consistent NDC transform).
+        # Keep them Matplotlib-only for now.
+        if add_cents:
+            print("add_cents currently supported only in matplotlib mode (datoviz=False).")
+
+        app.run()
+        app.destroy()
+
+    # =========================
+    # Matplotlib rendering (default)
+    # =========================
+    else:
+        created_fig = False
+        if ax is None:
+            created_fig = True
+            fig = plt.figure(figsize=(8.43, 7.26), label=mapping)
+            ax = fig.add_subplot(111, projection="3d")
         else:
-            regs = list(Counter(r['acs']))
-            centsd = get_centroids()
-            cents = np.array([centsd[x] for x in regs])
-            volsd = get_volume(); vols = [volsd[x] for x in regs]
-            scale = 5000; vols = scale * np.array(vols) / np.max(vols)
-            cols = [pal[reg] for reg in regs]
-            ax.scatter(cents[:, 0], cents[:, 1], cents[:, 2],
-                       marker='*', s=vols, color=cols, depthshade=False)
+            fig = ax.get_figure()
 
-    scalef = 1.2
-    ax.view_init(elev=45.78, azim=-33.4)
-    ax.set_xlim(min(xyz[:, 0]) / scalef, max(xyz[:, 0]) / scalef)
-    ax.set_ylim(min(xyz[:, 1]) / scalef, max(xyz[:, 1]) / scalef)
-    ax.set_zlim(min(xyz[:, 2]) / scalef, max(xyz[:, 2]) / scalef)
-    ax.xaxis.pane.fill = False; ax.yaxis.pane.fill = False; ax.zaxis.pane.fill = False
+        ax.scatter(
+            xyz_plot[:, 0], xyz_plot[:, 1], xyz_plot[:, 2],
+            depthshade=False,
+            marker="o",
+            s=1 if created_fig else 0.5,
+            c=r["cols"],
+        )
 
-    fontsize = 14
-    ax.set_xlabel('x [mm]', fontsize=fontsize)
-    ax.set_ylabel('y [mm]', fontsize=fontsize)
-    ax.set_zlabel('z [mm]', fontsize=fontsize)
-    ax.tick_params(axis='both', labelsize=12)
-    ax.grid(False)
-    nbins = 3
-    ax.xaxis.set_major_locator(MaxNLocator(nbins=nbins))
-    ax.yaxis.set_major_locator(MaxNLocator(nbins=nbins))
-    ax.zaxis.set_major_locator(MaxNLocator(nbins=nbins))
+        if add_cents:
+            if mapping != "Beryl":
+                print("add_cents only for Beryl")
+            else:
+                regs = list(Counter(r["acs"]))
+                centsd = get_centroids()
+                cents = np.array([centsd[x] for x in regs], dtype=float)
+                # NOTE: cents assumed already in meters in your pipeline; scale identically to xyz_plot
+                cents = cents * scale
 
-    if axoff:
-        ax.axis('off')
+                volsd = get_volume()
+                vols = np.array([volsd[x] for x in regs], dtype=float)
+                scale_vol = 5000.0
+                vols = scale_vol * vols / (np.max(vols) + 1e-12)
+                cols = [pal[reg] for reg in regs]
 
-    # Safe colorbar if we actually built a colormap/norm
-    if (((mapping in tts__) or (mapping in PETH_types_dict)) and
-        (cmap is not None) and (norm is not None) and ('rankings' in r)):
-        mappable = mpl.cm.ScalarMappable(cmap=cmap, norm=norm)
-        mappable.set_array(r['rankings'])
-        cbar = fig.colorbar(mappable, ax=ax, shrink=0.5, aspect=10)
-        cbar.set_label(f'mean {mapping} rankings')
+                ax.scatter(
+                    cents[:, 0], cents[:, 1], cents[:, 2],
+                    marker="*",
+                    s=vols,
+                    color=cols,
+                    depthshade=False,
+                )
 
-    if created_fig:
-        ax.set_title(f'{mapping}')
+        scalef = 1.2
+        ax.view_init(elev=45.78, azim=-33.4)
+        ax.set_xlim(np.nanmin(xyz_plot[:, 0]) / scalef, np.nanmax(xyz_plot[:, 0]) / scalef)
+        ax.set_ylim(np.nanmin(xyz_plot[:, 1]) / scalef, np.nanmax(xyz_plot[:, 1]) / scalef)
+        ax.set_zlim(np.nanmin(xyz_plot[:, 2]) / scalef, np.nanmax(xyz_plot[:, 2]) / scalef)
+        ax.xaxis.pane.fill = False
+        ax.yaxis.pane.fill = False
+        ax.zaxis.pane.fill = False
 
+        fontsize = 14
+        unit = "mm" if to_mm else "m"
+        ax.set_xlabel(f"x [{unit}]", fontsize=fontsize)
+        ax.set_ylabel(f"y [{unit}]", fontsize=fontsize)
+        ax.set_zlabel(f"z [{unit}]", fontsize=fontsize)
+        ax.tick_params(axis="both", labelsize=12)
+        ax.grid(False)
+        nbins = 3
+        ax.xaxis.set_major_locator(MaxNLocator(nbins=nbins))
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=nbins))
+        ax.zaxis.set_major_locator(MaxNLocator(nbins=nbins))
+
+        if axoff:
+            ax.axis("off")
+
+        # Safe colorbar if we actually built a colormap/norm
+        if (
+            ((mapping in tts__) or (mapping in PETH_types_dict))
+            and (cmap is not None)
+            and (norm is not None)
+            and ("rankings" in r)
+        ):
+            mappable = mpl.cm.ScalarMappable(cmap=cmap, norm=norm)
+            mappable.set_array(np.asarray(r["rankings"]))
+            cbar = fig.colorbar(mappable, ax=ax, shrink=0.5, aspect=10)
+            cbar.set_label(f"mean {mapping} rankings")
+
+        if created_fig:
+            ax.set_title(f"{mapping}")
+
+        plt.show()
+
+    # =========================
+    # Example traces (Matplotlib; unchanged conceptually)
+    # =========================
     if exa:
         # Only supported for time-series mappings
         if (mapping not in tts__) and (mapping not in PETH_types_dict):
-            print('not implemented for other mappings')
+            print("not implemented for other mappings")
             return
 
-        feat = 'concat_z'
+        feat = "concat_z"
         nrows = 10
-        if 'rankings' not in r or len(r['rankings']) == 0:
+        if "rankings" not in r or len(r["rankings"]) == 0:
             print('example traces require r["rankings"]')
             return
 
-        rankings_s = sorted(r['rankings'])
-        indices = [list(r['rankings']).index(x) for x in
-                   np.concatenate([rankings_s[:nrows // 2],
-                                   rankings_s[-nrows // 2:]])]
+        rankings_s = sorted(r["rankings"])
+        indices = [list(r["rankings"]).index(x) for x in np.concatenate([rankings_s[: nrows // 2], rankings_s[-nrows // 2 :]])]
 
         fg, axx = plt.subplots(nrows=nrows, sharex=True, sharey=False, figsize=(7, 7))
         xx = np.arange(len(r[feat][0])) / c_sec
 
-        # order and labels from file
-        ordered_segments = list(r['len'].keys())
-        labels = r.get('peth_dict', {k: k for k in ordered_segments})
+        ordered_segments = list(r["len"].keys())
+        labels = r.get("peth_dict", {k: k for k in ordered_segments})
 
         for kk, ind in enumerate(indices):
             yy = r[feat][ind]
-            axx[kk].plot(xx, yy, color=r['cols'][ind], linewidth=2)
-            sss = (r['acs'][ind] + '\n' + str(r['pid'][ind][:3]))
+            axx[kk].plot(xx, yy, color=r["cols"][ind], linewidth=2)
+            sss = (str(r["acs"][ind]) + "\n" + str(r["pid"][ind][:3]))
             axx[kk].set_ylabel(sss)
 
             if kk != (len(indices) - 1):
-                axx[kk].spines['top'].set_visible(False)
-                axx[kk].spines['right'].set_visible(False)
-                axx[kk].spines['bottom'].set_visible(False)
+                axx[kk].spines["top"].set_visible(False)
+                axx[kk].spines["right"].set_visible(False)
+                axx[kk].spines["bottom"].set_visible(False)
             else:
-                axx[kk].spines['top'].set_visible(False)
-                axx[kk].spines['right'].set_visible(False)
+                axx[kk].spines["top"].set_visible(False)
+                axx[kk].spines["right"].set_visible(False)
 
-            # segment boundaries/labels from data file order
             h = 0
             for seg in ordered_segments:
-                seg_len = r['len'][seg]
+                seg_len = r["len"][seg]
                 xv = (h + seg_len) / c_sec
-                axx[kk].axvline(xv, linestyle='--', linewidth=1, color='grey')
+                axx[kk].axvline(xv, linestyle="--", linewidth=1, color="grey")
 
-                # highlight the plotted mapping if it's a composite listing that contains seg
-                ccc = 'r' if seg == mapping else 'k'
+                ccc = "r" if seg == mapping else "k"
                 if mapping in PETH_types_dict and seg in PETH_types_dict[mapping]:
-                    ccc = 'r'
+                    ccc = "r"
 
                 if kk == 0:
-                    axx[kk].text((h + seg_len / 2) / c_sec, np.max(yy),
-                                 '   ' + labels.get(seg, seg),
-                                 rotation=90, color=ccc, fontsize=10, ha='center')
+                    axx[kk].text(
+                        (h + seg_len / 2) / c_sec,
+                        float(np.max(yy)),
+                        "   " + str(labels.get(seg, seg)),
+                        rotation=90,
+                        color=ccc,
+                        fontsize=10,
+                        ha="center",
+                    )
                 h += seg_len
 
-        axx[-1].set_xlabel('time [sec]')
-        fg.suptitle(f'mapping: {mapping}, feat: {feat}')
+        axx[-1].set_xlabel("time [sec]")
+        fg.suptitle(f"mapping: {mapping}, feat: {feat}")
         fg.tight_layout()
+
 
 
 
@@ -3782,7 +3920,7 @@ def plot_example_neurons(
         else:
             samp = np.array(random.choices(idx_all, k=k))
 
-        fig, ax = plt.subplots(figsize=(7.6, 10), constrained_layout=True)
+        fig, ax = plt.subplots(figsize=(6,8), constrained_layout=True)
         try:
             stds = [np.nanstd(r[feat][i]) for i in samp]
             base_off = 2.0 * (np.nanmedian(stds) if len(stds) else 1.0)
