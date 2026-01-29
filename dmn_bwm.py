@@ -70,10 +70,9 @@ import matplotlib.pyplot as plt
 import matplotlib as mpl
 import seaborn as sns
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
-from matplotlib.colors import ListedColormap, LinearSegmentedColormap   
 from matplotlib.gridspec import GridSpec   
 from matplotlib.lines import Line2D
-from matplotlib.colors import to_rgba, Normalize
+from matplotlib.colors import (to_rgba, Normalize, ListedColormap, LinearSegmentedColormap, is_color_like)    
 from matplotlib.patches import Rectangle
 from matplotlib.ticker import ScalarFormatter
 from matplotlib.ticker import MaxNLocator
@@ -84,10 +83,10 @@ from ibl_style.utils import get_coords, add_label, MM_TO_INCH
 import figrid as fg
 import matplotlib.ticker as ticker
 from matplotlib import cm
-from matplotlib.colors import to_rgba
 from matplotlib.cm import ScalarMappable
 from typing import Optional, List, Tuple, Dict, Sequence, Union
 import datoviz as dv
+from numpy.linalg import norm
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -148,11 +147,11 @@ red_right = [0.66080672, 0.21526712, 0.23069468]
 
 T_BIN = 0.0125  # bin size [sec] for neural binning
 sts = 0.002  # stride size in [sec] for overlapping bins
-ntravis = 30  # #trajectories for vis, first 2 real, rest pseudo
 
 # conversion divident to get bins in seconds 
 # (taking striding into account)
-c_sec =  int(T_BIN // sts) / T_BIN
+
+c_sec =  1.0 / (T_BIN / int(T_BIN // sts))
 
 one = ONE()
 
@@ -903,30 +902,46 @@ def regional_group(
     grid_upsample: int = 0,
     nclus: int = 100,
     nclus_rm: int = 100,
+    nclus_s: int = 20,           # synthetic basis size
     cv: bool = True,
     locality: float = 0.75,
     time_lag_window: int = 5,
     symmetric: bool = False,
     rerun: bool = False,
+    synthetic: bool = False,
+    syn_control: bool = False,
+    zsc: bool = True,            # if False, use r['concat'] (cv must be False)
 ):
     """
-    Group / color neurons for visualization and downstream analyses.
+    Supports synthetic=True together with zsc=False.
 
-    Notes
-    -----
-    - nclus controls the main mapping (e.g. KMeans n_clusters).
-    - Rastermap uses nclus_rm (default 100).
-    - Policy:
-        * For mapping != 'rm': if nclus_rm != 100, try to load RM cache; if missing, compute+save RM and attach r['isort'].
-        * For mapping == 'rm': load RM cache if present; if missing, compute+save (same code path).
-        * All RM cache filenames include nclus_rm.
-        * All KMeans cache filenames include nclus_rm (even though labels don't depend on it).
+    Conventions
+    -----------
+    - zsc=True  -> base feature is 'concat_z'
+    - zsc=False -> base feature is 'concat' (requires cv=False)
+
+    Synthetic outputs
+    -----------------
+    - if synthetic and zsc=True  : r['concat_zs'] is generated and used for mapping
+    - if synthetic and zsc=False : r['concat_s']  is generated and used for mapping
     """
     pth_res = Path(one.cache_dir, "dmn", "res")
+
+    if synthetic:
+        cv = False
+
+    if (not zsc) and cv:
+        raise ValueError("zsc=False is only supported when cv=False (requested).")
+
     nclus = int(nclus)
     nclus_rm = int(nclus_rm)
+    nclus_s = int(nclus_s)
 
+    # ---------------- cache paths ----------------
     def _cache_path(kind: str) -> Path:
+        synth_tag = f"_synthetic1_nsb{nclus_s}_synctrl{int(bool(syn_control))}" if synthetic else ""
+        ztag = f"_zsc{int(bool(zsc))}"  # NEW: used for ALL caches that depend on feature-space
+
         if kind == "stack":
             base = f"{vers}"
             base += f"_cv{cv}"
@@ -938,6 +953,8 @@ def regional_group(
             base += f"_cv{cv}"
             base += f"_ephys{ephys}"
             base += f"_nclusrm{nclus_rm}"
+            base += ztag
+            base += synth_tag
             return pth_res / (base + ".npy")
 
         if kind == "kmeans":
@@ -946,14 +963,61 @@ def regional_group(
             base += f"_ephys{ephys}"
             base += f"_n{nclus}"
             base += f"_nclusrm{nclus_rm}"
+            base += ztag
+            base += synth_tag
+            return pth_res / (base + ".npy")
+
+        if kind == "synthetic":
+            # NEW: include ztag so zsc=False synthetic cache doesn't collide with zsc=True synthetic cache
+            base = f"{kind}_{vers}"
+            base += f"_cv{cv}"
+            base += f"_ephys{ephys}"
+            base += ztag
+            base += f"_nsb{nclus_s}"
+            base += f"_synctrl{int(bool(syn_control))}"
+            base += "_margHist"
+            base += "_seed0"
             return pth_res / (base + ".npy")
 
         raise ValueError(f"Unknown cache kind: {kind}")
 
+    # ---------------- load stack ----------------
+    stack_path = _cache_path("stack")
+    if not stack_path.is_file():
+        raise FileNotFoundError(
+            f"Stack file not found: {stack_path}\n"
+            "Expected stack caches to depend only on vers/cv/ephys (not rm hyperparams)."
+        )
+
+    r = np.load(stack_path, allow_pickle=True).flat[0]
+    print(
+        f"mapping {mapping}, vers {vers}, ephys {ephys}, "
+        f"nclus {nclus}, nclus_rm {nclus_rm}, nclus_s {nclus_s}, "
+        f"rerun {rerun}, cv {cv}, synthetic {synthetic}, syn_control {syn_control}, zsc {zsc}, "
+        f"{len(r['ids'])} neurons loaded."
+    )
+
+    r["len"] = OrderedDict((k, int(r["len"][k])) for k in r["ttypes"])
+
+    if "xyz" not in r:
+        raise KeyError("Saved stack lacks 'xyz'.")
+    r["nums"] = np.arange(r["xyz"].shape[0], dtype=int)
+
+    # base feature key (real data feature space)
+    base_feat = "concat_z" if zsc else "concat"
+    if base_feat not in r:
+        raise KeyError(f"Saved stack lacks '{base_feat}' (zsc={zsc}).")
+
+    r["_order_signature"] = (
+        "|".join(f"{k}:{r['len'][k]}" for k in r["ttypes"])
+        + f"|shape:{np.asarray(r[base_feat]).shape}"
+        + f"|zsc:{int(bool(zsc))}"
+    )
+
+    r["peth_dict"] = {x: peth_dictm[x] for x in r["ttypes"]}
+
+    # ---------------- helpers (RM) ----------------
     def _load_rm_cache(rm_cache_path: Path, n_rows: int) -> tuple[np.ndarray | None, np.ndarray | None]:
-        """
-        Returns (labels, isort) or (None, None) if unavailable/invalid.
-        """
         if rerun or (not rm_cache_path.is_file()):
             return None, None
         try:
@@ -962,6 +1026,10 @@ def regional_group(
                 isinstance(cached, dict)
                 and cached.get("order_sig") == r["_order_signature"]
                 and cached.get("nclus_rm") == nclus_rm
+                and cached.get("synthetic") == bool(synthetic)
+                and cached.get("zsc") == bool(zsc)
+                and (cached.get("nclus_s") == nclus_s if synthetic else True)
+                and (cached.get("syn_control") == bool(syn_control) if synthetic else True)
                 and "rm_labels" in cached
                 and "isort" in cached
             ):
@@ -1007,57 +1075,187 @@ def regional_group(
                 "isort": isort,
                 "order_sig": r["_order_signature"],
                 "nclus_rm": nclus_rm,
+                "synthetic": bool(synthetic),
+                "zsc": bool(zsc),
+                "nclus_s": int(nclus_s) if synthetic else None,
+                "syn_control": bool(syn_control) if synthetic else None,
             },
             allow_pickle=True,
         )
         print(f"[rm] wrote cache ({rm_cache_path.name})")
         return labels, isort
 
-    # ---------- load stack ----------
-    stack_path = _cache_path("stack")
-    if not stack_path.is_file():
-        raise FileNotFoundError(
-            f"Stack file not found: {stack_path}\n"
-            "Expected stack caches to depend only on vers/cv/ephys (not rm hyperparams)."
-        )
+    # ---------------- synthetic generation (UPDATED for zsc) ----------------
+    def _compute_and_cache_synthetic(synth_feat_key: str, src_feat: str):
+        synth_path = _cache_path("synthetic")
 
-    r = np.load(stack_path, allow_pickle=True).flat[0]
-    print(
-        f"mapping {mapping}, vers {vers}, ephys {ephys}, nclus {nclus}, nclus_rm {nclus_rm}, "
-        f"rerun {rerun}, cv {cv}, {len(r['ids'])} neurons loaded."
-    )
+        if (not rerun) and synth_path.is_file():
+            try:
+                cached = np.load(synth_path, allow_pickle=True).flat[0]
+                want_control = bool(syn_control)
 
-    r["len"] = OrderedDict((k, int(r["len"][k])) for k in r["ttypes"])
+                # NEW: require zsc + synth_feat_key + src_feat match
+                if want_control:
+                    ok = (
+                        isinstance(cached, dict)
+                        and cached.get("order_sig") == r["_order_signature"]
+                        and cached.get("synthetic") is True
+                        and cached.get("syn_control") is True
+                        and cached.get("zsc") == bool(zsc)
+                        and cached.get("synth_feat_key") == synth_feat_key
+                        and cached.get("src_feat") == src_feat
+                        and cached.get("nclus_basis") == nclus_s
+                        and synth_feat_key in cached
+                        and "V" in cached
+                        and "C" in cached
+                    )
+                else:
+                    ok = (
+                        isinstance(cached, dict)
+                        and cached.get("order_sig") == r["_order_signature"]
+                        and cached.get("synthetic") is True
+                        and cached.get("syn_control") is False
+                        and cached.get("zsc") == bool(zsc)
+                        and cached.get("synth_feat_key") == synth_feat_key
+                        and cached.get("src_feat") == src_feat
+                        and cached.get("nclus_basis") == nclus_s
+                        and synth_feat_key in cached
+                        and "V" in cached
+                        and "C" in cached
+                        and "B" in cached
+                        and "marginals" in cached
+                    )
 
-    if "xyz" not in r:
-        raise KeyError("Saved stack lacks 'xyz'.")
-    r["nums"] = np.arange(r["xyz"].shape[0], dtype=int)
+                if ok:
+                    r[synth_feat_key] = np.asarray(cached[synth_feat_key], dtype=float)
+                    r["V"] = np.asarray(cached["V"], dtype=float)
+                    r["C"] = np.asarray(cached["C"], dtype=float)
+                    if not want_control:
+                        r["B"] = np.asarray(cached["B"], dtype=float)
+                        r["marginals"] = cached["marginals"]
+                    else:
+                        r["B"] = None
+                        r["marginals"] = None
 
-    feat_key = "concat_z"
-    if feat_key not in r:
-        raise KeyError(f"Saved stack lacks '{feat_key}'.")
+                    r["kmeans_basis_labels"] = np.asarray(cached.get("kmeans_basis_labels"))
+                    r["kmeans_basis_counts"] = np.asarray(cached.get("kmeans_basis_counts"))
+                    print(f"[synthetic] using cached synthetic data ({synth_path.name})")
+                    return
+            except Exception as e:
+                print(f"[synthetic] cache read error; recomputing synthetic: {e}")
 
-    r["_order_signature"] = (
-        "|".join(f"{k}:{r['len'][k]}" for k in r["ttypes"])
-        + f"|shape:{r[feat_key].shape}"
-    )
+        seed = 0
+        n_bins = 200
+        rng = np.random.default_rng(seed)
 
-    r["peth_dict"] = {x: peth_dictm[x] for x in r["ttypes"]}
+        X = np.asarray(r[src_feat], dtype=float)  # (N,T)   <-- UPDATED: concat or concat_z
+        N, T = X.shape
+        M = int(nclus_s)
 
-    n_rows = r[feat_key].shape[0]
+        print(f"[synthetic] fitting KMeans basis (n={M}) on {src_feat} (zsc={zsc})")
+        km = KMeans(n_clusters=M, random_state=0)
+        km.fit(X)
+        labs = km.predict(X).astype(int)
 
-    # ---------- mapping ----------
+        V = np.zeros((M, T), dtype=float)
+        counts = np.zeros(M, dtype=int)
+        for a in range(M):
+            idx = labs == a
+            counts[a] = int(np.sum(idx))
+            if counts[a] > 0:
+                V[a, :] = np.mean(X[idx, :], axis=0)
+
+        V_pinv = np.linalg.pinv(V)
+        X = X[r['isort']]
+        C = X @ V.T  # (N,M)
+
+        if syn_control:
+            Xs = C @ V_pinv.T
+            B = None
+            marginals = None
+            method = "kmeans_basis_reconstruct_CV"
+        else:
+            marginals = []
+            B = np.zeros((N, M), dtype=float)
+            for a in range(M):
+                col = C[:, a]
+                lo, hi = np.nanpercentile(col, [0.5, 99.5])
+                if (not np.isfinite(lo)) or (not np.isfinite(hi)) or (lo == hi):
+                    lo, hi = float(np.nanmin(col)), float(np.nanmax(col))
+                    if lo == hi:
+                        lo, hi = lo - 1.0, hi + 1.0
+
+                h, edges = np.histogram(col, bins=int(n_bins), range=(float(lo), float(hi)), density=False)
+                h = h.astype(float)
+                s = h.sum()
+                probs = (h / s) if s > 0 else np.ones_like(h) / len(h)
+                centers = 0.5 * (edges[:-1] + edges[1:])
+
+                B[:, a] = rng.choice(centers, size=N, replace=True, p=probs)
+                marginals.append(
+                    {"alpha": int(a), "edges": edges, "centers": centers, "probs": probs, "n_bins": int(n_bins)}
+                )
+
+            Xs = B @ V
+            method = "kmeans_basis_iid_hist_marginals"
+
+        # write into r using the correct synthetic key
+        r[synth_feat_key] = Xs
+        r["V"] = V
+        r["C"] = C
+        r["B"] = B
+        r["marginals"] = marginals
+        r["kmeans_basis_labels"] = labs
+        r["kmeans_basis_counts"] = counts
+
+        payload = {
+            "synthetic": True,
+            "syn_control": bool(syn_control),
+            "zsc": bool(zsc),
+            "order_sig": r["_order_signature"],
+            "nclus_basis": int(M),
+            "seed": int(seed),
+            "method": method,
+            "src_feat": src_feat,
+            "synth_feat_key": synth_feat_key,
+            synth_feat_key: Xs,        # <-- stores concat_zs OR concat_s
+            "V": V,
+            "C": C,
+            "kmeans_basis_labels": labs,
+            "kmeans_basis_counts": counts,
+        }
+        if not syn_control:
+            payload["B"] = B
+            payload["marginals"] = marginals
+
+        np.save(synth_path, payload, allow_pickle=True)
+        print(f"[synthetic] wrote cache ({synth_path.name})")
+
+    # ---------------- feature selection for mapping ----------------
+    if synthetic:
+        if mapping not in ("kmeans", "rm"):
+            raise ValueError("In synthetic=True mode, only mapping='kmeans' or mapping='rm' is supported.")
+
+        # NEW: synthetic uses the same source feature as real mapping would (concat_z or concat)
+        src_feat = base_feat
+        synth_feat_key = "concat_zs" if zsc else "concat_s"  # NEW: avoid misleading name when not zsc
+        _compute_and_cache_synthetic(synth_feat_key=synth_feat_key, src_feat=src_feat)
+        feat_key_map = synth_feat_key
+    else:
+        feat_key_map = base_feat
+
+    n_rows = np.asarray(r[feat_key_map]).shape[0]
+
+    # ---------------- mapping ----------------
     if mapping == "rm":
-        feat = feat_key
-
         rm_cache_path = _cache_path("rm")
         labels, isort = _load_rm_cache(rm_cache_path, n_rows)
 
         if labels is None or isort is None:
-            feat_used = "concat_z_train" if cv else feat
+            # with zsc=False, cv is guaranteed False, so this reduces cleanly.
+            feat_used = feat_key_map if synthetic else ("concat_z_train" if cv else feat_key_map)
             labels, isort = _compute_and_save_rm(rm_cache_path, feat_used, n_rows)
 
-        # colors/legend
         clusters = labels.astype(int, copy=False)
         unique_sorted = np.sort(np.unique(clusters))
         cmap = mpl.colormaps["tab20"]
@@ -1071,45 +1269,8 @@ def regional_group(
         r["cols"] = cols
         r["isort"] = isort
 
-    elif mapping == "layers":
-        acs = np.array(br.id2acronym(r["ids"], mapping="Allen"))
-        regs0 = Counter(acs)
-        regs = [reg for reg in regs0 if reg[-1].isdigit()]
-        for reg in regs:
-            acs[acs == reg] = reg[-1]
-        names = dict(zip(regs0, [get_name(reg) for reg in regs0]))
-        thal = {x: names[x] for x in names if "thala" in names[x]}
-        for reg in thal:
-            acs[acs == reg] = "thal"
-        mask = np.array([(x.isdigit() or x == "thal") for x in acs])
-        acs[~mask] = "~layer"
-        cols = np.array([pal[reg] for reg in acs])
-        regsC = Counter(acs)
-        r["els"] = [
-            Line2D([0], [0], color=pal[reg], lw=4, label=f"{reg} {regsC[reg]}")
-            for reg in regsC
-        ]
-        r["acs"] = acs
-        r["cols"] = cols
-
-    elif mapping == "fr":
-        acs = np.array(br.id2acronym(r["ids"], mapping="Beryl"))
-        scaled = r["fr"] ** 0.1
-        norm = Normalize(vmin=scaled.min(), vmax=scaled.max())
-        cmap = cm.get_cmap("magma")
-        r["acs"] = acs
-        r["cols"] = cmap(norm(scaled))
-
-    elif mapping == "lz":
-        acs = np.array(br.id2acronym(r["ids"], mapping="Beryl"))
-        scaled = r["lz"] ** 0.1
-        norm = Normalize(vmin=scaled.min(), vmax=scaled.max())
-        cmap = cm.get_cmap("cividis")
-        r["acs"] = acs
-        r["cols"] = cmap(norm(scaled))
-
     elif mapping == "kmeans":
-        feat_fit = "concat_z_train" if cv else feat_key
+        feat_fit = feat_key_map if synthetic else ("concat_z_train" if cv else feat_key_map)
         if feat_fit not in r:
             raise KeyError(f"Feature '{feat_fit}' not found in stack.")
 
@@ -1124,6 +1285,10 @@ def regional_group(
                     and cached.get("order_sig") == r["_order_signature"]
                     and cached.get("feat_fit") == feat_fit
                     and cached.get("nclus") == nclus
+                    and cached.get("synthetic") == bool(synthetic)
+                    and cached.get("zsc") == bool(zsc)
+                    and (cached.get("nclus_s") == nclus_s if synthetic else True)
+                    and (cached.get("syn_control") == bool(syn_control) if synthetic else True)
                     and "kmeans_labels" in cached
                 ):
                     clusters = np.asarray(cached["kmeans_labels"], dtype=int).reshape(-1)
@@ -1136,10 +1301,13 @@ def regional_group(
                 clusters = None
 
         if clusters is None:
-            print(f"[kmeans] fitting (n={nclus}) on {feat_fit} (cv={cv})")
+            print(
+                f"[kmeans] fitting (n={nclus}) on {feat_fit} "
+                f"(cv={cv}, synthetic={synthetic}, nclus_s={nclus_s}, syn_control={syn_control}, zsc={zsc})"
+            )
             km = KMeans(n_clusters=nclus, random_state=0)
-            km.fit(r[feat_fit])
-            clusters = km.predict(r[feat_key]).astype(int)
+            km.fit(np.asarray(r[feat_fit], dtype=float))
+            clusters = km.predict(np.asarray(r[feat_key_map], dtype=float)).astype(int)
 
             if clusters.shape[0] != n_rows:
                 raise ValueError("KMeans labels do not match data length.")
@@ -1151,6 +1319,10 @@ def regional_group(
                     "order_sig": r["_order_signature"],
                     "feat_fit": feat_fit,
                     "nclus": nclus,
+                    "synthetic": bool(synthetic),
+                    "zsc": bool(zsc),
+                    "nclus_s": int(nclus_s) if synthetic else None,
+                    "syn_control": bool(syn_control) if synthetic else None,
                 },
                 allow_pickle=True,
             )
@@ -1168,25 +1340,38 @@ def regional_group(
         r["acs"] = clusters
         r["cols"] = cols
 
+        # If synthetic and mapping == 'kmeans', also run Rastermap on synthetic data and attach isort/rm_labels.
+        if synthetic:
+            rm_cache_path = _cache_path("rm")
+            labels_rm, isort_rm = _load_rm_cache(rm_cache_path, n_rows)
+            if labels_rm is None or isort_rm is None:
+                labels_rm, isort_rm = _compute_and_save_rm(rm_cache_path, feat_key_map, n_rows)
+            r["isort"] = isort_rm
+            r["rm_labels"] = labels_rm
+
     else:
         acs = np.array(br.id2acronym(r["ids"], mapping=mapping))
         cols = np.array([pal[reg] for reg in acs])
         r["acs"] = acs
         r["cols"] = cols
 
-    # ---------- attach/ensure Rastermap isort for non-rm mappings when requested ----------
+    # ---------------- attach/ensure Rastermap isort for non-rm mappings when requested ----------------
     if mapping != "rm" and nclus_rm != 100:
         rm_cache_path = _cache_path("rm")
         labels_rm, isort_rm = _load_rm_cache(rm_cache_path, n_rows)
-
         if labels_rm is None or isort_rm is None:
-            # Per your request: if no cache exists, compute+save (same as rm branch)
-            feat_used = "concat_z_train" if cv else feat_key
+            feat_used = feat_key_map if synthetic else ("concat_z_train" if cv else feat_key_map)
             labels_rm, isort_rm = _compute_and_save_rm(rm_cache_path, feat_used, n_rows)
-
         r["isort"] = isort_rm
 
+    r["_feat_map"] = feat_key_map
+    r["_zsc"] = bool(zsc)
     return r
+
+
+
+
+
 
 
 def get_umap_dist(rerun=False, algo='umap_z', 
@@ -1956,6 +2141,7 @@ def stack_concat(
             return
 
         r["fr"] = np.array([np.mean(x) for x in cs], dtype=np.float32)
+        r["concat"] = cs
 
         # IMPORTANT: define concat_z before using it
         r["concat_z"] = zscore(cs, axis=1) if cs.size else cs
@@ -2122,124 +2308,179 @@ def stack_concat(
 '''
         
 
-def plot_dim_reduction(algo='umap_z', mapping='rm', ephys=False,
-                       feat='concat_z', means=False, exa=False, shuf=False,
-                       exa_squ=False, vers='concat', ax=None, ds=0.5,
-                       axx=None, exa_kmeans=False, leg=False, restr=None,
-                       nclus=7, rerun=False, cv=True, save_only=False):
+def plot_dim_reduction(
+    algo: str = "umap_z",
+    mapping: str = "rm",
+    ephys: bool = False,
+    feat: str = "concat_z",
+    means: bool = False,
+    exa: bool = False,
+    shuf: bool = False,
+    exa_squ: bool = False,
+    vers: str = "concat",
+    ax=None,
+    ds: float = 0.5,
+    axx=None,
+    exa_kmeans: bool = False,
+    leg: bool = False,
+    restr=None,
+    nclus: int = 7,
+    nclus_rm: int = 100,          # NEW (matches regional_group)
+    nclus_s: int = 20,            # NEW (synthetic basis size)
+    rerun: bool = False,
+    cv: bool = True,
+    synthetic: bool = False,      # NEW
+    syn_control: bool = False,    # NEW
+    save_only: bool = False,
+):
     """
     2D embedding (e.g., UMAP) colored by mapping.
     Segment boundaries/labels are taken from r['len'] (ordered) and r['peth_dict'].
+
+    Updated for latest `regional_group` signature:
+      - supports nclus_rm, nclus_s, synthetic, syn_control
+      - uses the correct feature key automatically in synthetic mode:
+          * real features live in r['concat_z']
+          * synthetic features live in r['concat_zs']
     """
 
     if save_only:
         plt.ioff()
 
+    # --- load result dict ---
+    r = regional_group(
+        mapping=mapping,
+        vers=vers,
+        ephys=ephys,
+        nclus=nclus,
+        nclus_rm=nclus_rm,
+        nclus_s=nclus_s,
+        cv=cv,
+        rerun=rerun,
+        synthetic=synthetic,
+        syn_control=syn_control,
+    )
 
-    # --- load result dict with the exact data-derived order/labels ---
-    r = regional_group(mapping, vers=vers, ephys=ephys,
-                       nclus=nclus, rerun=rerun, cv=cv)
-
-    if feat not in r:
-        raise KeyError(f"Feature '{feat}' not found.")
+    # --- choose feature key (real vs synthetic) ---
+    feat_key = "concat_zs" if synthetic else feat
+    if feat_key not in r:
+        raise KeyError(f"Feature '{feat_key}' not found in regional_group output.")
     if algo not in r:
-        raise KeyError(f"Embedding '{algo}' not found.")
+        raise KeyError(f"Embedding '{algo}' not found in regional_group output.")
 
-    print(len(r['concat_z']), 'cells in', mapping, vers)
+    print(len(r[feat_key]), "cells in", mapping, vers, f"(synthetic={synthetic})")
 
     # --- axes ---
     alone = False
+    fig = None
     if ax is None:
         alone = True
-        fig, ax = plt.subplots(label=f'{vers}_{mapping}')
-
+        fig, ax = plt.subplots(label=f"{vers}_{mapping}")
 
     # --- optional color shuffle ---
     if shuf:
-        shuffle(r['cols'])
+        np.random.default_rng(0).shuffle(r["cols"])
 
     # --- scatter ---
     if restr:
-        ff = np.bitwise_or.reduce([r['acs'] == reg for reg in restr])
-        im = ax.scatter(r[algo][:, 0][ff], r[algo][:, 1][ff],
-                        marker='o', c=r['cols'][ff], s=ds, rasterized=True)
+        # NOTE: in latest structure r['acs'] can be str (regions) or int (clusters)
+        # If restr is provided for non-region mappings, caller must pass matching labels.
+        ff = np.bitwise_or.reduce([r["acs"] == reg for reg in restr])
+        im = ax.scatter(
+            r[algo][:, 0][ff], r[algo][:, 1][ff],
+            marker="o", c=r["cols"][ff], s=ds, rasterized=True
+        )
     else:
-        im = ax.scatter(r[algo][:, 0], r[algo][:, 1],
-                        marker='o', c=r['cols'], s=ds, rasterized=True)
+        im = ax.scatter(
+            r[algo][:, 0], r[algo][:, 1],
+            marker="o", c=r["cols"], s=ds, rasterized=True
+        )
 
     # --- means overlay ---
     if means:
-        regs = list(Counter(r['acs']))
-        r['av'] = {reg: [np.mean(r[algo][r['acs'] == reg], axis=0), pal[reg]] for reg in regs}
-        emb1 = [r['av'][reg][0][0] for reg in r['av']]
-        emb2 = [r['av'][reg][0][1] for reg in r['av']]
-        cs = [r['av'][reg][1] for reg in r['av']]
-        ax.scatter(emb1, emb2, marker='o', facecolors='none',
-                   edgecolors=cs, s=600, linewidths=4, rasterized=True)
+        regs = list(Counter(r["acs"]))
+        # robust color assignment:
+        # - if mapping is region-like, pal[reg] exists
+        # - otherwise fall back to tab20 cycle
+        cmap = mpl.colormaps["tab20"]
 
-    # --- cosmetics ---
-    ax.set_title(f'z-score: {algo == "umap_z"}') if alone else None
-    ax.axis('off')
+        def _mean_color(reg):
+            try:
+                return pal[reg]
+            except Exception:
+                try:
+                    return cmap(int(reg) % 20)
+                except Exception:
+                    return "k"
+
+        r["av"] = {reg: [np.mean(r[algo][r["acs"] == reg], axis=0), _mean_color(reg)] for reg in regs}
+        emb1 = [r["av"][reg][0][0] for reg in r["av"]]
+        emb2 = [r["av"][reg][0][1] for reg in r["av"]]
+        cs = [r["av"][reg][1] for reg in r["av"]]
+        ax.scatter(
+            emb1, emb2, marker="o", facecolors="none",
+            edgecolors=cs, s=600, linewidths=4, rasterized=True
+        )
+
+    ax.axis("off")
 
     # --- legend/colorbar ---
-    if mapping in ['layers', 'kmeans']:
-        if leg and ('els' in r):
-            ax.legend(handles=r['els'], ncols=1, frameon=False).set_draggable(True)
-    elif 'clusters' in mapping:
-        nclus_dyn = len(Counter(r['acs']))
+    if mapping in ["layers", "kmeans", "rm"]:
+        if leg and ("els" in r):
+            ax.legend(handles=r["els"], ncols=1, frameon=False).set_draggable(True)
+
+    # (keep your old "clusters" colorbar behavior if you still use those mapping names)
+    if isinstance(mapping, str) and ("clusters" in mapping) and (fig is not None):
+        nclus_dyn = len(Counter(r["acs"]))
         cax = fig.add_axes([0.27, 0.2, 0.5, 0.01])
         norm = mpl.colors.Normalize(vmin=0, vmax=nclus_dyn)
-        cmap = mpl.cm.get_cmap('Spectral')
-        fig.colorbar(mpl.cm.ScalarMappable(norm=norm, cmap=cmap),
-                     cax=cax, orientation='horizontal')
+        cmap = mpl.cm.get_cmap("Spectral")
+        fig.colorbar(mpl.cm.ScalarMappable(norm=norm, cmap=cmap), cax=cax, orientation="horizontal")
 
     # --- save main figure ---
     if alone:
         fig.tight_layout()
 
-
-                # --- SET ACTUAL WINDOW TITLE WITH nclus ---
         try:
             fig.canvas.manager.set_window_title(
-                f"umap | {algo} | {mapping} | nclus={nclus} | cv={int(cv)} | {vers}"
+                f"{algo} | {mapping} | nclus={nclus} | nclus_rm={nclus_rm} | "
+                f"cv={int(cv)}"
             )
         except Exception:
             pass
 
-        out = Path(one.cache_dir, 'dmn', 'imgs', f'{nclus}_{mapping}_umap_cv{cv}.png')
+        out = Path(one.cache_dir, "dmn", "imgs",
+                   f"{nclus}_{mapping}_{algo}_cv{int(cv)}_syn{int(synthetic)}.png")
         fig.savefig(out, dpi=150)
         if save_only:
             plt.close(fig)
-            
 
-    # --- interactive example ---
+    # --- interactive example (click a point -> plot its trace) ---
     if exa:
         fig_extra, ax_extra = plt.subplots()
-        line, = ax_extra.plot(r[feat][0], label='Extra Line Plot')
+        line, = ax_extra.plot(r[feat_key][0], label="Extra Line Plot")
+
+        # Use a fast nearest-neighbor in embedding space instead of exact coordinate matching
+        emb = np.asarray(r[algo], dtype=float)
 
         def update_line(event):
-            if event.mouseevent.inaxes == ax:
-                x_clicked = event.mouseevent.xdata
-                y_clicked = event.mouseevent.ydata
-                selected_point = None
-                for key, emb in zip(r['nums'], r[algo]):
-                    if (abs(emb[0] - x_clicked) < 0.01 and
-                        abs(emb[1] - y_clicked) < 0.01):
-                        selected_point = key
-                        break
-                if selected_point is not None:
-                    line.set_data(T_BIN * np.arange(len(r[feat][selected_point])),
-                                  r[feat][selected_point])
-                    ax_extra.relim(); ax_extra.autoscale_view()
-                    ax_extra.set_ylabel(feat); ax_extra.set_xlabel('time [sec]')
-                    ax_extra.set_title(
-                        f'Line Plot at ({np.round(x_clicked,2)}, {np.round(y_clicked,2)})')
-                    fig_extra.canvas.draw()
+            if event.mouseevent.inaxes != ax:
+                return
+            x_clicked = float(event.mouseevent.xdata)
+            y_clicked = float(event.mouseevent.ydata)
+            d2 = (emb[:, 0] - x_clicked) ** 2 + (emb[:, 1] - y_clicked) ** 2
+            pt = int(np.argmin(d2))
 
+            line.set_data(T_BIN * np.arange(len(r[feat_key][pt])), r[feat_key][pt])
+            ax_extra.relim()
+            ax_extra.autoscale_view()
+            ax_extra.set_ylabel(feat_key)
+            ax_extra.set_xlabel("time [sec]")
+            ax_extra.set_title(f"Trace for neuron idx={pt}")
+            fig_extra.canvas.draw_idle()
 
-
-        fig.canvas.mpl_connect('pick_event', update_line)
-        im.set_picker(5)
+        fig.canvas.mpl_connect("button_press_event", update_line)
+        im.set_picker(True)
 
     # --- cluster mean PETHs (uses r['len'] + r['peth_dict']) ---
     if exa_kmeans:
@@ -2308,6 +2549,8 @@ def plot_dim_reduction(algo='umap_z', mapping='rm', ephys=False,
                 h += seg_len
     plt.show()
     #plt.close('all')
+    
+
 
 
 
@@ -2315,7 +2558,7 @@ def plot_cluster_mean_PETHs(
     r, mapping, feat, vers='concat',
     axx=None, alone=True,
     extraclus=None,  # NEW: list of cluster IDs to overlay
-):
+cv=True):
     """
     Plot mean PETH per cluster using the segment order/labels from the data file.
 
@@ -2473,7 +2716,7 @@ def plot_cluster_mean_PETHs(
     # add information in figure window title
     fg = plt.gcf()
     fg.canvas.manager.set_window_title(
-        f"Avg | {feat} | {mapping} | nclus={n_clu}")
+        f"{feat} | {mapping} | nclus={n_clu} | cv={int(cv)} | {vers}")
 
     plt.show()
 
@@ -2699,10 +2942,15 @@ def _build_event_stats(rerun=False):
 
 
 def plot_ave_PETHs(feat='concat_z', vers='concat',
-                   rerun=False, anno=True, separate_cols=False, cv=True):
+                   rerun=False, anno=True, separate_cols=False, cv=False):
     """
-    Average PETHs across cells and plot.
+    Average PETHs across all cells and plot.
     Critically: segment order and labels come from the data file (r['len'], r['peth_dict']).
+
+    Update:
+      - Two panels:
+        (top) existing time-aligned PETH plot
+        (bottom) mean concatenated feature vector with dotted borders + PETH names
     """
 
     # mean timing between task events (unchanged)
@@ -2711,7 +2959,7 @@ def plot_ave_PETHs(feat='concat_z', vers='concat',
            'feedback_times': 'orange'}
 
     # === Load combined matrix first (so we can get pids/eids from r) ===
-    r = regional_group('rm',cv=cv)
+    r = regional_group('rm', cv=cv)
 
     # now build stats using only eids present in r
     d = _build_event_stats()
@@ -2721,16 +2969,14 @@ def plot_ave_PETHs(feat='concat_z', vers='concat',
 
     r['mean'] = np.mean(r[feat], axis=0)
 
-    # get alignement event per PETH from example session
-    tts = concat_PETHs('8d661567-49f3-4547-997d-a345c0ffe2dd',get_tts=True)
-    align_dict = {k: [tts[k][0],tts[k][-1]] for k in tts.keys()}
+    # get alignment event per PETH from example session
+    tts = concat_PETHs('8d661567-49f3-4547-997d-a345c0ffe2dd', get_tts=True)
+    align_dict = {k: [tts[k][0], tts[k][-1]] for k in tts.keys()}
+
     # anchors for events relative to stimOn (stimOn = 0)
     stim_anchor = 0.0
     move_anchor = float(d['av_times']['firstMovement_times'][0])
     fb_anchor   = float(d['av_times']['feedback_times'][0])
-
-    # plotting
-    fig, ax = plt.subplots(figsize=(7, 2.75))
 
     # segment order & labels
     ordered_segments = list(r['len'].keys())
@@ -2744,41 +2990,33 @@ def plot_ave_PETHs(feat='concat_z', vers='concat',
     else:
         colors = itertools.cycle(['k'])
 
+    # =======================
+    # FIGURE 1: time-aligned PETHs
+    # =======================
+    fig1, ax = plt.subplots(figsize=(7, 2.75))
+    plt.ion()
+
     yys = []
     st = 0  # index into the concatenated feature dimension
 
     for seg in ordered_segments:
         seg_len = int(r['len'][seg])
-
-        # mean activity for this segment
         yy = r['mean'][st: st + seg_len]
         st += seg_len
 
-        # skip if we don't know how this segment is aligned
         if seg not in align_dict:
             continue
 
         align_event, window = align_dict[seg]
         window = np.asarray(window, dtype=float).ravel()
         if window.size != 2:
-            # malformed window spec
             continue
 
         pre_mag, offset_signed = float(window[0]), float(window[1])
-
-        # window length in seconds, as you specified
-        window_len_sec = pre_mag + offset_signed
-
-        # time axis RELATIVE TO THE ALIGNMENT EVENT:
-        # infer start/end relative to event from pre_mag and offset_signed
         start_rel_event = -pre_mag
         end_rel_event   = offset_signed
-
-        # build segment time axis in seconds (seg_len bins)
-        # (this ensures that the total span equals window_len_sec)
         t_rel = np.linspace(start_rel_event, end_rel_event, seg_len)
 
-        # anchor in global time (stimOn = 0)
         if align_event == 'stimOn_times':
             t_anchor = stim_anchor
         elif align_event == 'firstMovement_times':
@@ -2786,21 +3024,16 @@ def plot_ave_PETHs(feat='concat_z', vers='concat',
         elif align_event == 'feedback_times':
             t_anchor = fb_anchor
         else:
-            # nothing to do for unknown anchor
             continue
 
-        # global time axis for this segment
         xx = t_rel + t_anchor
-
-        # (defensive) shape consistency
-        if xx.shape[0] != yy.shape[0]:
-            L = min(xx.shape[0], yy.shape[0])
-            xx = xx[:L]
-            yy = yy[:L]
+        L = min(xx.size, yy.size)
+        xx, yy = xx[:L], yy[:L]
 
         color = next(colors)
         yys.append(np.nanmax(yy))
-        ax.plot(xx, yy, label=seg, color=color)
+        ax.plot(xx, yy, color=color)
+
         if anno:
             ax.annotate(
                 labels.get(seg, seg),
@@ -2809,21 +3042,20 @@ def plot_ave_PETHs(feat='concat_z', vers='concat',
                 fontsize=8,
             )
 
-    # event lines at their mean times
-    ymax = max(yys) if len(yys) > 0 else 1.0
+    ymax = max(yys) if yys else 1.0
     for ev, col in evs.items():
         if ev not in d['av_times']:
             continue
         t_ev = float(d['av_times'][ev][0])
-        ax.axvline(x=t_ev, label=ev, color=col, linestyle='-')
+        ax.axvline(x=t_ev, color=col)
         if anno:
             ax.annotate(
                 ev,
                 (t_ev, 0.8 * ymax),
                 color=col,
                 rotation=90,
-                textcoords='offset points',
                 xytext=(-15, 0),
+                textcoords='offset points',
                 fontsize=8,
             )
 
@@ -2831,8 +3063,62 @@ def plot_ave_PETHs(feat='concat_z', vers='concat',
     ax.spines['top'].set_visible(False)
     ax.set_xlabel('time [sec]')
     ax.set_ylabel('trial-averaged z')
-    fig.canvas.manager.set_window_title('PETHs averaged across all BWM cells')
-    fig.tight_layout()
+    fig1.canvas.manager.set_window_title('PETHs averaged across all BWM cells')
+    fig1.tight_layout()
+    fig1.savefig(Path(one.cache_dir, 'dmn', 'figs', 'mean_time_aligned_PETHs.svg'),
+                 format='svg', dpi=300, bbox_inches='tight')
+
+    plt.show()
+
+      # =======================
+    # FIGURE 2: concatenated mean feature vector
+    # =======================
+    fig2, ax2 = plt.subplots(figsize=(7, 1.1))
+
+    mean_vec = np.asarray(r['mean'], dtype=float).ravel()
+    x_feat = np.arange(mean_vec.size)
+    ax2.plot(x_feat, mean_vec, color='k', linewidth=1.0)
+
+    st = 0
+    y_top = np.nanmax(mean_vec) if np.isfinite(np.nanmax(mean_vec)) else 1.0
+    y_text = y_top + 0.03 * (y_top if y_top != 0 else 1.0)
+
+    for seg in ordered_segments:
+        seg_len = int(r['len'][seg])
+        lo, hi = st, st + seg_len
+
+        ax2.axvline(lo, linestyle=':', linewidth=0.8, color='k')
+
+        xm = 0.5 * (lo + hi - 1)
+        ax2.text(
+            xm, y_text, labels.get(seg, seg),
+            ha='left', va='bottom',
+            fontsize=8,
+            rotation=45,
+            rotation_mode='anchor',
+            clip_on=False,
+        )
+
+        st = hi
+
+    ax2.axvline(mean_vec.size, linestyle=':', linewidth=0.8, color='k')
+
+    # remove x-axis entirely
+    ax2.set_xticks([])
+    ax2.set_xlabel('')
+    ax2.spines['bottom'].set_visible(False)
+
+    ax2.spines['right'].set_visible(False)
+    ax2.spines['top'].set_visible(False)
+    ax2.set_xlim(0, max(mean_vec.size - 1, 1))
+    ax2.set_ylabel('mean', fontsize=8)
+
+    fig2.canvas.manager.set_window_title('Concatenated mean feature vector')
+    fig2.tight_layout()
+    fig2.savefig(Path(one.cache_dir, 'dmn', 'figs', 'mean_concat_feature_vector.svg'),
+                 format='svg', dpi=300, bbox_inches='tight')      
+
+
 
 
 
@@ -2844,7 +3130,6 @@ def plot_xyz(
     ax=None,
     axoff: bool = True,
     exa: bool = True,
-    combine_mistake: bool = False,
     ephys: bool = False,
     nclus: int = 7,
     nclus_rm: int = 100,   # NEW: forwarded to regional_group (RM cache + optional isort attach logic)
@@ -2877,7 +3162,6 @@ def plot_xyz(
         nclus=int(nclus),
         nclus_rm=int(nclus_rm),
         cv=cv,
-        combine_mistake=combine_mistake,
     )
 
     # If mapping corresponds to a single PETH (or group), color by ranking if available
@@ -3825,24 +4109,22 @@ def _draw_peth_boundaries(ax, r, vers, yy_max, c_sec):
 def plot_example_neurons(
         n: int,
         vers: str = 'concat',
-        mapping: str = 'rm',
+        mapping: str = 'kmeans',
         seed: Optional[int] = None,
         max_categories: int = 101,
         offset_scale: float = 4.0,
         linewidth: float = 1.3,
         savefig: bool = True,
-        save_formats: tuple = ('png',),
+        save_formats: tuple = ('svg',),
         dpi: int = 200,
         show: bool = True,
         annotate: bool = True,
         label_key: str = 'Beryl',
         label_fontsize: int = 8,
         label_pad_frac: float = 0.01,
-        nclus: int = 7,
+        nclus: int = 25,
         cv: bool = False,
-        # new: choose one cluster or all
         sing_clus: Union[bool, int] = False,
-        # --- NEW ARGUMENTS ---
         no_filts=False,
         min_max_fr: Optional[Tuple[float, float]] = (0.1, 100),
         min_max_lz: Optional[Tuple[float, float]] = (0.0, 0.6),
@@ -4365,9 +4647,10 @@ def var_expl(minreg=20):
     
 def clus_freqs(
     foc="Beryl",
-    clustering = "rm",
+    clustering="kmeans",
     nmin=50,
-    nclus=20, # had peak for kmeans at 8
+    nclus=12,
+    nclus_rm=100,  # had peak for kmeans at 8
     vers="concat",
     get_res=False,
     rerun=False,
@@ -4384,14 +4667,19 @@ def clus_freqs(
     """
     Plot or compute frequencies.
 
-    foc: 'rm', 'Beryl', 'dec'
-    get_res: return results dict (and optionally load cached if present)
+    foc: 'clustering', 'Beryl', 'dec'
+    get_res: if True, DO NOT generate plots; just compute d, save (if save_=True) and return d.
     norm_: normalize distributions to sum to 1 (when denominator > 0)
-    save_: save results + figures
+    save_: save results (and figures only if plots are generated)
     single_regions: list of region acronyms to plot separately (only for foc in {'Beryl','dec'})
     axs: optional axes array to draw into (only supported for foc in {'Beryl','dec'}).
     cv: passed through to regional_group(...)
+
+    single_regions = ['PA','PAA','MOB','MEA','MRN',
+                      'SCm','PRNr', 'PGRN']
     """
+
+    plt.ion()
 
     # ---- defaults / guardrails ----
     if single_regions is None:
@@ -4407,14 +4695,25 @@ def clus_freqs(
     if pal is None:
         pal = globals().get("pal", {})  # allow missing; will fall back to black
 
-    if foc not in ('clustering', "Beryl", "dec"):
+    if foc not in ("clustering", "Beryl", "dec"):
         raise ValueError("foc must be one of {'clustering','Beryl','dec'}")
 
     # whether we created the figure/axes internally
     created_axes = axs is None
 
-    # cache path
-    pthres = Path(pth_dmn.parent, f"nclus{nclus}_{foc}_{clustering}_nrm_{norm_}_cv{cv}.npy")
+    single_tag = "all" if (single_regions is None or len(single_regions) == 0) else f"sr{len(single_regions)}"
+    pthres = Path(
+        pth_dmn, "counts",
+        f"cf_{foc}_{vers}"
+        f"_cv{cv}"
+        f"_clust{clustering}"
+        f"_n{int(nclus)}"
+        f"_nrm{int(nclus_rm)}"
+        f"_nmin{int(nmin)}"
+        f"_norm{int(bool(norm_))}"
+        f"_{single_tag}"
+        ".npy"
+    )
 
     # fast path: load cached results
     if get_res and (not rerun) and pthres.is_file():
@@ -4422,7 +4721,8 @@ def clus_freqs(
 
     # ---- load / compute assignments ----
     r_a = regional_group("Beryl", vers=vers, nclus=nclus, cv=cv)
-    r_k = regional_group(clustering, vers=vers, nclus=nclus, cv=cv)
+    r_k = regional_group(clustering, vers=vers, nclus=nclus,
+                         nclus_rm=nclus_rm, cv=cv)
 
     # sanity: arrays must align if we’re mixing them cell-wise
     if len(r_a.get("acs", [])) != len(r_k.get("acs", [])):
@@ -4442,7 +4742,6 @@ def clus_freqs(
     # foc == 'clustering'
     # =========================
     if foc == "clustering":
-        # Note: external axs not supported here (original code overwrote axs anyway)
         # cluster ids -> int (robust)
         clus_ids = np.asarray(r_k["acs"])
         try:
@@ -4451,19 +4750,6 @@ def clus_freqs(
             clus_ids_int = np.array([int(x) for x in clus_ids])
 
         cluss = np.unique(clus_ids_int)
-
-        fig, axs_local = plt.subplots(
-            nrows=len(cluss),
-            ncols=1,
-            figsize=(18.79, 15),
-            sharex=True,
-            sharey=True if norm_ else False,
-        )
-        axs_local = np.atleast_1d(axs_local)
-
-        fig.canvas.manager.set_window_title(
-            f"Frequency of Beryl region label per {clustering} cluster ({nclus}); vers={vers}"
-        )
 
         # region -> color mapping from r_a once (first occurrence wins)
         cols_dict = {}
@@ -4476,49 +4762,66 @@ def clus_freqs(
 
         acs_a = np.asarray(r_a["acs"])
 
-        for k, clus in enumerate(cluss):
+        for clus in cluss:
             mask = (clus_ids_int == clus)
             counts = Counter(acs_a[mask])
 
             reg_order = {reg: counts.get(reg, 0) for reg in reg_ord}
-            labels = list(reg_order.keys())
             values = np.array(list(reg_order.values()), float)
 
             den = float(values.sum())
             if norm_ and den > 0:
                 values = values / den
 
-            x = np.arange(len(labels))
-            colors = [cols_dict.get(lab, "k") for lab in labels]
-            bars = axs_local[k].bar(x, values, color=colors)
-
-            axs_local[k].set_ylabel(f"clus {int(clus)}")
-            axs_local[k].set_xticks(x)
-            axs_local[k].set_xticklabels(labels, rotation=90, fontsize=6)
-
-            for ticklabel, bar in zip(axs_local[k].get_xticklabels(), bars):
-                ticklabel.set_color(bar.get_facecolor())
-
-            axs_local[k].set_xlim(-0.5, len(labels) - 0.5)
-            axs_local[k].spines["top"].set_visible(False)
-            axs_local[k].spines["right"].set_visible(False)
-
             d[int(clus)] = values.tolist()
 
-        # hide empty axes (robust)
-        for ax in axs_local:
-            if not ax.has_data():
-                ax.set_visible(False)
+        if not get_res:
+            fig, axs_local = plt.subplots(
+                nrows=len(cluss),
+                ncols=1,
+                figsize=(18.79, 15) if single_regions is None else [1.97, 3.12],
+                sharex=True,
+                sharey=True if norm_ else False,
+            )
+            axs_local = np.atleast_1d(axs_local)
 
-        fig.tight_layout()
-        fig.subplots_adjust(
-            top=0.951,
-            bottom=0.059,
-            left=0.037,
-            right=0.992,
-            hspace=0.225,
-            wspace=0.2,
-        )
+            fig.canvas.manager.set_window_title(
+                f"Frequency of Beryl region label per {clustering} cluster ({nclus}); vers={vers}"
+            )
+
+            for k, clus in enumerate(cluss):
+                labels = reg_ord
+                values = np.asarray(d[int(clus)], float)
+
+                x = np.arange(len(labels))
+                colors = [cols_dict.get(lab, "k") for lab in labels]
+                bars = axs_local[k].bar(x, values, color=colors)
+
+                axs_local[k].set_ylabel(f"clus {int(clus)}")
+                axs_local[k].set_xticks(x)
+                axs_local[k].set_xticklabels(labels, rotation=90, fontsize=6)
+
+                for ticklabel, bar in zip(axs_local[k].get_xticklabels(), bars):
+                    ticklabel.set_color(bar.get_facecolor())
+
+                axs_local[k].set_xlim(-0.5, len(labels) - 0.5)
+                axs_local[k].spines["top"].set_visible(False)
+                axs_local[k].spines["right"].set_visible(False)
+
+            # hide empty axes (robust)
+            for ax in axs_local:
+                if not ax.has_data():
+                    ax.set_visible(False)
+
+            fig.tight_layout()
+            fig.subplots_adjust(
+                top=0.951,
+                bottom=0.059,
+                left=0.037,
+                right=0.992,
+                hspace=0.225,
+                wspace=0.2,
+            )
 
     # =========================
     # foc == 'Beryl'
@@ -4527,28 +4830,11 @@ def clus_freqs(
         # Determine which regions to plot
         if single_regions:
             reg_ord = [reg for reg in single_regions if reg in set(r_a["acs"])]
-            # print kept as in original spirit; remove if undesired
             print(f"Plotting {len(reg_ord)} selected regions (single_regions)")
         else:
             regs_ = Counter(r_a["acs"])
             reg_ord = [reg for reg in regs_can if reg in regs_ and regs_[reg] >= nmin]
             print(f"{len(reg_ord)} regions with at least {nmin} cells")
-
-        ncols = int((len(reg_ord) ** 0.5) + 0.999) if len(reg_ord) else 1
-        nrows = (len(reg_ord) + ncols - 1) // ncols if len(reg_ord) else 1
-
-        if created_axes:
-            fig, axs = plt.subplots(
-                nrows=nrows,
-                ncols=ncols,
-                figsize=(18.79, 15),
-                sharex=True,
-                sharey=True if norm_ else False,
-            )
-            axs = np.ravel(axs)
-        else:
-            axs = np.ravel(axs)
-            fig = axs[0].figure
 
         # normalize cluster ids -> int and build color map
         clus_ids = np.asarray(r_k["acs"])
@@ -4564,7 +4850,6 @@ def clus_freqs(
 
         cols_dict = {}
         for cid in np.unique(clus_ids_int):
-            # find first occurrence for color
             idx = np.where(clus_ids_int == cid)[0]
             if len(idx):
                 cols_dict[int(cid)] = clus_cols[idx[0]]
@@ -4572,61 +4857,111 @@ def clus_freqs(
         acs_a = np.asarray(r_a["acs"])
         acs_k_int = clus_ids_int  # aligned by construction
 
-        for k, reg in enumerate(reg_ord):
-            if k >= len(axs):
-                break
-
+        for reg in reg_ord:
             counts = Counter(acs_k_int[acs_a == reg])
 
-            # full cluster order
             values = np.array([counts.get(clus, 0) for clus in cluss], dtype=float)
             den = float(values.sum())
             if norm_ and den > 0:
                 values = values / den
 
-            labels = cluss
-            colors = (
-                [cols_dict.get(int(label), "k") for label in labels]
-                if not single_regions
-                else ["k"] * len(labels)
-            )
-
             d[reg] = values.tolist()
 
-            bars = axs[k].bar(labels, values, color=colors)
+        if not get_res:
+            # --- LAYOUT RULE FOR single_regions ---
+            if single_regions:
+                ncols = 2
+                n = len(reg_ord)
+                nrows = max(4, int(np.ceil(n / 2))) if n else 4
+            else:
+                ncols = int((len(reg_ord) ** 0.5) + 0.999) if len(reg_ord) else 1
+                nrows = (len(reg_ord) + ncols - 1) // ncols if len(reg_ord) else 1
 
-            axs[k].text(
-                0.98,
-                0.98,
-                reg,
-                transform=axs[k].transAxes,
-                ha="right",
-                va="top",
-                fontsize=label_size * 2.5,
-                color=pal.get(reg, "k"),
-            )
+            if created_axes:
+                fig, axs_grid = plt.subplots(
+                    nrows=nrows,
+                    ncols=ncols,
+                    figsize=(18.79, 15) if single_regions is None else [1.97, 3.12],
+                    sharex=True,
+                    sharey=True if norm_ else False,
+                )
+                axs = np.ravel(axs_grid)
+            else:
+                axs = np.ravel(axs)
+                fig = axs[0].figure
 
-            axs[k].set_xticks(labels)
-            axs[k].set_xticklabels(labels, fontsize=8, rotation=90)
+            if single_regions:
+                n = len(reg_ord)
+                n1 = int(np.ceil(n / 2.0))
+                for k, reg in enumerate(reg_ord):
+                    col = 0 if k < n1 else 1
+                    row = k if k < n1 else (k - n1)
+                    ax_idx = row * ncols + col
+                    if ax_idx >= len(axs):
+                        break
 
-            if not single_regions:
-                for ticklabel, bar in zip(axs[k].get_xticklabels(), bars):
-                    ticklabel.set_color(bar.get_facecolor())
+                    values = np.asarray(d[reg], float)
+                    labels = cluss
+                    axs[ax_idx].bar(labels, values, color=["k"] * len(labels))
 
-            axs[k].set_xlim(min(labels) - 0.5 if labels else -0.5, (max(labels) + 0.5) if labels else 0.5)
-            axs[k].spines["top"].set_visible(False)
-            axs[k].spines["right"].set_visible(False)
+                    axs[ax_idx].text(
+                        0.98, 0.98, reg,
+                        transform=axs[ax_idx].transAxes,
+                        ha="right", va="top",
+                        fontsize=label_size * 2.5,
+                        color=pal.get(reg, "k"),
+                    )
 
-        # hide unused axes
-        for ax in axs:
-            if not ax.has_data():
-                ax.set_visible(False)
+                    axs[ax_idx].set_xticks(labels)
+                    axs[ax_idx].set_xticklabels(labels, fontsize=8, rotation=90)
 
-        if created_axes:
-            fig.canvas.manager.set_window_title(
-                f"Frequency of {clustering} cluster ({nclus}) per Beryl region label; vers={vers}"
-            )
-            fig.tight_layout()
+                    axs[ax_idx].set_xlim(
+                        (min(labels) - 0.5) if labels else -0.5,
+                        (max(labels) + 0.5) if labels else 0.5,
+                    )
+                    axs[ax_idx].spines["top"].set_visible(False)
+                    axs[ax_idx].spines["right"].set_visible(False)
+
+            else:
+                for k, reg in enumerate(reg_ord):
+                    if k >= len(axs):
+                        break
+
+                    values = np.asarray(d[reg], float)
+                    labels = cluss
+                    colors = [cols_dict.get(int(label), "k") for label in labels]
+                    bars = axs[k].bar(labels, values, color=colors)
+
+                    axs[k].text(
+                        0.98, 0.98, reg,
+                        transform=axs[k].transAxes,
+                        ha="right", va="top",
+                        fontsize=label_size * 2.5,
+                        color=pal.get(reg, "k"),
+                    )
+
+                    axs[k].set_xticks(labels)
+                    axs[k].set_xticklabels(labels, fontsize=8, rotation=90)
+
+                    for ticklabel, bar in zip(axs[k].get_xticklabels(), bars):
+                        ticklabel.set_color(bar.get_facecolor())
+
+                    axs[k].set_xlim(
+                        (min(labels) - 0.5) if labels else -0.5,
+                        (max(labels) + 0.5) if labels else 0.5,
+                    )
+                    axs[k].spines["top"].set_visible(False)
+                    axs[k].spines["right"].set_visible(False)
+
+            for ax in axs:
+                if not ax.has_data():
+                    ax.set_visible(False)
+
+            if created_axes:
+                fig.canvas.manager.set_window_title(
+                    f"Frequency of {clustering} cluster ({nclus}) per Beryl region label; vers={vers}"
+                )
+                fig.tight_layout()
 
     # =========================
     # foc == 'dec'
@@ -4641,88 +4976,122 @@ def clus_freqs(
             reg_ord = [reg for reg in regs_can if reg in d_src]
             print(f"{len(reg_ord)} regions")
 
-        ncols = int((len(reg_ord) ** 0.5) + 0.999) if len(reg_ord) else 1
-        nrows = (len(reg_ord) + ncols - 1) // ncols if len(reg_ord) else 1
-
-        if created_axes:
-            fig, axs = plt.subplots(
-                nrows=nrows,
-                ncols=ncols,
-                figsize=(18.79, 15),
-                sharex=True,
-                sharey=True if norm_ else False,
-            )
-            axs = np.ravel(axs)
-        else:
-            axs = np.ravel(axs)
-            fig = axs[0].figure
-
-        # use a colormap (avoid invalid color codes)
-        cmap = plt.get_cmap("tab10")
-
-        for k, reg in enumerate(reg_ord):
-            if k >= len(axs):
-                break
-
+        for reg in reg_ord:
             values = np.asarray(d_src[reg], dtype=float)
-            labels = list(range(len(values)))
-
             den = float(values.sum())
             if norm_ and den > 0:
                 values = values / den
-
-            if single_regions:
-                colors = ["k"] * len(labels)
-            else:
-                colors = [cmap(i % cmap.N) for i in labels]
-
-            axs[k].bar(labels, values, color=colors)
-
-            axs[k].text(
-                0.98,
-                0.98,
-                reg,
-                transform=axs[k].transAxes,
-                ha="right",
-                va="top",
-                fontsize=label_size * 2.5,
-                color=pal.get(reg, "k"),
-            )
-
-            axs[k].set_xticks(labels)
-            axs[k].set_xticklabels(labels, fontsize=8, rotation=90)
-
-            axs[k].set_xlim(-0.5, (len(labels) - 0.5) if labels else 0.5)
-            axs[k].spines["top"].set_visible(False)
-            axs[k].spines["right"].set_visible(False)
-
             d[reg] = values.tolist()
 
-        for ax in axs:
-            if not ax.has_data():
-                ax.set_visible(False)
+        if not get_res:
+            # --- MINIMAL CHANGE: reuse the same 2-col / column-wise layout when single_regions is used ---
+            if single_regions:
+                ncols = 2
+                n = len(reg_ord)
+                nrows = max(4, int(np.ceil(n / 2))) if n else 4
+            else:
+                ncols = int((len(reg_ord) ** 0.5) + 0.999) if len(reg_ord) else 1
+                nrows = (len(reg_ord) + ncols - 1) // ncols if len(reg_ord) else 1
 
-        if created_axes:
-            fig.canvas.manager.set_window_title(f"dec per Beryl region; vers={vers}")
-            fig.tight_layout()
+            if created_axes:
+                fig, axs_grid = plt.subplots(
+                    nrows=nrows,
+                    ncols=ncols,
+                    figsize=(18.79, 15) if single_regions is None else [1.97, 3.12],
+                    sharex=True,
+                    sharey=True if norm_ else False,
+                )
+                axs = np.ravel(axs_grid)
+            else:
+                axs = np.ravel(axs)
+                fig = axs[0].figure
+
+            cmap = plt.get_cmap("tab10")
+
+            if single_regions:
+                n = len(reg_ord)
+                n1 = int(np.ceil(n / 2.0))
+                for k, reg in enumerate(reg_ord):
+                    col = 0 if k < n1 else 1
+                    row = k if k < n1 else (k - n1)
+                    ax_idx = row * ncols + col
+                    if ax_idx >= len(axs):
+                        break
+
+                    values = np.asarray(d[reg], float)
+                    labels = list(range(len(values)))
+
+                    # keep "nice small" look: black bars for selected regions
+                    axs[ax_idx].bar(labels, values, color=["k"] * len(labels))
+
+                    axs[ax_idx].text(
+                        0.98, 0.98, reg,
+                        transform=axs[ax_idx].transAxes,
+                        ha="right", va="top",
+                        fontsize=label_size * 2.5,
+                        color=pal.get(reg, "k"),
+                    )
+
+                    axs[ax_idx].set_xticks(labels)
+                    axs[ax_idx].set_xticklabels(labels, fontsize=8, rotation=90)
+
+                    axs[ax_idx].set_xlim(-0.5, (len(labels) - 0.5) if labels else 0.5)
+                    axs[ax_idx].spines["top"].set_visible(False)
+                    axs[ax_idx].spines["right"].set_visible(False)
+
+            else:
+                for k, reg in enumerate(reg_ord):
+                    if k >= len(axs):
+                        break
+
+                    values = np.asarray(d[reg], float)
+                    labels = list(range(len(values)))
+                    colors = [cmap(i % cmap.N) for i in labels]
+
+                    axs[k].bar(labels, values, color=colors)
+
+                    axs[k].text(
+                        0.98, 0.98, reg,
+                        transform=axs[k].transAxes,
+                        ha="right", va="top",
+                        fontsize=label_size * 2.5,
+                        color=pal.get(reg, "k"),
+                    )
+
+                    axs[k].set_xticks(labels)
+                    axs[k].set_xticklabels(labels, fontsize=8, rotation=90)
+
+                    axs[k].set_xlim(-0.5, (len(labels) - 0.5) if labels else 0.5)
+                    axs[k].spines["top"].set_visible(False)
+                    axs[k].spines["right"].set_visible(False)
+
+            for ax in axs:
+                if not ax.has_data():
+                    ax.set_visible(False)
+
+            if created_axes:
+                fig.canvas.manager.set_window_title(f"dec per Beryl region; vers={vers}")
+                fig.tight_layout()
 
     # ---- save outputs ----
     if save_:
-        if fig is None:
-            # cannot save without a figure (happens if user passes axs=None but branch failed to create fig)
-            raise RuntimeError("save_=True but no figure is available to save.")
-
-        outdir = Path(pth_dmn.parent, "imgs")
-        outdir.mkdir(parents=True, exist_ok=True)
-
-        fig.tight_layout()
-        fig.savefig(outdir / f"{foc}_{clustering}_{nclus}_{vers}_nrm_{norm_}_cv{cv}.svg", dpi=150)
-        fig.savefig(outdir / f"{foc}_{clustering}_{nclus}_{vers}_nrm_{norm_}_cv{cv}.pdf", dpi=150)
-
+        Path(pthres).parent.mkdir(parents=True, exist_ok=True)
         np.save(pthres, d, allow_pickle=True)
+
+        if fig is not None:
+            outdir = Path(pth_dmn.parent, "imgs")
+            outdir.mkdir(parents=True, exist_ok=True)
+
+            fig.tight_layout()
+            fig.savefig(outdir / f"{foc}_{clustering}_{nclus}_{vers}_nrm_{norm_}_cv{cv}.svg", dpi=150)
+            fig.savefig(outdir / f"{foc}_{clustering}_{nclus}_{vers}_nrm_{norm_}_cv{cv}.pdf", dpi=150)
 
     if get_res:
         return d
+
+    plt.show()
+
+
 
 
 def has_data(ax):
@@ -4766,242 +5135,274 @@ def count_trials():
     ax.set_ylabel('percentage of insertions \n with trials for peth type')
     ax.set_xlabel('peth types')    
     
-    
-# def compare_two_goups(vers='concat', filt = 'VISp'):
-
-#     '''
-#     compare average feature vector for two groups of cells
-#     '''
-
-#     r = regional_group('Beryl', vers=vers)        
-#     df = pd.DataFrame({'acs': r['acs'], 'x': r['xyz'][:,0]})    
-#     regs = np.unique(r['acs'])
-    
-    
-#     vis = [x for x in regs if filt in x]
-#     print(vis)
-    
-#     colsd = {'left': blue_left, 'right': red_right}
-    
-#     fig, axs = plt.subplots(nrows=2, sharex=True, sharey=True,
-#                             figsize=[18 , 7.63])
-    
-#     kk = 0
-#     for hem in ['left', 'right']:
-#         idc = np.bitwise_and(df['acs'].isin(vis), 
-#             (df['x'] < 0) if (hem == 'left') else (df['x'] >= 0))
-
-#         n_cells = sum(idc)
-#         yy = np.mean(r['concat_bd'][idc],axis=0)
-#         xx = np.arange(len(yy)) /c_sec
-#         axs[kk].plot(xx, yy,
-#                  color=colsd[hem],
-#                  linewidth=2, 
-#                  label=f'{n_cells} cells'
-#                        f' in {filt} areas in {hem} hemisphere')                     
-
-#         axs[kk].spines['top'].set_visible(False)
-#         axs[kk].spines['right'].set_visible(False)
-#         axs[kk].set_xlabel('time [sec]')
-#         axs[kk].set_ylabel('firing rate')
-            
-#         axs[kk].legend(loc='lower right')    
-#         d2 = {}
-#         for sec in PETH_types_dict[vers]:
-#             d2[sec] = r['len'][sec]
-                            
-#         # plot vertical boundaries for windows
-#         h = 0
-#         for i in d2:
-        
-#             xv = d2[i] + h
-#             axs[kk].axvline(xv/c_sec, linestyle='--', linewidth=1,
-#                         color='grey')
-            
-#             if kk == 0: 
-#                 axs[kk].text(xv/c_sec - d2[i]/(2*c_sec), max(yy),
-#                          '   '+i, rotation=90, color='k', 
-#                          fontsize=10, ha='center')        
-#             h += d2[i]
-#         kk += 1
-
-#     fig.tight_layout()
 
 
-def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
-                   exa=False, mapping='rm', bg=False, img_only=False,
-                   interp='antialiased', single_reg=False, cv=True,
-                   bg_bright=0.99, vmax=2, rerun=False, sort_method='rastermap',
-                   nclus=100, nclus_rm=100, clsfig=False, bounds=False, grid_upsample=0,
-                   locality=0.75, time_lag_window=5, symmetric=False, clabels='all'):
+def plot_rastermap(
+    vers="concat",
+    feat="concat_z",
+    regex="ECT",
+    exa=False,
+    mapping="rm",
+    bg="#c2a37a",  
+    img_only=False,
+    interp="antialiased",
+    single_reg=False,
+    cv=True,
+    bg_bright=0.99, # put to 1 for bg constant
+    vmax=2,
+    rerun=False,
+    sort_method="rastermap",
+    nclus=25,
+    nclus_rm=100,
+    nclus_s=25,
+    clsfig=False,
+    bounds=False,
+    grid_upsample=0,
+    zsc=True,
+    locality=0.75,
+    time_lag_window=5,
+    symmetric=False,
+    clabels="all",
+    synthetic: bool = False,
+    syn_control: bool = False,
+):
     """
-    Function to plot a rastermap with vertical segment boundaries
-    and labels positioned above the segments.
-
-    Extra panel with colors of mapping.
-
-    feat = 'single_reg' will show only cells in example region regex
-
-    sort_method : str, default 'rastermap'
-        Sorting method for rows. One of:
-        - 'rastermap' (default): use r['isort']
-        - 'umap': sort by first UMAP dimension
-        - 'pca': sort by first PCA dimension
-        - 'acs': sort by r['acs'] (ints or strings) and use that order as isort
+    Updated for zsc=False:
+      - real: use 'concat' instead of 'concat_z'
+      - synthetic: use 'concat_s' instead of 'concat_zs'
     """
-    r = regional_group(mapping, vers=vers, ephys=False, nclus=nclus, 
-                       nclus_rm=nclus_rm, rerun=rerun, cv=cv, grid_upsample=grid_upsample,
-                       locality=locality, time_lag_window=time_lag_window,
-                       symmetric=symmetric)
+
+    r = regional_group(
+        mapping,
+        vers=vers,
+        ephys=False,
+        nclus=nclus,
+        nclus_rm=nclus_rm,
+        rerun=rerun,
+        cv=cv,
+        grid_upsample=grid_upsample,
+        nclus_s=nclus_s,
+        locality=locality,
+        time_lag_window=time_lag_window,
+        symmetric=symmetric,
+        synthetic=synthetic,
+        syn_control=syn_control,
+        zsc=zsc,
+    )
+
+    # ---------------- choose correct default feature keys ----------------
+    # base feature for real
+    base_feat = "concat_z" if zsc else "concat"
+    # base synthetic feature
+    base_feat_syn = "concat_zs" if zsc else "concat_s"
+
+    # If user passed the "z-scored name" while zsc=False, transparently map it.
+    # Likewise for synthetic.
+    if synthetic:
+        # normalize feat request to synthetic keyspace
+        if feat in ("concat_z", "concat"):
+            feat = base_feat_syn
+        elif feat == "single_reg":
+            feat = base_feat_syn
+        elif feat == "concat_zs" and (not zsc):
+            feat = "concat_s"
+        elif feat == "concat_s" and zsc:
+            feat = "concat_zs"
+    else:
+        # normalize feat request to real keyspace
+        if feat == "concat_z" and (not zsc):
+            feat = "concat"
+        elif feat == "concat" and zsc:
+            feat = "concat_z"
 
     if exa:
-        plot_cluster_mean_PETHs(r, mapping, feat)
+        plot_cluster_mean_PETHs(r, mapping, feat, cv=cv)
 
     plt.ion()
     if clsfig:
         plt.ioff()
 
-    spks = r[feat]
+    # ---------------- choose which feature matrix to plot ----------------
+    feat_plot = feat
 
-    # --- choose sorting algorithm ---
-    if sort_method == 'rastermap':
-        isort = r['isort' if feat != 'ephysTF' else 'isort_e']
+    # keep old behavior for 'single_reg': just means filtering by Beryl, matrix remains base_feat/base_feat_syn
+    if feat_plot == "single_reg":
+        feat_plot = base_feat_syn if synthetic else base_feat
 
-    elif sort_method == 'umap':
-        assert 'umap_z' in r, "r['umap_z'] not found in results."
-        isort = np.argsort(r['umap_z'][:, 0])
+    if feat_plot not in r:
+        raise KeyError(
+            f"Feature '{feat_plot}' not found in results dict. "
+            f"(synthetic={synthetic}, zsc={zsc}). Available keys: {list(r.keys())[:40]} ..."
+        )
 
-    elif sort_method == 'pca':
-        assert 'pca_z' in r, "r['pca_z'] not found in results."
-        isort = np.argsort(r['pca_z'][:, 0])
+    spks = r[feat_plot]
 
-    elif sort_method == 'acs':
-        if 'acs' not in r:
+    # ---------------- choose sorting algorithm ----------------
+    if sort_method == "rastermap":
+        isort = r["isort" if feat_plot != "ephysTF" else "isort_e"]
+
+    elif sort_method == "umap":
+        # embeddings are stack-derived; if you need them to respect zsc=False you must add separate embedding caches upstream
+        assert "umap_z" in r, "r['umap_z'] not found in results."
+        isort = np.argsort(r["umap_z"][:, 0])
+
+    elif sort_method == "pca":
+        assert "pca_z" in r, "r['pca_z'] not found in results."
+        isort = np.argsort(r["pca_z"][:, 0])
+
+    elif sort_method == "acs":
+        if "acs" not in r:
             raise KeyError("r['acs'] not found in results.")
 
-        acs_arr = np.asarray(r['acs'])
+        acs_arr = np.asarray(r["acs"])
 
-        if mapping == 'Cosmos':
-            # canonical Cosmos ordering (user-specified)
-            regs_can = ['Isocortex', 'OLF', 'HPF', 'CTXsp', 'CNU', 'TH', 'HY', 'MB', 'HB', 'CB', 'void', 'root']
+        if mapping == "Cosmos":
+            regs_can = ["Isocortex", "OLF", "HPF", "CTXsp", "CNU", "TH", "HY", "MB", "HB", "CB", "void", "root"]
             rank = {reg: i for i, reg in enumerate(regs_can)}
-            unk = len(regs_can) + 1  # unknowns go to end
-
+            unk = len(regs_can) + 1
             keys = np.array([rank.get(str(a), unk) for a in acs_arr], dtype=int)
-            isort = np.argsort(keys, kind='stable')
+            isort = np.argsort(keys, kind="stable")
 
-        elif mapping == 'Beryl':
-            # canonical region ordering for Beryl
+        elif mapping == "Beryl":
             p = Path(iblatlas.__file__).parent / "beryl.npy"
             regs_can = br.id2acronym(np.load(p), mapping="Beryl")
             rank = {reg: i for i, reg in enumerate(regs_can)}
             unk = len(regs_can) + 1
-
             keys = np.array([rank.get(str(a), unk) for a in acs_arr], dtype=int)
-            isort = np.argsort(keys, kind='stable')
+            isort = np.argsort(keys, kind="stable")
 
         else:
-            # Default: numpy sorts strings lexicographically; ints numerically.
-            # If mixed types occur, fall back to stable string representation.
             try:
-                isort = np.argsort(acs_arr, kind='stable')
+                isort = np.argsort(acs_arr, kind="stable")
             except TypeError:
-                isort = np.argsort(acs_arr.astype(str), kind='stable')
+                isort = np.argsort(acs_arr.astype(str), kind="stable")
 
     else:
         raise ValueError(f"Unknown sort_method: {sort_method}")
 
     data = spks[isort]
-    row_colors = np.array(r['cols'])[isort]
-    clus_sorted = np.asarray(r['acs'])[isort]
+    row_colors = np.array(r["cols"])[isort]
+    clus_sorted = np.asarray(r["acs"])[isort]
 
     del spks
     gc.collect()
 
     if single_reg:
-        acs = np.array(r['Beryl'])[isort]
+        # filter by Beryl labels (works for both real and synthetic)
+        acsB = np.array(r["Beryl"])[isort]
+        n = len(acsB)
+        n_ex = int(np.sum(acsB == regex))
+        print("number of cells in example region:", n_ex)
 
-        # adjust background line width according to example region size
-        n = len(acs)
-        n_ex = sum(acs == regex)
-        print('number of cells in example region:', n_ex)
+        data = data[acsB == regex]
+        row_colors = row_colors[acsB == regex]
+        clus_sorted = clus_sorted[acsB == regex]
+        print(f"filtering rastermap for {regex} cells only")
 
-        data = data[acs == regex]
-        row_colors = row_colors[acs == regex]
-        clus_sorted = clus_sorted[acs == regex]
-        print(f'filtering rastermap for {regex} cells only')
-
-        del acs
+        del acsB
         gc.collect()
 
     n_rows, n_cols = data.shape
 
     fig, ax = plt.subplots(figsize=(6, 8))
 
-    vmin, vmax = 0, vmax
-    data_clipped = np.clip(data, vmin, vmax)
-    gray_scaled = (data_clipped - vmin) / (vmax - vmin)  # Normalized to 0-1
+    # ---------------- display scaling (FIX for zsc=False) ----------------
+    data = np.asarray(data, dtype=float)
+    finite = np.isfinite(data)
+    if not np.any(finite):
+        raise ValueError("Raster data contains no finite values (all NaN/inf).")
 
-    # Manual alpha blending if bg is enabled
-    if bg:
-        # 1. Create color-coded background as full RGBA image
-        rgba_bg = np.array([to_rgba(c) for c in row_colors], dtype=np.float32)
-        rgba_bg = np.broadcast_to(rgba_bg[:, np.newaxis, :], (*data.shape, 4)).copy()
-
-        rgba_bg[..., :3] = rgba_bg[..., :3] * bg_bright + (1 - bg_bright)
-
-        alpha_overlay = gray_scaled
-
-        # 3. Composite black (0,0,0) with alpha over the colored background
-        for c in range(3):  # R, G, B channels
-            rgba_bg[..., c] *= (1 - alpha_overlay)
-
-        rgba_bg[..., 3] = 1  # Final alpha channel (opaque result)
-
-        # 4. Display the blended image
-        ax.imshow(rgba_bg, aspect="auto", interpolation=interp, zorder=1)
-
-        del rgba_bg
-        gc.collect()
-
+    if zsc:
+        # legacy behavior for z-scored features
+        vmin = 0.0
+        vmax_ = float(vmax)
+        if (not np.isfinite(vmax_)) or (vmax_ <= vmin):
+            vmax_ = vmin + 1.0
     else:
-        # No background: show signal as brightness (white = strong activity)
+        # robust scaling for raw features (concat / concat_s)
+        vmin, vmax_ = np.nanpercentile(data[finite], [1.0, 99.0])
+        if (not np.isfinite(vmin)) or (not np.isfinite(vmax_)) or (vmin == vmax_):
+            vmin = float(np.nanmin(data[finite]))
+            vmax_ = float(np.nanmax(data[finite]))
+            if vmin == vmax_:
+                vmin -= 1.0
+                vmax_ += 1.0
+
+    data_clipped = np.clip(data, vmin, vmax_)
+    denom = (vmax_ - vmin) if (vmax_ > vmin) else 1.0
+    gray_scaled = (data_clipped - vmin) / denom
+
+    # ---------------- background handling ----------------
+    if bg:
+        # Case 1: constant background color
+        if (not isinstance(bg, bool)) and is_color_like(bg):
+            bg_rgb = np.array(to_rgba(bg), dtype=np.float32)[:3]
+
+            # brighten toward white exactly like the row-color branch
+            bg_rgb = bg_rgb * bg_bright + (1.0 - bg_bright)
+
+            rgba = np.empty((*gray_scaled.shape, 4), dtype=np.float32)
+            rgba[..., :3] = bg_rgb[None, None, :]
+            rgba[..., 3] = 1.0
+
+            # ink strength (optional but useful)
+            ink = gray_scaled.astype(np.float32)
+            ink = gray_scaled ** 1.25
+            # ink = ink ** 0.8  # optional: boosts faint structure
+
+            for c in range(3):
+                rgba[..., c] *= (1.0 - ink)
+
+            ax.imshow(rgba, aspect="auto", interpolation=interp, zorder=1)
+            del rgba
+            gc.collect()
+
+        # Case 2: legacy per-row colored background
+        else:
+            rgba_bg = np.array([to_rgba(c) for c in row_colors], dtype=np.float32)
+            rgba_bg = np.broadcast_to(
+                rgba_bg[:, np.newaxis, :], (*data.shape, 4)
+            ).copy()
+
+            rgba_bg[..., :3] = rgba_bg[..., :3] * bg_bright + (1 - bg_bright)
+
+            alpha_overlay = gray_scaled
+            for c in range(3):
+                rgba_bg[..., c] *= (1 - alpha_overlay)
+
+            rgba_bg[..., 3] = 1.0
+            ax.imshow(rgba_bg, aspect="auto", interpolation=interp, zorder=1)
+            del rgba_bg
+            gc.collect()
+
+    # Default: white background
+    else:
         rgba_overlay = np.zeros((*gray_scaled.shape, 4), dtype=np.float32)
-        inv_gray = 1.0 - gray_scaled  # invert: high activity = bright
-
-        # replicate across RGB channels
+        inv_gray = 1.0 - gray_scaled
         rgba_overlay[..., :3] = inv_gray[..., np.newaxis]
-        rgba_overlay[..., 3] = 1.0  # fully opaque
-
+        rgba_overlay[..., 3] = 1.0
         ax.imshow(rgba_overlay, aspect="auto", interpolation=interp, zorder=2)
-
         del rgba_overlay
         gc.collect()
 
-
-
     if grid_upsample > 0:
-        bounds = False  # disable boundaries for upsampled grids
+        bounds = False
 
     if bounds:
         rc = np.asarray(clus_sorted)
-        # works for ints and strings
         cluster_changes = rc[1:] != rc[:-1]
         boundaries = np.where(cluster_changes)[0] + 0.5
 
         for y in boundaries:
-            ax.axhline(y, color='k', linewidth=0.6, zorder=5)
+            ax.axhline(y, color="k", linewidth=0.6, zorder=5)
 
-        trans_right = mpl.transforms.blended_transform_factory(
-            ax.transAxes, ax.transData
-        )
-
-        n_rows = data.shape[0]
-        edges = np.concatenate(([0.5], boundaries, [n_rows - 0.5]))
+        trans_right = mpl.transforms.blended_transform_factory(ax.transAxes, ax.transData)
+        n_rows_ = data.shape[0]
+        edges = np.concatenate(([0.5], boundaries, [n_rows_ - 0.5]))
         n_segments = len(edges) - 1
-        fontsize = np.clip(300 / nclus, 5, mpl.rcParams['font.size'])
+        fontsize = np.clip(300 / max(int(nclus), 1), 5, mpl.rcParams["font.size"])
 
-        if clabels == 'all':
+        if clabels == "all":
             label_idxs = np.arange(n_segments)
         elif isinstance(clabels, int):
             label_idxs = (
@@ -5015,119 +5416,112 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
         for i in label_idxs:
             y0, y1 = edges[i], edges[i + 1]
             mid_y = 0.5 * (y0 + y1)
-            row_idx = int(np.clip(np.floor(mid_y), 0, n_rows - 1))
+            row_idx = int(np.clip(np.floor(mid_y), 0, n_rows_ - 1))
 
-            # NEW: print region acronyms when sorting by atlas
-            if sort_method == 'acs' and mapping in ('Beryl', 'Cosmos'):
+            if sort_method == "acs" and mapping in ("Beryl", "Cosmos"):
                 label = str(clus_sorted[row_idx])
             else:
-                label = str(int(clus_sorted[row_idx]))
+                try:
+                    label = str(int(clus_sorted[row_idx]))
+                except Exception:
+                    label = str(clus_sorted[row_idx])
 
             ax.text(
                 1.01, mid_y, label,
                 transform=trans_right,
-                va='center', ha='left',
+                va="center", ha="left",
                 fontsize=fontsize,
-                color='k',
-                clip_on=False
+                color="k",
+                clip_on=False,
             )
+
         ax.text(
-            1.08,
-            0.5,
-            "clusters",
+            1.08, 0.5, "clusters",
             transform=ax.transAxes,
             rotation=90,
-            va='center',
-            ha='center',
-            fontsize=mpl.rcParams['axes.labelsize'],
-            color='k',
-            clip_on=False
+            va="center", ha="center",
+            fontsize=mpl.rcParams["axes.labelsize"],
+            color="k",
+            clip_on=False,
         )
 
-    if feat != 'ephysTF':
-        if 'len' not in r or not isinstance(r['len'], dict) or len(r['len']) == 0:
+    if feat_plot != "ephysTF":
+        if "len" not in r or not isinstance(r["len"], dict) or len(r["len"]) == 0:
             raise KeyError("Segment lengths r['len'] missing or empty; cannot draw boundaries/labels.")
 
-        ordered_segments = list(r['len'].keys())
-        labels = r.get('peth_dict', {})
+        ordered_segments = list(r["len"].keys())
+        labels = r.get("peth_dict", {})
 
-        if data.shape[1] != sum(r['len'].values()):
+        if data.shape[1] != sum(r["len"].values()):
             print(f"[warn] data.shape[1] ({data.shape[1]}) != sum(len) ({sum(r['len'].values())})")
 
-        # x in data coords, y in axes coords (fixed height)
-        trans_top = mpl.transforms.blended_transform_factory(
-            ax.transData,
-            ax.transAxes
-        )
+        trans_top = mpl.transforms.blended_transform_factory(ax.transData, ax.transAxes)
 
         h = 0
         for seg in ordered_segments:
-            seg_len = r['len'][seg]
+            seg_len = r["len"][seg]
             xv = h + seg_len
-
             if xv > n_cols:
                 break
-
-            ax.axvline(xv, linestyle='--', linewidth=1, color='grey')
+            ax.axvline(xv, linestyle="--", linewidth=1, color="grey")
 
             midpoint = h + seg_len / 2.0
             if not img_only:
                 ax.text(
-                    midpoint,
-                    1.02,
+                    midpoint, 1.02,
                     labels.get(seg, seg),
                     rotation=90,
-                    color='k',
+                    color="k",
                     fontsize=10,
-                    ha='center',
-                    va='bottom',
+                    ha="center",
+                    va="bottom",
                     transform=trans_top,
-                    clip_on=False
+                    clip_on=False,
                 )
             h += seg_len
 
         x_ticks = np.arange(0, n_cols, c_sec)
         ax.set_xticks(x_ticks)
         ax.set_xticklabels([f"{int(tick / c_sec)}" for tick in x_ticks])
-
     else:
         ax.set_xticks(range(data.shape[1]))
-        ax.set_xticklabels(r['fts'], rotation=90)
+        ax.set_xticklabels(r["fts"], rotation=90)
 
-    ax.set_xlabel('time [sec]')
-    ax.set_ylabel(f'cells in {regex}' if feat == 'single_reg' else 'cells')
+    ax.set_xlabel("time [sec]")
+    ax.set_ylabel(f"cells in {regex}" if feat == "single_reg" else "cells")
 
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
 
     if img_only:
-        ax.axis('off')
+        ax.axis("off")
         if single_reg:
-            ax.set_title(f'{regex} ({n_ex})', fontsize=25, color=pal[regex],
-                         transform=ax.transAxes)
+            ax.set_title(f"{regex} ({n_ex})", fontsize=25, color=pal[regex], transform=ax.transAxes)
 
     ax.set_xlim(0, n_cols)
     plt.tight_layout()
 
     descriptor = (
-        f"mapping_{mapping}"
-        f"_cv_{cv}"
-        f"_nclus_{nclus}"
-        f"_feat_{feat}"
-        f"_sort_{sort_method}"
+        f"map_{mapping}"
+        f"_cv_{int(cv)}"
+        f"_zsc_{int(bool(zsc))}"                 # NEW
+        + (f"_nclus_{nclus}" if mapping == "kmeans" else "")
+        + f"_nclus_rm_{nclus_rm}"
+        + (f"_nclus_s_{nclus_s}" if synthetic else "")
+        + f"_sort_{sort_method}"
     )
+
     if single_reg:
         descriptor += f"_reg_{regex}"
-    fname = "rastermap_" + descriptor.replace(" | ", "_").replace("=", "") + ".png"
+    fname = descriptor + ".svg"
 
     try:
-        fig.canvas.manager.set_window_title(f"Rastermap: {descriptor}")
+        fig.canvas.manager.set_window_title(f"{descriptor}")
     except Exception:
         pass
 
-
     out_path = pth_dmn.parent / "imgs" / fname
-    fig.savefig(out_path, dpi=150, bbox_inches='tight', facecolor='white')
+    fig.savefig(out_path, dpi=150, bbox_inches="tight", facecolor="white")
 
     if clsfig:
         plt.close(fig)
@@ -5135,6 +5529,8 @@ def plot_rastermap(vers='concat', feat='concat_z', regex='ECT',
     for v in ("sig", "img_array", "isort", "r"):
         if v in locals():
             del locals()[v]
+
+
 
 
 def raster_grid():
@@ -5195,34 +5591,6 @@ def plot_region_counts_svg():
     fig.savefig(filename, format='svg', bbox_inches='tight')
 
 
-# def non_flatness_score(d, get_cells=False, norm_=True):
-#     '''
-#     for each item compute the non-flatness score as the 
-#     wasserstein metric to a flat distibution
-#     i.e. zero when flat, high when far from it
-#     d: dict with region acronyms as keys and distributions as values
-#     norm_: distribution sums to 1
-#     '''
-
-#     scores = {}
-#     for reg in d:
-
-#         n_cells = np.sum(d[reg])
-#         if norm_:
-#             d[reg] = np.array(d[reg])/n_cells
-
-#         flat_dist = [np.sum(d[reg])/len(d[reg])] * len(d[reg])
-
-#         emd = wasserstein_distance(d[reg], flat_dist)
-        
-#         if get_cells:
-#             scores[reg] = [n_cells, emd]
-#         else:    
-#             scores[reg] = emd
-
-#     return dict(sorted(scores.items(), key=lambda item: item[1]))
-
-
 def flatness_entropy_score(d, get_cells=False):
     '''
     Measures how close the distribution is to uniform using normalized entropy.
@@ -5243,87 +5611,6 @@ def flatness_entropy_score(d, get_cells=False):
             scores[reg] = score
 
     return dict(sorted(scores.items(), key=lambda item: item[1], reverse=True))
-
-
-
-# def plot_xyz_cents(foc='Beryl', ax=None, norm_=True):
-
-#     '''
-#     3d plot of feature per Beryl region centroid
-#     stars for region volumes and centroids
-#     colored by 'Beryl' and 'foc',
-#     score in 'clus_flat', 'dec_flat'
-#     i.e. flatness of distribution of clusters or decoding scores
-#     '''
-    
-#     alone = False
-#     if not ax:
-#         alone = True
-#         fig = plt.figure(figsize=(8.43,7.26), label=f'{foc}')
-#         ax = fig.add_subplot(111,projection='3d')
-
-#     if foc == 'Beryl':
-#         d = clus_freqs(foc=foc, get_res=True, norm_=norm_) 
-
-#     elif foc == 'dec':
-#         d = get_dec_bwm()
-
-#     else:
-#         print('??? what score')
-#         return
-
-#     fs = non_flatness_score(d, norm_=norm_)
-
-#     regs = list(Counter(fs.keys()))
-#     centsd = get_centroids()
-#     cents = np.array([centsd[x] for x in regs])
-#     xyz = cents          
-#     volsd = get_volume()
-#     vols = [volsd[x] for x in regs]
-    
-#     scale = 5000
-#     vols = scale * np.array(vols)/np.max(vols)
-    
-
-#     colsB = [pal[reg] for reg in regs]
-
-
-#     cmap = plt.cm.Blues
-#     scores = [fs[reg] for reg in fs] 
-#     norm = plt.Normalize(vmin=min(scores), vmax=max(scores))
-#     cols = cmap(norm(scores))
-
-#     scatter = ax.scatter(cents[:,0], cents[:,1], cents[:,2], linewidths=3,
-#                 marker='o', s = vols, color=cols, edgecolor=colsB,
-#                 depthshade=False)
-                       
-#     scalef = 1.2                  
-#     ax.view_init(elev=45.78, azim=-33.4)
-#     ax.set_xlim(min(xyz[:,0])/scalef, max(xyz[:,0])/scalef)
-#     ax.set_ylim(min(xyz[:,1])/scalef, max(xyz[:,1])/scalef)
-#     ax.set_zlim(min(xyz[:,2])/scalef, max(xyz[:,2])/scalef)
-#     ax.xaxis.pane.fill = False
-#     ax.yaxis.pane.fill = False
-#     ax.zaxis.pane.fill = False
-
-#     fontsize = 14
-#     ax.set_xlabel('x [mm]', fontsize = fontsize)
-#     ax.set_ylabel('y [mm]', fontsize = fontsize)
-#     ax.set_zlabel('z [mm]', fontsize = fontsize)
-#     ax.tick_params(axis='both', labelsize=12)
-#     ax.grid(False)
-#     nbins = 3
-#     ax.xaxis.set_major_locator(MaxNLocator(nbins=nbins))
-#     ax.yaxis.set_major_locator(MaxNLocator(nbins=nbins))
-#     ax.zaxis.set_major_locator(MaxNLocator(nbins=nbins))
-
-#     ax.set_title(f'{foc}, norm:{norm_}')
-
-#     cbar = fig.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), ax=ax, 
-#                         fraction=0.02, pad=0.1)
-#     cbar.set_label('the lower the flatter the distribution',
-#                    fontsize=fontsize)
-#     cbar.ax.tick_params(labelsize=12)
 
 
 def get_dec_bwm(nscores=3):
@@ -5381,7 +5668,7 @@ def get_dec_bwm(nscores=3):
     return combined_res
 
 
-def plot_histograms():
+def plot_histograms(clustering='kmeans', nclus=12, nclus_rm=100, cv=True):
     '''
     Plot two histograms of the flatness scores across regions:
     one for decoding, one for clustering, as line outlines.
@@ -5389,7 +5676,7 @@ def plot_histograms():
 
     n_bins = 20
 
-    be = flatness_entropy_score(clus_freqs(foc='Beryl', get_res=True))
+    be = flatness_entropy_score(clus_freqs(foc='Beryl', get_res=True, clustering=clustering, nclus=nclus, nclus_rm=nclus_rm, cv=cv))
     print(f"# regions in clustering (be): {len(be)}")
     de = flatness_entropy_score(clus_freqs(foc='dec', get_res=True))
     print(f"# regions in decoding   (de): {len(de)}")
@@ -5430,7 +5717,7 @@ def plot_histograms():
     plt.show()
 
 
-def plot_three_swansons():
+def plot_three_swansons(clustering='kmeans', nclus=12, nclus_rm=100, cv=True):
     '''
     For the cluster count figure, plot three Swansons:
     1. Cluster counts per region (flatness entropy from clustering)
@@ -5439,8 +5726,9 @@ def plot_three_swansons():
     '''
 
     # Load flatness scores independently
-    be = flatness_entropy_score(clus_freqs(foc='Beryl', get_res=True))
-    de = flatness_entropy_score(clus_freqs(foc='dec', get_res=True))
+    be = flatness_entropy_score(clus_freqs(foc='Beryl', get_res=True,       
+        clustering=clustering, nclus=nclus, nclus_rm=nclus_rm, cv=cv))
+    de = flatness_entropy_score(clus_freqs(foc='dec', get_res=True, cv=cv))
 
     acronyms_be = np.array(list(be.keys()))
     acronyms_de = np.array(list(de.keys()))
@@ -5504,12 +5792,12 @@ def plot_three_swansons():
     plt.tight_layout()
     fig.savefig(Path(pth_dmn.parent, 'imgs', 'overleaf_pdf', 'swanson_three_flatness.svg'),
                 format='svg', bbox_inches='tight')
+    plt.show()
 
 
-
-def scat_dec_clus(norm_=True, harris=False, nclus=20, corr_only=False, 
-                  clustering='rm',log_scale=True, axs=None, 
-                  compare='clu', cv=True):
+def scat_dec_clus(norm_=True, harris=False, nclus=12, nclus_rm=100,
+                  corr_only=False, clustering='kmeans', log_scale=True, axs=None,
+                  compare='clu', cv=True, anno=False):
     '''
     Scatter plots comparing specialization scores from clustering and decoding,
     and optionally Harris hierarchy scores.
@@ -5526,31 +5814,46 @@ def scat_dec_clus(norm_=True, harris=False, nclus=20, corr_only=False,
         Optional axis to plot on.
     compare : {'clu', 'dec'}
         In Harris mode, whether to compare clustering or decoding specialization to the hierarchy.
+    anno : bool
+        If True, annotate Beryl region labels in Beryl colors next to scatter points.
     '''
 
     # Load specialization scores
-    be = flatness_entropy_score(clus_freqs(foc='Beryl', get_res=True,       
-        nclus=nclus,cv=cv, clustering=clustering))
-    de = flatness_entropy_score(clus_freqs(foc='dec', get_res=True, 
-                                cv=cv, clustering=clustering))
+    be = flatness_entropy_score(clus_freqs(
+        foc='Beryl', get_res=True, nclus=nclus, nclus_rm=nclus_rm, cv=cv, clustering=clustering
+    ))
+    de = flatness_entropy_score(clus_freqs(
+        foc='dec', get_res=True, cv=cv, clustering=clustering
+    ))
 
     if axs is None:
         fig, axs = plt.subplots(figsize=(3, 3))
 
-    def scatter_panel(ax, x, y, xlabel, ylabel, labels, colors):
+    def scatter_panel(ax, x, y, xlabel, ylabel, labels, colors, annotate_r=True, anno=True):
         # Correlation
         corr, pval = pearsonr(x, y)
         print(f"Pearson r = {corr:.2f}, p = {pval:.4g}")
 
         # Linear fit
-        slope, intercept, r_value, _, _ = linregress(x, y)
+        slope, intercept, _, _, _ = linregress(x, y)
         xx = np.linspace(min(x), max(x), 100)
         yy = slope * xx + intercept
-        ax.plot(xx, yy, '--', color='black', lw=1,
-                label=f'$R^2$ = {r_value**2:.2f}')
+        #ax.plot(xx, yy, "--", color="black", lw=1)
 
+        # Scatter + optional per-point label
         for i in range(len(x)):
-            ax.scatter(x[i], y[i], color=colors[i], s=10)
+            ax.scatter(x[i], y[i], color=colors[i], s=10, zorder=2)
+            if anno:
+                ax.annotate(
+                    labels[i],
+                    (x[i], y[i]),
+                    xytext=(3, 2), textcoords="offset points",
+                    fontsize=7,
+                    color=colors[i],
+                    ha="left", va="bottom",
+                    zorder=3,
+                    clip_on=True
+                )
 
         if log_scale:
             ax.set_xscale('log')
@@ -5560,23 +5863,32 @@ def scat_dec_clus(norm_=True, harris=False, nclus=20, corr_only=False,
         ax.set_ylabel(ylabel, fontsize=10)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
-        ax.legend(fontsize=8)
 
         if not log_scale:
             ax.xaxis.set_major_locator(MaxNLocator(3))
             ax.yaxis.set_major_locator(MaxNLocator(3))
 
+        if annotate_r:
+            ax.text(
+                0.02, 0.98,
+                f"$r$ = {corr:.2f}\n$p$ = {pval:.2g}",
+                transform=ax.transAxes,
+                ha="left", va="top", fontsize=9, color="k"
+            )
+
         ax.text(0.98, 0.02, f'{len(x)} regions',
                 transform=ax.transAxes, ha='right', va='bottom', color='k')
 
     if harris:
+        log_scale = False  # Harris hierarchy is ordinal; disable log scale
+
         harris_hierarchy_scores = {region: idx for idx, region in enumerate(harris_hierarchy)}
 
         if compare == 'clu':
             common = set(be) & set(harris_hierarchy_scores)
-            x_vals = [be[r] for r in common]
-            y_vals = [harris_hierarchy_scores[r] for r in common]
             labels = list(common)
+            x_vals = [be[r] for r in labels]
+            y_vals = [harris_hierarchy_scores[r] for r in labels]
             colors = [pal[r] for r in labels]
             xlabel = 'log(Specialization (clu))' if log_scale else 'Specialization (clu)'
             ylabel = 'Harris hierarchy score'
@@ -5584,9 +5896,9 @@ def scat_dec_clus(norm_=True, harris=False, nclus=20, corr_only=False,
 
         elif compare == 'dec':
             common = set(de) & set(harris_hierarchy_scores)
-            x_vals = [de[r] for r in common]
-            y_vals = [harris_hierarchy_scores[r] for r in common]
             labels = list(common)
+            x_vals = [de[r] for r in labels]
+            y_vals = [harris_hierarchy_scores[r] for r in labels]
             colors = [pal[r] for r in labels]
             xlabel = 'log(Specialization (dec))' if log_scale else 'Specialization (dec)'
             ylabel = 'Harris hierarchy score'
@@ -5596,39 +5908,32 @@ def scat_dec_clus(norm_=True, harris=False, nclus=20, corr_only=False,
             raise ValueError("compare must be 'clu' or 'dec'")
 
         if corr_only:
-            # Just compute and print correlation
             plt.gcf().clear()
             corr, pval = pearsonr(x_vals, y_vals)
             print(f'{nclus} clusters; compare {compare} to Harris')
             print(f"Pearson r = {corr:.2f}, p = {pval:.4g}")
             return corr, pval
 
-        scatter_panel(axs, x_vals, y_vals, xlabel, ylabel, labels, colors)
+        scatter_panel(axs, x_vals, y_vals, xlabel, ylabel, labels, colors, anno=anno)
 
     else:
         common = set(be) & set(de)
-        x_vals = [be[r] for r in common]
-        y_vals = [de[r] for r in common]
-
+        labels = list(common)
+        x_vals = [be[r] for r in labels]
+        y_vals = [de[r] for r in labels]
 
         if corr_only:
-            # Just compute and print correlation
             corr, pval = pearsonr(x_vals, y_vals)
             print(f'{nclus} clusters; compare to dec')
             print(f"Pearson r = {corr:.2f}, p = {pval:.4g}")
             return corr, pval
 
-
-        labels = list(common)
         colors = [pal[r] for r in labels]
         xlabel = 'log(Specialization (clu))' if log_scale else 'Specialization (clu)'
-        ylabel = (
-            'log(Specialization (dec))' if log_scale else
-            'Specialization (dec)'
-        )
+        ylabel = 'log(Specialization (dec))' if log_scale else 'Specialization (dec)'
         save_name = 'scat_clu_vs_dec.svg'
 
-        scatter_panel(axs, x_vals, y_vals, xlabel, ylabel, labels, colors)
+        scatter_panel(axs, x_vals, y_vals, xlabel, ylabel, labels, colors, anno=anno)
 
     plt.tight_layout()
     plt.savefig(Path(pth_dmn.parent, 'imgs', 'overleaf_pdf', save_name),
@@ -5637,113 +5942,133 @@ def scat_dec_clus(norm_=True, harris=False, nclus=20, corr_only=False,
 
 
 
-def plot_decoding_results():
+
+def spec_corr_dec_nclus(
+    vers="concat",
+    norm_=True,
+    n_min=3,
+    n_max=49,
+    axs=None,
+    savefig=True,
+    outpath=None,
+    kmeans_nclusrm=100,
+):
     """
-    Plots decoding accuracies for normal vs. shuffled splits across different mappings and sources.
-    Adds SEM error bars and connects means with lines (solid if p <= 0.05, dotted if p > 0.05).
+    Pearson correlation between specialization from clustering (Beryl frequencies)
+    and decoding specialization, as a function of nclus (kmeans) or nclus_rm (rm).
+
+    Plotting:
+      - 4 colored connecting lines (colors follow Matplotlib default cycle; legend uses these).
+      - Markers indicate significance: black if p<=0.05 else grey.
+      - Markers stay unfilled-by-line-color (significance encoding dominates).
     """
-    # Load results
-    re = np.load(Path(pth_dmn, 'decode.npy'), allow_pickle=True).flat[0]
-    
-    # Extract unique mappings and sources
-    sources, mappings = [], []
-    for key in re:
-        src, mapp = key.split(' ')
-        sources.append(src)
-        mappings.append(mapp)
-    sources = np.unique(sources)
-    mappings = np.unique(mappings)
-    palette = sns.color_palette("tab10", len(mappings))
-    mapping_color = {m:c for m,c in zip(mappings, palette)}   
+    ns = list(range(int(n_min), int(n_max) + 1))
 
-    # Build DataFrame of all accuracies
-    records = []
-    for key, (normal_results, shuffled_results) in re.items():
-        src, mapp = key.split(' ')
-        # Normal splits
-        for split in normal_results:
-            for acc in split[:, 1]:
-                records.append({'Mapping': mapp, 'Source': src, 'Type': 'Test Normal', 'Accuracy': acc})
-        # Shuffled splits
-        for split in shuffled_results:
-            for acc in split[:, 1]:
-                records.append({'Mapping': mapp, 'Source': src, 'Type': 'Test Shuffled', 'Accuracy': acc})
-    df = pd.DataFrame(records)
-    
-    # Compute statistics: mean, sem, and p-value for each Mapping+Source
-    stats = []
-    grouped = df.groupby(['Mapping', 'Source', 'Type'])['Accuracy']
-    agg = grouped.agg(['mean', 'std', 'count']).reset_index()
-    agg['sem'] = agg['std'] / np.sqrt(agg['count'])
-    
-    # Compute p-values per Mapping+Source
-    pvals = {}
-    for (mapp, src), subdf in df.groupby(['Mapping', 'Source']):
-        normal_acc = subdf[subdf['Type']=='Test Normal']['Accuracy']
-        shuffled_acc = subdf[subdf['Type']=='Test Shuffled']['Accuracy']
-        t_stat, p_val = ttest_ind(normal_acc, shuffled_acc, equal_var=False)
-        pvals[(mapp, src)] = p_val
-        print(f"  Mapping: {mapp:<10} Source: {src:<8} p-value = {p_val:.2e}")
-    
-    # Plot
-    fig, ax = plt.subplots(figsize=(6, 4))
-    mapping_colors = sns.color_palette("tab10", len(mappings))
-    mapping_palette = {mapp: color for mapp, color in zip(mappings, mapping_colors)}
-    
-    # Stripplot for all data
-    sns.stripplot(
-        data=df, x='Source', y='Accuracy', hue='Type',
-        dodge=True, jitter=True, ax=ax, 
-        palette={'Test Normal':'gray', 'Test Shuffled':'lightgray'},
-        size=3, alpha=0.6
-    )
-    
-    # Overlay SEM error bars and connect means
-    x_positions = {src: i for i, src in enumerate(sources)}
-    offset_normal = -0.15
-    offset_shuffled = 0.15
-    
-    for idx, row in agg.iterrows():
-        mapp = row['Mapping']
-        src = row['Source']
-        typ = row['Type']
-        mean = row['mean']
-        std_ = row['std']
-        x = x_positions[src] + (offset_normal if typ=='Test Normal' else offset_shuffled)
-        # Plot error bar
-        ax.errorbar(x, mean, yerr=std_, fmt='o', color=mapping_palette[mapp], capsize=4)
-    
-    # Connect means for each mapping and source
-    for mapp in mappings:
-        for src in sources:
-            # Retrieve means
-            mean_norm = agg[(agg['Mapping']==mapp) & 
-                             (agg['Source']==src) & 
-                             (agg['Type']=='Test Normal')]['mean'].values[0]
-            mean_shuf = agg[(agg['Mapping']==mapp) & 
-                             (agg['Source']==src) & 
-                             (agg['Type']=='Test Shuffled')]['mean'].values[0]
-            x0 = x_positions[src] + offset_normal
-            x1 = x_positions[src] + offset_shuffled
-            p_val = pvals[(mapp, src)]
-            linestyle = '-' if p_val <= 0.05 else '--'
-            ax.plot([x0, x1], [mean_norm, mean_shuf], color=mapping_palette[mapp], linestyle=linestyle)
-    
-    # Final touches
-    ax.axvline(x=0.5, color='k', linestyle='-', linewidth=1)
-    ax.axvline(x=0,   color='k', linestyle='--', linewidth=1)
-    ax.axvline(x=1,   color='k', linestyle='--', linewidth=1)
-    ax.set_ylabel('Accuracy')
-    ax.set_xlabel('')
-    #ax.legend(title='Type', loc='upper left')
+    series = [
+        ("kmeans", True),
+        ("kmeans", False),
+        ("rm", True),
+        ("rm", False),
+    ]
 
-    patches = [mpatches.Patch(color=mapping_color[m], label=m)
-               for m in mappings]
-    fig.legend(handles=patches, title='Mapping', loc='upper center',
-               ncol=len(mappings), bbox_to_anchor=(0.5, 1.05))
-    plt.tight_layout()
-    plt.show()     
+    created = axs is None
+    if created:
+        fig, ax = plt.subplots(figsize=(4.5, 3.0))
+    else:
+        ax = axs
+        fig = ax.figure
 
+    # Precompute decoding specialization only once per cv (independent of n and clustering)
+    de_cache = {}
+
+    for clustering, cv in series:
+        xs, rs, ps = [], [], []
+
+        # decoding spec (per cv) cached in memory
+        if cv not in de_cache:
+            de_cache[cv] = flatness_entropy_score(
+                clus_freqs(
+                    foc="dec",
+                    get_res=True,
+                    cv=cv,
+                    clustering=clustering,  # if your cache keys incorrectly include clustering, keep this
+                    norm_=norm_,
+                    save_=True,
+                    vers=vers,
+                )
+            )
+        de = de_cache[cv]
+
+        for n in ns:
+            if clustering == "kmeans":
+                nclus = n
+                nclus_rm = kmeans_nclusrm
+            else:  # rm
+                nclus = n
+                nclus_rm = n
+
+            be = flatness_entropy_score(
+                clus_freqs(
+                    foc="Beryl",
+                    get_res=True,
+                    nclus=nclus,
+                    nclus_rm=nclus_rm,
+                    cv=cv,
+                    clustering=clustering,
+                    norm_=norm_,
+                    save_=True,
+                    vers=vers,
+                )
+            )
+
+            common = set(be) & set(de)
+            if len(common) < 3:
+                r, p = np.nan, np.nan
+            else:
+                x_vals = [be[r_] for r_ in common]
+                y_vals = [de[r_] for r_ in common]
+                r, p = pearsonr(x_vals, y_vals)
+
+            xs.append(n)
+            rs.append(r)
+            ps.append(p)
+
+        xs = np.asarray(xs, float)
+        rs = np.asarray(rs, float)
+        ps = np.asarray(ps, float)
+
+        label = f"{clustering}, cv={cv}"
+
+        # 1) draw colored connecting line
+        ln, = ax.plot(xs, rs, linestyle='-', linewidth=1.5, label=label)
+        line_color = ln.get_color()
+
+        # 2) overlay significance markers
+        sig = np.isfinite(ps) & (ps <= 0.05)
+        nonsig = np.isfinite(ps) & (ps > 0.05)
+
+        ax.scatter(xs[sig], rs[sig], c='k', s=10, zorder=3)
+        ax.scatter(xs[nonsig], rs[nonsig], c='0.7', s=10, zorder=3)
+
+
+    ax.set_xlabel("nclus")
+    ax.set_ylabel("Pearson correlation \n (clu spec vs dec spec)")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.set_xlim(min(ns) - 0.5, max(ns) + 0.5)
+    ax.legend(fontsize=8, frameon=False)
+
+    fig.tight_layout()
+
+    plt.show()
+    if savefig:
+        if outpath is None:
+            outdir = Path(pth_dmn).parent / "imgs"
+            outdir.mkdir(parents=True, exist_ok=True)
+            outpath = outdir / f"spec_corr_dec_nclus_{vers}_norm{norm_}.svg"
+        fig.savefig(outpath, format="svg", bbox_inches="tight")
+
+ 
 
 def ghostscript_compress_pdf(level='/printer'):
 
@@ -6348,21 +6673,620 @@ def plot_fr_lz_scatter_with_marginals(
     plt.show()
 
 
+def plot_synthetic_marginals_compare_blocks(
+    vers: str = "concat",
+    nclus: int = 20,
+    nclus_s: int = 20,  # NEW: synthetic basis size (number of alphas)
+    bins: int | None = None,
+    figsize: tuple[float, float] = (18, 10),
+    xlim: tuple[float, float] | None = None,
+    density: bool = True,
+    savepath: str | None = None,
+):
+    """
+    Compare marginal coefficient distributions with block-wise layout.
+
+    Layout: rows_per_block x (2 * n_blocks) columns, where:
+      - rows_per_block = 5
+      - n_blocks = ceil(nclus_s / rows_per_block)
+      - each block contributes two columns: (C, B)
+
+    Column pairs (C,B) are assigned sequentially over alpha blocks:
+      block 0 → α = 0..4
+      block 1 → α = 5..9
+      ...
+
+    Rows correspond to α within each block.
+
+    Blue  = real coefficients (C)
+    Black = synthetic coefficients (B)
+    """
+
+    # --- load synthetic result ---
+    r = regional_group(
+        mapping="kmeans",
+        vers=vers,
+        synthetic=True,
+        cv=False,
+        nclus=int(nclus),
+        nclus_s=int(nclus_s),  # NEW
+    )
+
+    if "C" not in r or "B" not in r:
+        raise KeyError("Expected r['C'] and r['B'] in synthetic output.")
+
+    C = np.asarray(r["C"])
+    B = np.asarray(r["B"])
+
+    if C.shape != B.shape:
+        raise ValueError(f"C and B shape mismatch: {C.shape} vs {B.shape}")
+
+    N, M = C.shape
+    if M < int(nclus_s):
+        raise ValueError(f"Expected at least nclus_s={nclus_s} alphas, got M={M}")
+
+    # default bins
+    if bins is None:
+        if "marginals" in r and isinstance(r["marginals"], (list, tuple)) and len(r["marginals"]) > 0:
+            bins = int(r["marginals"][0].get("n_bins", 200))
+        else:
+            bins = 200
+
+    rows_per_block = 5
+    n_blocks = int(np.ceil(int(nclus_s) / float(rows_per_block)))
+    ncols = 2 * n_blocks
+
+    fig, axs = plt.subplots(rows_per_block, ncols, figsize=figsize)
+    axs = np.asarray(axs)
+    if axs.ndim != 2 or axs.shape[0] != rows_per_block or axs.shape[1] != ncols:
+        raise RuntimeError(f"Unexpected axs shape {axs.shape}, expected ({rows_per_block}, {ncols})")
+
+    for block in range(n_blocks):
+        col_C = 2 * block
+        col_B = col_C + 1
+        alpha_start = block * rows_per_block
+
+        for row in range(rows_per_block):
+            alpha = alpha_start + row
+            if alpha >= int(nclus_s) or alpha >= M:
+                axs[row, col_C].axis("off")
+                axs[row, col_B].axis("off")
+                continue
+
+            # --- real (C) ---
+            axs[row, col_C].hist(
+                C[:, alpha],
+                bins=bins,
+                density=density,
+                color="blue",
+                edgecolor="none",
+            )
+            axs[row, col_C].set_title(f"α={alpha}  real", fontsize=9)
+
+            # --- synthetic (B) ---
+            axs[row, col_B].hist(
+                B[:, alpha],
+                bins=bins,
+                density=density,
+                color="black",
+                edgecolor="none",
+            )
+            axs[row, col_B].set_title(f"α={alpha}  synth", fontsize=9)
+
+            if xlim is not None:
+                axs[row, col_C].set_xlim(*xlim)
+                axs[row, col_B].set_xlim(*xlim)
+
+    # axis labels (minimal clutter)
+    for c in range(ncols):
+        axs[-1, c].set_xlabel("coefficient", fontsize=9)
+
+    for r_ in range(rows_per_block):
+        axs[r_, 0].set_ylabel("density" if density else "count", fontsize=9)
+
+    fig.suptitle(
+        "Marginal coefficient distributions\n"
+        "Real (blue) vs Synthetic (black), block-wise by α",
+        fontsize=12
+    )
+
+    plt.tight_layout(rect=(0, 0, 1, 0.94))
+
+    if savepath is not None:
+        fig.savefig(savepath, dpi=150, bbox_inches="tight", facecolor="white")
 
 
 
 
+def plot_coeff_correlation_heatmaps(
+    vers: str = "concat",
+    nclus: int = 100,
+    nclus_s: int = 100,
+    vlim: float | None = None,
+    figsize: tuple[float, float] = (12, 3),
+    cmap: str = "coolwarm",
+    savepath: str | None = None,
+    zsc: bool = True,
+):
+    """
+    One-row heatmaps:
+
+        C | corr(C) | B | corr(B)
+
+    Each panel has its own colorbar.
+
+    Interpretation:
+      - C, B      : raw coefficient matrices (neurons × alphas)
+      - corr(C)   : structured off-diagonals → real population structure
+      - corr(B)   : ~identity → synthetic null
+    """
+
+    from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+    # --- load synthetic result ---
+    r = regional_group(
+        mapping="kmeans",
+        vers=vers,
+        synthetic=True,
+        cv=False,
+        nclus=int(nclus),
+        nclus_s=int(nclus_s), zsc=zsc,
+    )
+
+    if "C" not in r or "B" not in r:
+        raise KeyError("Expected r['C'] and r['B'].")
+
+    C = np.asarray(r["C"], float)[:, : int(nclus_s)]
+    B = np.asarray(r["B"], float)[:, : int(nclus_s)]
+
+    if C.shape != B.shape or C.ndim != 2:
+        raise ValueError(f"Invalid shapes: C{C.shape}, B{B.shape}")
+
+    # --- correlations ---
+    corr_C = np.corrcoef(C, rowvar=False)
+    corr_B = np.corrcoef(B, rowvar=False)
+
+    # --- correlation color scale ---
+    if vlim is None:
+        vlim = float(
+            max(
+                np.nanmax(np.abs(corr_C)),
+                np.nanmax(np.abs(corr_B)),
+            )
+        )
+
+    # --- robust scaling for raw matrices ---
+    def _robust_limits(X):
+        return np.percentile(X, [2, 98])
+
+    vmin_C, vmax_C = _robust_limits(C)
+    vmin_B, vmax_B = _robust_limits(B)
+
+    fig, axs = plt.subplots(1, 4, figsize=figsize)
+
+    panels = [
+        (axs[0], C,       vmin_C, vmax_C, "C (real)",        "coeff"),
+        (axs[1], corr_C, -vlim,   vlim,   "corr(C)",         "corr"),
+        (axs[2], B,       vmin_B, vmax_B, "B (synthetic)",   "coeff"),
+        (axs[3], corr_B, -vlim,   vlim,   "corr(B)",         "corr"),
+    ]
+
+    for ax, X, vmin, vmax, title, cblabel in panels:
+        im = ax.imshow(
+            X,
+            vmin=vmin,
+            vmax=vmax,
+            cmap=cmap,
+            origin="lower",
+            aspect="auto" if X.ndim == 2 and X.shape[0] != X.shape[1] else "equal",
+        )
+        ax.set_title(title, fontsize=10)
+        ax.set_xlabel("α")
+        if ax is axs[0]:
+            ax.set_ylabel("neuron")
+        else:
+            ax.set_ylabel("α" if X.shape[0] == X.shape[1] else "")
+
+        # individual colorbar
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="4%", pad=0.05)
+        cb = fig.colorbar(im, cax=cax)
+        cb.set_label(cblabel, fontsize=8)
+        cb.ax.tick_params(labelsize=8)
+
+    fig.suptitle(
+        f"Coefficient matrices and correlation structure (nclus_s={nclus_s}, zsc={zsc})",
+        fontsize=12,
+    )
+
+    plt.tight_layout(rect=[0, 0, 1, 0.92])
+
+    if savepath is not None:
+        fig.savefig(savepath, dpi=150, bbox_inches="tight", facecolor="white")
+
+    plt.ion()
+    plt.show()
 
 
 
 
+def plot_coeff_entropy_flatness_real_vs_synth(
+    vers: str = "concat",
+    nclus: int = 100,
+    nclus_s: int = 100,
+    bins: int = 60,
+    figsize_hist: tuple[float, float] = (3, 3),   # UPDATED
+    figsize_bars: tuple[float, float] = (8, 5),  # UPDATED
+    weight: str = "abs",          # "abs" | "sq" | "relu"
+    eps: float = 1e-12,
+    density: bool = True,
+    savepath_hist: str | None = None,
+    savepath_bars: str | None = None,
+    savepath_scatter: str | None = None,          # NEW
+    figsize_scatter: tuple[float, float] = (9, 4), # NEW
+    min_group_n: int = 20,   
+    zsc: bool = True,        
+):
+    """
+    Compute per-neuron coefficient-vector flatness via normalized entropy and plot:
+      1) Overlapping step-hist distributions of flatness for real (C) vs synthetic (B)
+      2) Example coefficient vectors for 5 most / 5 least entropic neurons (real and synthetic)
+      3) NEW: group-median scatter (real vs synth) for Beryl regions and KMeans clusters
+
+    Entropy definition:
+        flatness_i = H(p_i)/log(M) in [0,1],
+    where p_i is the row-normalized nonnegative transform of coefficients.
+
+    Scatter figure:
+      - Panel 1: per-Beryl-region medians (x=synth, y=real), colored by Beryl (pal)
+      - Panel 2: per-kmeans-cluster medians (x=synth, y=real), colored by tab20 cycle
+      - Point size ~ sqrt(group size)
+      - Annotate Pearson r and Spearman rho
+    """
+
+    def _despine(ax):
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+    # --- load synthetic result (real + synthetic coeff matrices) ---
+    r = regional_group(
+        mapping="kmeans",
+        vers=vers,
+        synthetic=True,
+        cv=False,
+        nclus=int(nclus),
+        nclus_s=int(nclus_s), zsc=zsc,
+    )
+
+    if "C" not in r or "B" not in r:
+        raise KeyError("Expected r['C'] and r['B'] in synthetic output.")
+
+    C = np.asarray(r["C"], dtype=float)
+    B = np.asarray(r["B"], dtype=float)
+
+    if C.ndim != 2 or B.ndim != 2 or C.shape != B.shape:
+        raise ValueError(f"Invalid shapes: C{C.shape}, B{B.shape}")
+
+    N, M_all = C.shape
+    M = int(nclus_s)
+    if M_all < M:
+        raise ValueError(f"Expected at least nclus_s={M} columns, got {M_all}")
+
+    # restrict to first nclus_s alphas (in case extra exist)
+    C = C[:, :M]
+    B = B[:, :M]
+
+    def _to_prob(X: np.ndarray) -> np.ndarray:
+        X = np.asarray(X, dtype=float)
+        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+
+        if weight == "abs":
+            W = np.abs(X)
+        elif weight == "sq":
+            W = X * X
+        elif weight == "relu":
+            W = np.maximum(X, 0.0)
+        else:
+            raise ValueError("weight must be one of: 'abs', 'sq', 'relu'")
+
+        W = W + float(eps)
+        row_sum = W.sum(axis=1, keepdims=True)
+        row_sum = np.where(row_sum > 0, row_sum, 1.0)
+        return W / row_sum
+
+    def _normalized_entropy(P: np.ndarray) -> np.ndarray:
+        H = entropy(P, axis=1)  # nats
+        maxH = np.log(P.shape[1]) if P.shape[1] > 1 else 0.0
+        if maxH <= 0:
+            return np.zeros(P.shape[0], dtype=float)
+        return np.clip(H / maxH, 0.0, 1.0)
+
+    P_C = _to_prob(C)
+    P_B = _to_prob(B)
+
+    flat_real = _normalized_entropy(P_C)
+    flat_synth = _normalized_entropy(P_B)
+
+    # --- pick 5 most/least entropic ---
+    k = 5
+    idx_real_hi = np.argsort(flat_real)[-k:][::-1]
+    idx_real_lo = np.argsort(flat_real)[:k]
+    idx_synth_hi = np.argsort(flat_synth)[-k:][::-1]
+    idx_synth_lo = np.argsort(flat_synth)[:k]
+
+    # ---------------- Figure 1: overlapping distributions (envelope only) ----------------
+    fig_hist, ax = plt.subplots(1, 1, figsize=figsize_hist)
+
+    ax.hist(
+        flat_real,
+        bins=bins,
+        density=density,
+        histtype="step",
+        linewidth=2,
+        label="real",
+    )
+    ax.hist(
+        flat_synth,
+        bins=bins,
+        density=density,
+        histtype="step",
+        linewidth=2,
+        label="synth",
+    )
+
+    ax.set_xlabel("H(p)/log(M)")
+    ax.set_ylabel("dens" if density else "count")
+    ax.set_title(f"M={M}, zsc={zsc}", fontsize=10)
+    ax.legend(frameon=False, fontsize=8)
+    _despine(ax)
+
+    plt.tight_layout()
+    plt.ion()
+    plt.show()
+
+    if savepath_hist is not None:
+        fig_hist.savefig(savepath_hist, dpi=150, bbox_inches="tight", facecolor="white")
+
+    # ---------------- Figure 2: bar plots for extremes (layout fixed) ----------------
+    fig_bars = plt.figure(figsize=figsize_bars)
+
+    fig_bars.subplots_adjust(
+        left=0.05,
+        right=0.995,
+        bottom=0.08,
+        top=0.80,
+    )
+
+    # Control the inter-panel gap HERE (only here)
+    outer = fig_bars.add_gridspec(1, 2, wspace=0.3)
+
+    def _panel(gs, X: np.ndarray, flat: np.ndarray,
+               idx_hi: np.ndarray, idx_lo: np.ndarray):
+        sub = gs.subgridspec(2, k, hspace=0.55, wspace=0.22)
+        axs_sub = np.empty((2, k), dtype=object)
+
+        def _decorate_axis(ax, i: int, Hval: float):
+            ax.set_title(
+                f"i={int(i)} \n H={Hval:.3f}",
+                fontsize=8,
+                pad=3,
+            )
+            ax.tick_params(axis="both", labelsize=8)
+            _despine(ax)
+
+        # top row: most entropic
+        for j, i in enumerate(idx_hi):
+            ax = fig_bars.add_subplot(
+                sub[0, j],
+                sharex=axs_sub[0, 0] if j > 0 else None,
+                sharey=axs_sub[0, 0] if j > 0 else None,
+            )
+            axs_sub[0, j] = ax
+
+            ax.bar(np.arange(M), X[i, :])
+            _decorate_axis(ax, i, flat[i])
+
+            ax.set_xticks([])
+            if j == 0:
+                ax.set_ylabel("most entropic\ncoeff", fontsize=9, labelpad=10)
+            else:
+                ax.set_yticklabels([])
+
+        # bottom row: least entropic
+        for j, i in enumerate(idx_lo):
+            ax = fig_bars.add_subplot(
+                sub[1, j],
+                sharex=axs_sub[0, 0],
+                sharey=axs_sub[1, 0] if j > 0 else None,
+            )
+            axs_sub[1, j] = ax
+
+            ax.bar(np.arange(M), X[i, :])
+            _decorate_axis(ax, i, flat[i])
+
+            ax.set_xticks([])
+            ax.set_xlabel("α", fontsize=9)
+            if j == 0:
+                ax.set_ylabel("least entropic\ncoeff", fontsize=9, labelpad=10)
+            else:
+                ax.set_yticklabels([])
+
+    _panel(outer[0], C, flat_real, idx_real_hi, idx_real_lo)
+    _panel(outer[1], B, flat_synth, idx_synth_hi, idx_synth_lo)
+
+    fig_bars.suptitle(
+        f"Extreme-entropy coefficient vectors (flatness = H(p)/log(M), M={M}, weight={weight})",
+        fontsize=12,
+        y=0.985,
+    )
+
+    bbox_L = outer[0].get_position(fig_bars)
+    bbox_R = outer[1].get_position(fig_bars)
+
+    fig_bars.text(
+        0.5 * (bbox_L.x0 + bbox_L.x1),
+        0.86,
+        f"Real (C): 5 most / 5 least entropic (zsc={zsc})",   # UPDATED
+        ha="center",
+        va="bottom",
+        fontsize=11,
+    )
+    fig_bars.text(
+        0.5 * (bbox_R.x0 + bbox_R.x1),
+        0.86,
+        f"Synthetic (B): 5 most / 5 least entropic (zsc={zsc})",  # UPDATED
+        ha="center",
+        va="bottom",
+        fontsize=11,
+    )
+
+    if savepath_bars is not None:
+        fig_bars.savefig(savepath_bars, dpi=150, bbox_inches="tight", facecolor="white")
+
+    plt.ion()
+    plt.show()
+
+    # ---------------- Figure 3 (REAL only): group summary (median vs variance) ----------------
+    from matplotlib.ticker import MaxNLocator
+
+    if "Beryl" not in r or "acs" not in r:
+        raise KeyError("Expected r['Beryl'] (region per neuron) and r['acs'] (kmeans label per neuron).")
+
+    beryl = np.asarray(r["Beryl"])
+    acs = np.asarray(r["acs"])
+
+    # Beryl colors per neuron (as requested; not directly used in the per-group scatter)
+    cols_b = np.array([pal[reg] for reg in beryl])
 
 
+    def _sizes_linear_global(ns, *, nmin, nmax, smin=8.0, smax=200.0):
+        ns = np.asarray(ns, dtype=float)
+        if ns.size == 0 or nmax <= nmin:
+            return np.full_like(ns, smin, dtype=float)
+        z = (ns - nmin) / (nmax - nmin)
+        return smin + (smax - smin) * z
 
+    def _annotate_size_legend(ax, ns, *, nmin, nmax, smin=8.0, smax=200.0, loc=(0.8, 0.4)):
+        """
+        Annotate 5 reference dot sizes with counts (min, Q1, median, Q3, max),
+        using the SAME global n->size mapping as the scatter.
+        """
+        ns = np.asarray(ns, dtype=int)
+        if ns.size == 0 or nmax <= nmin:
+            return
 
+        ref_counts = np.array([
+            int(np.min(ns)),
+            int(np.quantile(ns, 0.25)),
+            int(np.quantile(ns, 0.50)),
+            int(np.quantile(ns, 0.75)),
+            int(np.max(ns)),
+        ], dtype=int)
 
+        def _count_to_size(n):
+            z = (float(n) - float(nmin)) / (float(nmax) - float(nmin))
+            return smin + (smax - smin) * z
 
+        sizes = np.array([_count_to_size(n) for n in ref_counts], dtype=float)
 
+        x0, y0 = loc
+        dy = 0.07
+        for j, (n, s) in enumerate(zip(ref_counts, sizes)):
+            yy = y0 - j * dy
+            ax.scatter([x0], [yy], s=[s], c="k", alpha=0.25,
+                    transform=ax.transAxes, clip_on=False, linewidths=0)
+            ax.text(x0 + 0.05, yy, f"{n}", transform=ax.transAxes,
+                    va="center", ha="left", fontsize=9)
 
+        ax.text(x0, y0 + 0.04, "n (size)", transform=ax.transAxes,
+                va="bottom", ha="left", fontsize=9)
 
-    
+    def _group_stats(labels, *, exclude_labels=None, nmin: int = 1):
+        """
+        For each unique label, compute:
+        - y: median(flat_real) within group
+        - x: variance(flat_real) within group
+        - n: group size
+        Drops groups with n < nmin.
+        Returns aligned arrays: labs, x_var, y_med, n
+        """
+        labels = np.asarray(labels)
+        exclude = set(exclude_labels or [])
+
+        u = np.unique(labels)
+        labs, xs, ys, ns = [], [], [], []
+        for lab in u:
+            if str(lab) in exclude:
+                continue
+            idx = labels == lab
+            v = flat_real[idx]
+            v = v[np.isfinite(v)]
+            n = int(v.size)
+            if n < int(nmin):          # <-- ADD THIS
+                continue
+            labs.append(lab)
+            ys.append(float(np.median(v)))
+            xs.append(float(np.var(v)))  # use np.var(v, ddof=1) if you prefer sample variance
+            ns.append(n)
+
+        return np.asarray(labs), np.asarray(xs), np.asarray(ys), np.asarray(ns)
+
+    # compute group stats FIRST for both panels (needed for global size mapping)
+    labs_reg, x_reg, y_reg, n_reg = _group_stats(
+        beryl, exclude_labels={"root", "void"}, nmin=min_group_n
+    )
+    labs_c, x_c, y_c, n_c = _group_stats(
+        acs, nmin=min_group_n
+    )
+
+    # guard: if filtering removed everything, stop cleanly
+    if n_reg.size == 0 or n_c.size == 0:
+        raise ValueError(
+            f"After filtering with min_group_n={min_group_n}, no groups remain "
+            f"(regions kept: {n_reg.size}, clusters kept: {n_c.size})."
+        )
+
+    # global n-range for consistent dot sizes across both plots
+    nmin_global = int(min(n_reg.min(), n_c.min()))
+    nmax_global = int(max(n_reg.max(), n_c.max()))
+
+    # size arrays using global mapping
+    s_reg = _sizes_linear_global(n_reg, nmin=nmin_global, nmax=nmax_global, smin=8.0, smax=200.0)
+    s_c   = _sizes_linear_global(n_c,   nmin=nmin_global, nmax=nmax_global, smin=8.0, smax=200.0)
+
+    fig_scatter, axs = plt.subplots(1, 2, figsize=figsize_scatter, sharey=True, sharex=True)
+
+    for ax in axs:
+        ax.set_xlabel("variance of entropy")
+        ax.set_ylabel("median entropy")
+        ax.xaxis.set_major_locator(MaxNLocator(nbins=3, prune=None))
+        ax.ticklabel_format(axis="x", style="plain", useOffset=False)
+        _despine(ax)
+
+    # --- Left panel: Beryl regions (exclude root/void) ---
+    ax = axs[0]
+    c_reg = np.array([pal[reg] for reg in labs_reg])
+    ax.scatter(x_reg, y_reg, s=s_reg, c=c_reg, alpha=0.85, linewidths=0)
+    ax.set_title(f"Beryl regions (excl root/void): n={x_reg.size}, zsc={zsc}")
+    _annotate_size_legend(ax, n_reg, nmin=nmin_global, nmax=nmax_global, smin=8.0, smax=200.0)
+
+    # --- Right panel: KMeans clusters ---
+    ax = axs[1]
+    cmap = plt.get_cmap("tab20")
+    c_c = np.array([cmap(int(lab) % 20) for lab in labs_c])
+    ax.scatter(x_c, y_c, s=s_c, c=c_c, alpha=0.85, linewidths=0)
+    ax.set_title(f"KMeans clusters: n={x_c.size}, zsc={zsc}")
+    _annotate_size_legend(ax, n_c, nmin=nmin_global, nmax=nmax_global, smin=8.0, smax=200.0)
+
+    fig_scatter.suptitle(
+        f"Flatness (real only): group median vs within-group variance (M={M}, weight={weight}, zsc={zsc})",
+        y=0.99,
+        fontsize=12,
+    )
+
+    plt.tight_layout()
+    plt.ion()
+    plt.show()
+
+    if savepath_scatter is not None:
+        fig_scatter.savefig(savepath_scatter, dpi=150, bbox_inches="tight", facecolor="white")
