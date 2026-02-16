@@ -901,7 +901,7 @@ def regional_group(
     vers: str = "concat",
     ephys: bool = False,
     grid_upsample: int = 0,
-    nclus: int = 100,
+    nclus: int = 25,
     nclus_rm: int = 100,
     nclus_s: int = 20,           # synthetic basis size
     cv: bool = True,
@@ -930,9 +930,6 @@ def regional_group(
 
     if synthetic:
         cv = False
-
-    if (not zsc) and cv:
-        raise ValueError("zsc=False is only supported when cv=False (requested).")
 
     nclus = int(nclus)
     nclus_rm = int(nclus_rm)
@@ -2267,6 +2264,7 @@ def stack_concat(
     Z_train = zscore(X_train, axis=1) if X_train.size else X_train
     r["concat_z_train"] = Z_train
     r["concat_z"] = zscore(X_test, axis=1) if X_test.size else X_test
+    r["concat"] = X_test
     r["fr"] = np.array([np.mean(x) for x in X_test], dtype=np.float32) if X_test.size else np.array([], dtype=np.float32)
 
     data = np.asarray(r["concat_z"])
