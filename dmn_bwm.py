@@ -2331,6 +2331,13 @@ def plot_dim_reduction(
     synthetic: bool = False,      # NEW
     syn_control: bool = False,    # NEW
     save_only: bool = False,
+    rerun_umap: bool = False,
+    umap_n_neighbors=None,
+    umap_min_dist=None,
+    umap_metric: str = "euclidean",
+    umap_random_state: int = 0,
+    umap_spread=None,
+    umap_n_epochs=None,
 ):
     """
     2D embedding (e.g., UMAP) colored by mapping.
@@ -2341,6 +2348,9 @@ def plot_dim_reduction(
       - uses the correct feature key automatically in synthetic mode:
           * real features live in r['concat_z']
           * synthetic features live in r['concat_zs']
+      - if rerun_umap=True, recomputes the UMAP embedding inside this plotting
+        function using the provided umap_* arguments and saves those params in
+        output PNG filenames.
     """
 
     if save_only:
@@ -2364,6 +2374,41 @@ def plot_dim_reduction(
     feat_key = "concat_zs" if synthetic else feat
     if feat_key not in r:
         raise KeyError(f"Feature '{feat_key}' not found in regional_group output.")
+
+    umap_params_used = None
+    if rerun_umap:
+        if not str(algo).startswith("umap"):
+            raise ValueError(
+                f"rerun_umap=True requires an UMAP embedding key (got algo='{algo}')."
+            )
+
+        X_umap = np.asarray(r[feat_key], dtype=float)
+        if X_umap.ndim != 2:
+            raise ValueError(f"Expected 2D feature matrix for UMAP, got shape {X_umap.shape}")
+
+        umap_kwargs = dict(n_components=2, random_state=umap_random_state, metric=umap_metric)
+        if umap_n_neighbors is not None:
+            umap_kwargs["n_neighbors"] = int(umap_n_neighbors)
+        if umap_min_dist is not None:
+            umap_kwargs["min_dist"] = float(umap_min_dist)
+        if umap_spread is not None:
+            umap_kwargs["spread"] = float(umap_spread)
+        if umap_n_epochs is not None:
+            umap_kwargs["n_epochs"] = int(umap_n_epochs)
+
+        print(f"[rerun_umap] Recomputing {algo} from '{feat_key}' with params: {umap_kwargs}")
+        reducer = umap.UMAP(**umap_kwargs)
+        r[algo] = reducer.fit_transform(X_umap)
+
+        umap_params_used = {
+            "n_neighbors": getattr(reducer, "n_neighbors", None),
+            "min_dist": getattr(reducer, "min_dist", None),
+            "metric": getattr(reducer, "metric", umap_metric),
+            "random_state": umap_random_state,
+            "spread": getattr(reducer, "spread", None),
+            "n_epochs": getattr(reducer, "n_epochs", None),
+        }
+
     if algo not in r:
         raise KeyError(f"Embedding '{algo}' not found in regional_group output.")
 
@@ -2437,6 +2482,24 @@ def plot_dim_reduction(
         fig.colorbar(mpl.cm.ScalarMappable(norm=norm, cmap=cmap), cax=cax, orientation="horizontal")
 
     # --- save main figure ---
+    def _safe_tag(v):
+        s = str(v)
+        for a, b in [(" ", ""), ("/", "-"), (".", "p"), (":", "-")]:
+            s = s.replace(a, b)
+        return s
+
+    umap_tag = ""
+    if rerun_umap and (umap_params_used is not None):
+        umap_tag = (
+            f"_rerunUMAP"
+            f"_nn{_safe_tag(umap_params_used.get('n_neighbors'))}"
+            f"_md{_safe_tag(umap_params_used.get('min_dist'))}"
+            f"_metric{_safe_tag(umap_params_used.get('metric'))}"
+            f"_rs{_safe_tag(umap_params_used.get('random_state'))}"
+            f"_sp{_safe_tag(umap_params_used.get('spread'))}"
+            f"_ep{_safe_tag(umap_params_used.get('n_epochs'))}"
+        )
+
     if alone:
         fig.tight_layout()
 
@@ -2449,7 +2512,7 @@ def plot_dim_reduction(
             pass
 
         out = Path(one.cache_dir, "dmn", "imgs",
-                   f"{nclus}_{mapping}_{algo}_cv{int(cv)}_syn{int(synthetic)}.png")
+                   f"{nclus}_{mapping}_{algo}_cv{int(cv)}_syn{int(synthetic)}{umap_tag}.png")
         fig.savefig(out, dpi=150)
         if save_only:
             plt.close(fig)
@@ -2495,7 +2558,7 @@ def plot_dim_reduction(
             pass
 
         out2 = Path(one.cache_dir, 'dmn', 'imgs',
-                    f'{nclus}_{mapping}_lines_cv{cv}.png')
+                    f'{nclus}_{mapping}_lines_{algo}_cv{cv}{umap_tag}.png')
         ff.savefig(out2, dpi=150)
         if save_only:
             plt.close(ff)
@@ -2548,8 +2611,11 @@ def plot_dim_reduction(
                 h += seg_len
     plt.show()
     #plt.close('all')
-    
 
+
+# Backward-compatible alias used in some notebooks/scripts.
+def plot_dim_red(*args, **kwargs):
+    return plot_dim_reduction(*args, **kwargs)
 
 
 
@@ -5515,7 +5581,11 @@ def plot_rastermap(
     """
     Updated for zsc=False:
       - real: use 'concat' instead of 'concat_z'
-      - synthetic: use 'concat_s' instead of 'concat_zs'
+      - synthetic: use 'concat_s' instead of 'concat_zs'   
+      
+      ex_regs = ['CP', 'MRN', 'PO', 'CA1', 'MOp', 
+               'CUL4 5', 'IRN', 'PIR', 'ZI', 'BMA']
+
     """
 
     r = regional_group(
