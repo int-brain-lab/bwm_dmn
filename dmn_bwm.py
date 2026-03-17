@@ -5973,7 +5973,6 @@ def plot_region_counts_svg():
 def flatness_entropy_score(d, get_cells=False):
     '''
     Measures how close the distribution is to uniform using normalized entropy.
-    1 = perfectly flat (uniform), 0 = most peaked (Dirac delta-like).
     '''
     scores = {}
     for reg in d:
