@@ -903,7 +903,7 @@ def regional_group(
     grid_upsample: int = 0,
     nclus: int = 25,
     nclus_rm: int = 100,
-    nclus_s: int = 20,           # synthetic basis size
+    nclus_s: int = 100,          # synthetic basis size
     cv: bool = True,
     locality: float = 0.75,
     time_lag_window: int = 5,
@@ -1177,11 +1177,12 @@ def regional_group(
             B = np.zeros((N, M), dtype=float)
             for a in range(M):
                 col = C[:, a]
-                lo, hi = np.nanpercentile(col, [0.5, 99.5])
+                lo, hi = float(np.nanmin(col)), float(np.nanmax(col))
                 if (not np.isfinite(lo)) or (not np.isfinite(hi)) or (lo == hi):
-                    lo, hi = float(np.nanmin(col)), float(np.nanmax(col))
                     if lo == hi:
                         lo, hi = lo - 1.0, hi + 1.0
+                    else:
+                        lo, hi = -1.0, 1.0
 
                 h, edges = np.histogram(col, bins=int(n_bins), range=(float(lo), float(hi)), density=False)
                 h = h.astype(float)
@@ -2325,7 +2326,7 @@ def plot_dim_reduction(
     restr=None,
     nclus: int = 7,
     nclus_rm: int = 100,          # NEW (matches regional_group)
-    nclus_s: int = 20,            # NEW (synthetic basis size)
+    nclus_s: int = 100,           # NEW (synthetic basis size)
     rerun: bool = False,
     cv: bool = True,
     synthetic: bool = False,      # NEW
@@ -5566,7 +5567,7 @@ def plot_rastermap(
     sort_method="rastermap",
     nclus=25,
     nclus_rm=100,
-    nclus_s=25,
+    nclus_s=100,
     clsfig=False,
     bounds=False,
     grid_upsample=0,
@@ -6205,7 +6206,7 @@ def scat_dec_clus(norm_=True, harris=False, nclus=25, nclus_rm=100,
     ))
 
     if axs is None:
-        fig, axs = plt.subplots(figsize=(3, 3))
+        fig, axs = plt.subplots(figsize=(2, 2))
 
     def scatter_panel(ax, x, y, xlabel, ylabel, labels, colors, annotate_r=True, anno=True):
         # Correlation
@@ -6961,9 +6962,9 @@ def plot_fr_lz_scatter_with_marginals(
 def plot_synthetic_marginals_compare_blocks(
     vers: str = "concat",
     nclus: int = 20,
-    nclus_s: int = 20,  # NEW: synthetic basis size (number of alphas)
+    nclus_s: int = 20,  # synthetic basis size (number of alphas)
     bins: int | None = None,
-    figsize: tuple[float, float] = (18, 10),
+    figsize: tuple[float, float] = (4, 4),
     xlim: tuple[float, float] | None = None,
     density: bool = True,
     savepath: str | None = None,
@@ -6971,20 +6972,12 @@ def plot_synthetic_marginals_compare_blocks(
     """
     Compare marginal coefficient distributions with block-wise layout.
 
-    Layout: rows_per_block x (2 * n_blocks) columns, where:
-      - rows_per_block = 5
-      - n_blocks = ceil(nclus_s / rows_per_block)
-      - each block contributes two columns: (C, B)
+    One panel per alpha (α), arranged in blocks of 5 rows.
+    In each panel:
+      - blue line  = real coefficients (C)
+      - black line = synthetic coefficients (B)
 
-    Column pairs (C,B) are assigned sequentially over alpha blocks:
-      block 0 → α = 0..4
-      block 1 → α = 5..9
-      ...
-
-    Rows correspond to α within each block.
-
-    Blue  = real coefficients (C)
-    Black = synthetic coefficients (B)
+    Histograms are drawn as edges only (no filled bars), and axes are removed.
     """
 
     # --- load synthetic result ---
@@ -6994,7 +6987,7 @@ def plot_synthetic_marginals_compare_blocks(
         synthetic=True,
         cv=False,
         nclus=int(nclus),
-        nclus_s=int(nclus_s),  # NEW
+        nclus_s=int(nclus_s),
     )
 
     if "C" not in r or "B" not in r:
@@ -7006,7 +6999,7 @@ def plot_synthetic_marginals_compare_blocks(
     if C.shape != B.shape:
         raise ValueError(f"C and B shape mismatch: {C.shape} vs {B.shape}")
 
-    N, M = C.shape
+    _, M = C.shape
     if M < int(nclus_s):
         raise ValueError(f"Expected at least nclus_s={nclus_s} alphas, got M={M}")
 
@@ -7019,67 +7012,65 @@ def plot_synthetic_marginals_compare_blocks(
 
     rows_per_block = 5
     n_blocks = int(np.ceil(int(nclus_s) / float(rows_per_block)))
-    ncols = 2 * n_blocks
+    ncols = n_blocks
 
     fig, axs = plt.subplots(rows_per_block, ncols, figsize=figsize)
     axs = np.asarray(axs)
-    if axs.ndim != 2 or axs.shape[0] != rows_per_block or axs.shape[1] != ncols:
-        raise RuntimeError(f"Unexpected axs shape {axs.shape}, expected ({rows_per_block}, {ncols})")
+
+    # robust indexing for ncols=1 or rows=1 edge-cases
+    if axs.ndim == 1:
+        if rows_per_block == 1:
+            axs = axs[None, :]
+        else:
+            axs = axs[:, None]
 
     for block in range(n_blocks):
-        col_C = 2 * block
-        col_B = col_C + 1
         alpha_start = block * rows_per_block
 
         for row in range(rows_per_block):
+            ax = axs[row, block]
             alpha = alpha_start + row
+
             if alpha >= int(nclus_s) or alpha >= M:
-                axs[row, col_C].axis("off")
-                axs[row, col_B].axis("off")
+                ax.axis("off")
                 continue
 
-            # --- real (C) ---
-            axs[row, col_C].hist(
-                C[:, alpha],
-                bins=bins,
-                density=density,
-                color="blue",
-                edgecolor="none",
-            )
-            axs[row, col_C].set_title(f"α={alpha}  real", fontsize=9)
+            cvals = C[:, alpha]
+            bvals = B[:, alpha]
 
-            # --- synthetic (B) ---
-            axs[row, col_B].hist(
-                B[:, alpha],
-                bins=bins,
-                density=density,
-                color="black",
-                edgecolor="none",
-            )
-            axs[row, col_B].set_title(f"α={alpha}  synth", fontsize=9)
+            finite = np.isfinite(cvals) | np.isfinite(bvals)
+            cvals = cvals[np.isfinite(cvals)]
+            bvals = bvals[np.isfinite(bvals)]
 
+            if cvals.size == 0 and bvals.size == 0:
+                ax.axis("off")
+                continue
+
+            # shared bin edges per alpha for direct overlay comparison
             if xlim is not None:
-                axs[row, col_C].set_xlim(*xlim)
-                axs[row, col_B].set_xlim(*xlim)
+                lo, hi = xlim
+            else:
+                allv = np.concatenate([x for x in (cvals, bvals) if x.size > 0])
+                lo, hi = float(np.min(allv)), float(np.max(allv))
+                if not np.isfinite(lo) or not np.isfinite(hi) or lo == hi:
+                    lo, hi = lo - 1.0, hi + 1.0
 
-    # axis labels (minimal clutter)
-    for c in range(ncols):
-        axs[-1, c].set_xlabel("coefficient", fontsize=9)
+            edges = np.linspace(lo, hi, int(bins) + 1)
 
-    for r_ in range(rows_per_block):
-        axs[r_, 0].set_ylabel("density" if density else "count", fontsize=9)
+            hc, _ = np.histogram(cvals, bins=edges, density=density)
+            hb, _ = np.histogram(bvals, bins=edges, density=density)
 
-    fig.suptitle(
-        "Marginal coefficient distributions\n"
-        "Real (blue) vs Synthetic (black), block-wise by α",
-        fontsize=12
-    )
+            # edges-only histogram lines (no fills)
+            ax.stairs(hb, edges, color="black", linewidth=1.0)
+            ax.stairs(hc, edges, color="blue", linewidth=1.0)
 
-    plt.tight_layout(rect=(0, 0, 1, 0.94))
+            # keep alpha identity but remove axes
+            ax.text(0.02, 0.9, f"α={alpha}", transform=ax.transAxes, fontsize=8, color="k")
+            ax.axis("off")
 
+    plt.tight_layout()
     if savepath is not None:
         fig.savefig(savepath, dpi=150, bbox_inches="tight", facecolor="white")
-
 
 
 
@@ -7202,7 +7193,8 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     bins: int = 60,
     figsize_hist: tuple[float, float] = (3, 3),   # UPDATED
     figsize_bars: tuple[float, float] = (8, 5),  # UPDATED
-    weight: str = "abs",          # "abs" | "sq" | "relu"
+    metric: str = "entropy",    # "entropy" | "PC0"
+    weight: str = "abs",          # "abs" | "sq" | "relu" (used for entropy)
     eps: float = 1e-12,
     density: bool = True,
     savepath_hist: str | None = None,
@@ -7213,14 +7205,16 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     zsc: bool = True,        
 ):
     """
-    Compute per-neuron coefficient-vector flatness via normalized entropy and plot:
-      1) Overlapping step-hist distributions of flatness for real (C) vs synthetic (B)
-      2) Example coefficient vectors for 5 most / 5 least entropic neurons (real and synthetic)
-      3) NEW: group-median scatter (real vs synth) for Beryl regions and KMeans clusters
+    Compute a per-neuron scalar metric from coefficient vectors and plot:
+      1) Overlapping distributions for real (C) vs synthetic (B)
+      2) Example coefficient vectors for 5 highest / 5 lowest metric neurons
+      3) Group summary (median vs variance) for Beryl regions and KMeans clusters
 
-    Entropy definition:
-        flatness_i = H(p_i)/log(M) in [0,1],
-    where p_i is the row-normalized nonnegative transform of coefficients.
+    metric:
+      - 'entropy': flatness_i = H(p_i)/log(M) in [0,1],
+                   where p_i is row-normalized nonnegative transform of coefficients.
+      - 'PC0': PC1 score per neuron after fitting PCA(n_components=1) on real C
+               and projecting both C and B.
 
     Scatter figure:
       - Panel 1: per-Beryl-region medians (x=synth, y=real), colored by Beryl (pal)
@@ -7261,6 +7255,8 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     C = C[:, :M]
     B = B[:, :M]
 
+    metric_key = str(metric).strip().lower()
+
     def _to_prob(X: np.ndarray) -> np.ndarray:
         X = np.asarray(X, dtype=float)
         X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
@@ -7286,24 +7282,35 @@ def plot_coeff_entropy_flatness_real_vs_synth(
             return np.zeros(P.shape[0], dtype=float)
         return np.clip(H / maxH, 0.0, 1.0)
 
-    P_C = _to_prob(C)
-    P_B = _to_prob(B)
+    if metric_key == "entropy":
+        P_C = _to_prob(C)
+        P_B = _to_prob(B)
+        metric_real = _normalized_entropy(P_C)
+        metric_synth = _normalized_entropy(P_B)
+        metric_label = "H(p)/log(M)"
+        metric_name = "entropy"
+    elif metric_key == "pc0":
+        pca0 = PCA(n_components=1)
+        pca0.fit(C)
+        metric_real = pca0.transform(C)[:, 0]
+        metric_synth = pca0.transform(B)[:, 0]
+        metric_label = "PC0 score"
+        metric_name = "PC0"
+    else:
+        raise ValueError("metric must be one of: 'entropy', 'PC0'")
 
-    flat_real = _normalized_entropy(P_C)
-    flat_synth = _normalized_entropy(P_B)
-
-    # --- pick 5 most/least entropic ---
+    # --- pick 5 highest / lowest metric values ---
     k = 5
-    idx_real_hi = np.argsort(flat_real)[-k:][::-1]
-    idx_real_lo = np.argsort(flat_real)[:k]
-    idx_synth_hi = np.argsort(flat_synth)[-k:][::-1]
-    idx_synth_lo = np.argsort(flat_synth)[:k]
+    idx_real_hi = np.argsort(metric_real)[-k:][::-1]
+    idx_real_lo = np.argsort(metric_real)[:k]
+    idx_synth_hi = np.argsort(metric_synth)[-k:][::-1]
+    idx_synth_lo = np.argsort(metric_synth)[:k]
 
     # ---------------- Figure 1: overlapping distributions (envelope only) ----------------
     fig_hist, ax = plt.subplots(1, 1, figsize=figsize_hist)
 
     ax.hist(
-        flat_real,
+        metric_real,
         bins=bins,
         density=density,
         histtype="step",
@@ -7311,7 +7318,7 @@ def plot_coeff_entropy_flatness_real_vs_synth(
         label="real",
     )
     ax.hist(
-        flat_synth,
+        metric_synth,
         bins=bins,
         density=density,
         histtype="step",
@@ -7319,7 +7326,7 @@ def plot_coeff_entropy_flatness_real_vs_synth(
         label="synth",
     )
 
-    ax.set_xlabel("H(p)/log(M)")
+    ax.set_xlabel(metric_label)
     ax.set_ylabel("dens" if density else "count")
     ax.set_title(f"M={M}, zsc={zsc}", fontsize=10)
     ax.legend(frameon=False, fontsize=8)
@@ -7345,21 +7352,21 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     # Control the inter-panel gap HERE (only here)
     outer = fig_bars.add_gridspec(1, 2, wspace=0.3)
 
-    def _panel(gs, X: np.ndarray, flat: np.ndarray,
+    def _panel(gs, X: np.ndarray, score: np.ndarray,
                idx_hi: np.ndarray, idx_lo: np.ndarray):
         sub = gs.subgridspec(2, k, hspace=0.55, wspace=0.22)
         axs_sub = np.empty((2, k), dtype=object)
 
-        def _decorate_axis(ax, i: int, Hval: float):
+        def _decorate_axis(ax, i: int, sval: float):
             ax.set_title(
-                f"i={int(i)} \n H={Hval:.3f}",
+                f"i={int(i)} \n s={sval:.3f}",
                 fontsize=8,
                 pad=3,
             )
             ax.tick_params(axis="both", labelsize=8)
             _despine(ax)
 
-        # top row: most entropic
+        # top row: highest metric
         for j, i in enumerate(idx_hi):
             ax = fig_bars.add_subplot(
                 sub[0, j],
@@ -7369,15 +7376,15 @@ def plot_coeff_entropy_flatness_real_vs_synth(
             axs_sub[0, j] = ax
 
             ax.bar(np.arange(M), X[i, :])
-            _decorate_axis(ax, i, flat[i])
+            _decorate_axis(ax, i, score[i])
 
             ax.set_xticks([])
             if j == 0:
-                ax.set_ylabel("most entropic\ncoeff", fontsize=9, labelpad=10)
+                ax.set_ylabel(f"highest {metric_name}\ncoeff", fontsize=9, labelpad=10)
             else:
                 ax.set_yticklabels([])
 
-        # bottom row: least entropic
+        # bottom row: lowest metric
         for j, i in enumerate(idx_lo):
             ax = fig_bars.add_subplot(
                 sub[1, j],
@@ -7387,20 +7394,21 @@ def plot_coeff_entropy_flatness_real_vs_synth(
             axs_sub[1, j] = ax
 
             ax.bar(np.arange(M), X[i, :])
-            _decorate_axis(ax, i, flat[i])
+            _decorate_axis(ax, i, score[i])
 
             ax.set_xticks([])
             ax.set_xlabel("α", fontsize=9)
             if j == 0:
-                ax.set_ylabel("least entropic\ncoeff", fontsize=9, labelpad=10)
+                ax.set_ylabel(f"lowest {metric_name}\ncoeff", fontsize=9, labelpad=10)
             else:
                 ax.set_yticklabels([])
 
-    _panel(outer[0], C, flat_real, idx_real_hi, idx_real_lo)
-    _panel(outer[1], B, flat_synth, idx_synth_hi, idx_synth_lo)
+    _panel(outer[0], C, metric_real, idx_real_hi, idx_real_lo)
+    _panel(outer[1], B, metric_synth, idx_synth_hi, idx_synth_lo)
 
+    metric_desc = f"metric={metric_name}" if metric_key == "pc0" else f"metric={metric_name}, weight={weight}"
     fig_bars.suptitle(
-        f"Extreme-entropy coefficient vectors (flatness = H(p)/log(M), M={M}, weight={weight})",
+        f"Extreme-{metric_name} coefficient vectors ({metric_desc}, M={M})",
         fontsize=12,
         y=0.985,
     )
@@ -7411,7 +7419,7 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     fig_bars.text(
         0.5 * (bbox_L.x0 + bbox_L.x1),
         0.86,
-        f"Real (C): 5 most / 5 least entropic (zsc={zsc})",   # UPDATED
+        f"Real (C): top 5 / bottom 5 by {metric_name} (zsc={zsc})",
         ha="center",
         va="bottom",
         fontsize=11,
@@ -7419,7 +7427,7 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     fig_bars.text(
         0.5 * (bbox_R.x0 + bbox_R.x1),
         0.86,
-        f"Synthetic (B): 5 most / 5 least entropic (zsc={zsc})",  # UPDATED
+        f"Synthetic (B): top 5 / bottom 5 by {metric_name} (zsc={zsc})",
         ha="center",
         va="bottom",
         fontsize=11,
@@ -7489,8 +7497,8 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     def _group_stats(labels, *, exclude_labels=None, nmin: int = 1):
         """
         For each unique label, compute:
-        - y: median(flat_real) within group
-        - x: variance(flat_real) within group
+        - y: median(metric_real) within group
+        - x: variance(metric_real) within group
         - n: group size
         Drops groups with n < nmin.
         Returns aligned arrays: labs, x_var, y_med, n
@@ -7504,7 +7512,7 @@ def plot_coeff_entropy_flatness_real_vs_synth(
             if str(lab) in exclude:
                 continue
             idx = labels == lab
-            v = flat_real[idx]
+            v = metric_real[idx]
             v = v[np.isfinite(v)]
             n = int(v.size)
             if n < int(nmin):          # <-- ADD THIS
@@ -7542,8 +7550,8 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     fig_scatter, axs = plt.subplots(1, 2, figsize=figsize_scatter, sharey=True, sharex=True)
 
     for ax in axs:
-        ax.set_xlabel("variance of entropy")
-        ax.set_ylabel("median entropy")
+        ax.set_xlabel(f"variance of {metric_name}")
+        ax.set_ylabel(f"median {metric_name}")
         ax.xaxis.set_major_locator(MaxNLocator(nbins=3, prune=None))
         ax.ticklabel_format(axis="x", style="plain", useOffset=False)
         _despine(ax)
@@ -7564,7 +7572,7 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     _annotate_size_legend(ax, n_c, nmin=nmin_global, nmax=nmax_global, smin=8.0, smax=200.0)
 
     fig_scatter.suptitle(
-        f"Flatness (real only): group median vs within-group variance (M={M}, weight={weight}, zsc={zsc})",
+        f"{metric_name} (real only): group median vs within-group variance (M={M}, zsc={zsc})",
         y=0.99,
         fontsize=12,
     )
@@ -7575,296 +7583,4 @@ def plot_coeff_entropy_flatness_real_vs_synth(
 
     if savepath_scatter is not None:
         fig_scatter.savefig(savepath_scatter, dpi=150, bbox_inches="tight", facecolor="white")
-
-
-def plot_nn_same_vs_diff_scatter(
-    *,
-    nclus: int = 25,
-    cv: bool = False,
-    mapping: str = "kmeans",
-    feat: str = "concat_z",
-    metric: str = "cosine",
-    max_neurons: int | None = None,
-    k: int = 400,
-    batch_size: int | None = 2000,
-    ax: plt.Axes | None = None,
-    alpha: float = 0.15,
-    s: float = 6.0,
-    random_state: int = 0,
-    log_axes: bool = True,
-):
-    """
-    Scatter diagnostic: each neuron i -> (d_same(i), d_diff(i)).
-
-    d_same(i): nearest-neighbor distance among points with same label
-    d_diff(i): nearest-neighbor distance among points with different label
-
-    Points near diagonal => weak separability (continuum / poor clusterability).
-    """
-
-    rng = np.random.default_rng(random_state)
-
-    r = regional_group(mapping=mapping, nclus=nclus, cv=cv)
-    X = np.asarray(r[feat], dtype=np.float32)
-    labels = np.asarray(r['acs'])
-
-    assert X.ndim == 2
-    assert X.shape[0] == labels.size
-
-    # optional subsample
-    if max_neurons is not None and X.shape[0] > max_neurons:
-        idx = rng.choice(X.shape[0], max_neurons, replace=False)
-        X = X[idx]
-        labels = labels[idx]
-
-    N = X.shape[0]
-    k_eff = min(k, N - 1)
-    if k_eff < 2:
-        raise ValueError("Not enough points for neighbor search.")
-
-    nn = NearestNeighbors(
-        n_neighbors=k_eff + 1,
-        metric=metric,
-        algorithm="brute" if metric in ("cosine", "euclidean") else "auto",
-        n_jobs=-1,
-    )
-    nn.fit(X)
-
-    # query neighbors in batches to control peak RAM
-    d_same = np.full(N, np.nan, dtype=np.float32)
-    d_diff = np.full(N, np.nan, dtype=np.float32)
-
-    if batch_size is None:
-        batch_size = N
-
-    for start in range(0, N, batch_size):
-        stop = min(N, start + batch_size)
-        dists, inds = nn.kneighbors(X[start:stop], return_distance=True)
-        dists = dists[:, 1:]  # drop self
-        inds = inds[:, 1:]
-
-        for bi, i in enumerate(range(start, stop)):
-            neigh = inds[bi]
-            dn = dists[bi]
-            labn = labels[neigh]
-
-            same_mask = labn == labels[i]
-            diff_mask = ~same_mask
-
-            if np.any(same_mask):
-                d_same[i] = np.min(dn[same_mask])
-            if np.any(diff_mask):
-                d_diff[i] = np.min(dn[diff_mask])
-
-    ok = np.isfinite(d_same) & np.isfinite(d_diff)
-    miss_same = 1.0 - np.mean(np.isfinite(d_same))
-    miss_diff = 1.0 - np.mean(np.isfinite(d_diff))
-
-    # plot
-    if ax is None:
-        _, ax = plt.subplots(figsize=(4, 4))
-
-    xs = d_same[ok].astype(np.float64, copy=False)
-    ys = d_diff[ok].astype(np.float64, copy=False)
-
-    eps = 1e-6
-    xs = np.where(xs > eps, xs, eps)
-    ys = np.where(ys > eps, ys, eps)
-
-    if log_axes:
-        # bin in log space to get meaningful structure
-        xlog = np.log10(xs)
-        ylog = np.log10(ys)
-
-        hb = ax.hexbin(
-            xlog, ylog,
-            gridsize=85,     # slightly higher helps reveal structure
-            mincnt=1,
-            bins="log",      # log-count coloring; keep
-            linewidths=0.0,
-        )
-
-        lo = float(min(xlog.min(), ylog.min()))
-        hi = float(max(xlog.max(), ylog.max()))
-        ax.plot([lo, hi], [lo, hi], "r--", lw=1)
-
-        ax.set_xlabel(r"$\log_{10}\, d_{\mathrm{same}}$")
-        ax.set_ylabel(r"$\log_{10}\, d_{\mathrm{diff}}$")
-        ax.set_xlim(lo, hi)
-        ax.set_ylim(lo, hi)
-
-        # Optional: show ticks as powers of 10 (still a linear axis underneath)
-        ticks = np.linspace(np.floor(lo), np.ceil(hi), int(np.ceil(hi) - np.floor(lo)) + 1)
-        ax.set_xticks(ticks)
-        ax.set_yticks(ticks)
-        ax.set_xticklabels([rf"$10^{{{int(t)}}}$" for t in ticks])
-        ax.set_yticklabels([rf"$10^{{{int(t)}}}$" for t in ticks])
-
-    else:
-        # linear binning + linear axes
-        hb = ax.hexbin(
-            xs, ys,
-            gridsize=85,
-            mincnt=1,
-            bins="log",
-            linewidths=0.0,
-        )
-        lo = float(min(xs.min(), ys.min()))
-        hi = float(max(xs.max(), ys.max()))
-        ax.plot([lo, hi], [lo, hi], "r--", lw=1)
-        ax.set_xlabel(r"$d_{\mathrm{same}}$")
-        ax.set_ylabel(r"$d_{\mathrm{diff}}$")
-        ax.set_xlim(lo, hi)
-        ax.set_ylim(lo, hi)
-
-    ax.set_aspect("equal", adjustable="box")
-    plt.colorbar(hb, ax=ax, label="log10(count)")
-
-
-
-# import numpy as np
-# import matplotlib.pyplot as plt
-
-# from sklearn.datasets import fetch_openml
-# from sklearn.neighbors import NearestNeighbors
-# from sklearn.preprocessing import StandardScaler
-# from sklearn.decomposition import PCA
-
-
-# def nn_same_vs_diff_hexbin_mnist(
-#     *,
-#     metric="cosine",
-#     k=400,
-#     max_points=20000,
-#     pca_dim=50,
-#     gridsize=95,
-#     log_axes=True,
-#     eps=1e-6,
-#     random_state=0,
-# ):
-#     rng = np.random.default_rng(random_state)
-
-#     # --- load MNIST ---
-#     # If your sklearn is older and errors on parser="auto", remove that argument.
-#     mnist = fetch_openml("mnist_784", version=1, as_frame=False, parser="auto")
-#     X = mnist.data.astype(np.float32)
-#     y = mnist.target.astype(np.int16)
-
-#     # --- subsample (important) ---
-#     N0 = X.shape[0]
-#     if max_points is not None and N0 > max_points:
-#         idx = rng.choice(N0, max_points, replace=False)
-#         X = X[idx]
-#         y = y[idx]
-
-#     # --- standardize + PCA (recommended) ---
-#     X = StandardScaler(with_mean=True, with_std=True).fit_transform(X)
-#     if pca_dim is not None and pca_dim < X.shape[1]:
-#         X = PCA(n_components=pca_dim, random_state=random_state).fit_transform(X)
-#     X = X.astype(np.float32, copy=False)
-
-#     # --- NN search ---
-#     N = X.shape[0]
-#     k_eff = min(k, N - 1)
-#     if k_eff < 2:
-#         raise ValueError("Not enough points for neighbor search.")
-
-#     nn = NearestNeighbors(
-#         n_neighbors=k_eff + 1,
-#         metric=metric,
-#         algorithm="brute" if metric in ("cosine", "euclidean") else "auto",
-#         n_jobs=-1,
-#     ).fit(X)
-
-#     dists, inds = nn.kneighbors(X, return_distance=True)
-#     dists = dists[:, 1:]  # drop self
-#     inds = inds[:, 1:]
-
-#     d_same = np.full(N, np.nan, dtype=np.float32)
-#     d_diff = np.full(N, np.nan, dtype=np.float32)
-
-#     for i in range(N):
-#         neigh = inds[i]
-#         dn = dists[i]
-#         same = (y[neigh] == y[i])
-#         if np.any(same):
-#             d_same[i] = dn[same].min()
-#         if np.any(~same):
-#             d_diff[i] = dn[~same].min()
-
-#     ok = np.isfinite(d_same) & np.isfinite(d_diff)
-#     xs = d_same[ok].astype(np.float64, copy=False)
-#     ys = d_diff[ok].astype(np.float64, copy=False)
-
-#     # enforce positivity
-#     xs = np.where(xs > eps, xs, eps)
-#     ys = np.where(ys > eps, ys, eps)
-
-#     fig, ax = plt.subplots(figsize=(4.8, 4.8))
-
-#     if log_axes:
-#         # IMPORTANT: bin in log space; do NOT set ax scales to log afterwards
-#         xlog = np.log10(xs)
-#         ylog = np.log10(ys)
-
-#         hb = ax.hexbin(
-#             xlog, ylog,
-#             gridsize=gridsize,
-#             mincnt=1,
-#             bins="log",      # log-count coloring
-#             linewidths=0.0,
-#         )
-
-#         lo = float(min(xlog.min(), ylog.min()))
-#         hi = float(max(xlog.max(), ylog.max()))
-#         ax.plot([lo, hi], [lo, hi], "r--", lw=1)
-
-#         ax.set_xlabel(r"$\log_{10}\, d_{\mathrm{same}}$")
-#         ax.set_ylabel(r"$\log_{10}\, d_{\mathrm{diff}}$")
-#         ax.set_xlim(lo, hi)
-#         ax.set_ylim(lo, hi)
-
-#         # optional: tick labels as powers of 10
-#         ticks = np.linspace(np.floor(lo), np.ceil(hi), int(np.ceil(hi) - np.floor(lo)) + 1)
-#         ax.set_xticks(ticks)
-#         ax.set_yticks(ticks)
-#         ax.set_xticklabels([rf"$10^{{{int(t)}}}$" for t in ticks])
-#         ax.set_yticklabels([rf"$10^{{{int(t)}}}$" for t in ticks])
-
-#         ax.set_title(f"MNIST NN distances ({metric}), k={k_eff}, N={X.shape[0]}\n(hexbin in log space)")
-
-#     else:
-#         hb = ax.hexbin(
-#             xs, ys,
-#             gridsize=gridsize,
-#             mincnt=1,
-#             bins="log",
-#             linewidths=0.0,
-#         )
-#         lo = float(min(xs.min(), ys.min()))
-#         hi = float(max(xs.max(), ys.max()))
-#         ax.plot([lo, hi], [lo, hi], "r--", lw=1)
-#         ax.set_xlabel(r"$d_{\mathrm{same}}$")
-#         ax.set_ylabel(r"$d_{\mathrm{diff}}$")
-#         ax.set_xlim(lo, hi)
-#         ax.set_ylim(lo, hi)
-#         ax.set_title(f"MNIST NN distances ({metric}), k={k_eff}, N={X.shape[0]}")
-
-#     ax.set_aspect("equal", adjustable="box")
-#     plt.colorbar(hb, ax=ax, label="log10(count)")
-#     plt.show()
-
-#     return (d_same, d_diff)
-
-
-# # Run it
-# _ = nn_same_vs_diff_hexbin_mnist(
-#     metric="cosine",
-#     k=400,
-#     max_points=20000,   # raise to 50000 if you want smoother density + can afford runtime
-#     pca_dim=50,
-#     gridsize=95,
-#     log_axes=True,
-#     random_state=0,
-# )
 
