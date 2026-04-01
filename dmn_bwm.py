@@ -4971,6 +4971,9 @@ def plot_cluster_profile(
     savefig: bool = False,
     bare_line: bool = True,
     _full: bool = True,           # NEW: grid figure with all clusters
+    pie_only: bool = False,       # NEW: if True, suppress line plots and show only pie(s)
+    canonical_order: bool = False,# NEW: if True, order pie wedges by canonical Beryl order
+    min_region_n: int = 0,        # NEW: include only regions with >= this many neurons globally
 ):
     """
     Inspect either a Rastermap ('rm') cluster or a KMeans ('kmeans') cluster.
@@ -5101,6 +5104,13 @@ def plot_cluster_profile(
 
     global_counts = Counter(acs_B)
 
+    # canonical Beryl order (optional wedge ordering)
+    try:
+        p_can = Path(iblatlas.__file__).parent / "beryl.npy"
+        beryl_canonical = list(br.id2acronym(np.load(p_can), mapping="Beryl"))
+    except Exception:
+        beryl_canonical = []
+
     # ---- cluster color helper ----
     def _cluster_color(mask_):
         col = "black"
@@ -5117,7 +5127,11 @@ def plot_cluster_profile(
         regs_in_clus = acs_B[mask_]
         counts = Counter(regs_in_clus)
 
-        regs = list(counts.keys())
+        # optional global region-size filter
+        regs = [r for r in counts.keys() if global_counts.get(r, 0) >= int(min_region_n)]
+        if len(regs) == 0:
+            return [], np.array([], dtype=float), []
+
         raw = np.array([counts[r] for r in regs], dtype=float)
 
         if norm_reg_count:
@@ -5130,9 +5144,18 @@ def plot_cluster_profile(
         else:
             frac = raw / (raw.sum() + 1e-12)
 
-        sort_idx = sorted(range(len(regs)), key=lambda i: (-frac[i], str(regs[i])))
-        reg_sorted = [regs[i] for i in sort_idx]
-        frac_sorted = np.asarray(frac[sort_idx], dtype=float)
+        if canonical_order and len(beryl_canonical) > 0:
+            # keep only present regs, in canonical order; append unknowns alphabetically
+            present = set(regs)
+            reg_sorted = [r for r in beryl_canonical if r in present]
+            reg_sorted += sorted([r for r in regs if r not in set(reg_sorted)], key=str)
+            idx_map = {r: i for i, r in enumerate(regs)}
+            frac_sorted = np.asarray([frac[idx_map[r]] for r in reg_sorted], dtype=float)
+        else:
+            sort_idx = sorted(range(len(regs)), key=lambda i: (-frac[i], str(regs[i])))
+            reg_sorted = [regs[i] for i in sort_idx]
+            frac_sorted = np.asarray(frac[sort_idx], dtype=float)
+
         cols_sorted = [reg2col[r] for r in reg_sorted]
         return reg_sorted, frac_sorted, cols_sorted
 
@@ -5151,8 +5174,11 @@ def plot_cluster_profile(
         fig_h = nrows * 1
         fig = plt.figure(figsize=(fig_w, fig_h))
 
-        # global spacing (tune if needed)
-        fig.subplots_adjust(left=0.02, right=0.99, top=0.98, bottom=0.04, wspace=0.15, hspace=0.25)
+        # global spacing (tight for pie-only, standard otherwise)
+        if pie_only:
+            fig.subplots_adjust(left=0.005, right=0.995, top=0.995, bottom=0.005, wspace=0.02, hspace=0.02)
+        else:
+            fig.subplots_adjust(left=0.02, right=0.99, top=0.98, bottom=0.04, wspace=0.15, hspace=0.25)
 
         gs = fig.add_gridspec(nrows=nrows, ncols=ncols)
 
@@ -5179,28 +5205,43 @@ def plot_cluster_profile(
                 ax_blank.set_axis_off()
                 continue
 
-            # Within each cell: line (left) + pie (right), same height, fixed width ratio
-            sub = cell.subgridspec(1, 2, width_ratios=(2.2, 1), wspace=0.02)
-            ax_line = fig.add_subplot(sub[0, 0])
-            ax_pie = fig.add_subplot(sub[0, 1], projection="polar")
+            if pie_only:
+                ax_pie = fig.add_subplot(cell, projection="polar")
+                col_k = _cluster_color(mask_k)
+                ax_pie.text(
+                    -0.07, 1.15,
+                    f"{k+1}",
+                    transform=ax_pie.transAxes,
+                    ha="left",
+                    va="top",
+                    fontsize=8,
+                    fontweight="bold",
+                    color=col_k,
+                    clip_on=False,
+                )
+            else:
+                # Within each cell: line (left) + pie (right), same height, fixed width ratio
+                sub = cell.subgridspec(1, 2, width_ratios=(2.2, 1), wspace=0.02)
+                ax_line = fig.add_subplot(sub[0, 0])
+                ax_pie = fig.add_subplot(sub[0, 1], projection="polar")
 
-            # --- bare line (left) ---
-            feat_mean = np.asarray(feat_mat[mask_k, :]).mean(axis=0)
-            col_k = _cluster_color(mask_k)
+                # --- bare line (left) ---
+                feat_mean = np.asarray(feat_mat[mask_k, :]).mean(axis=0)
+                col_k = _cluster_color(mask_k)
 
-            ax_line.plot(xx, feat_mean, linewidth=1.4, color=col_k, alpha=1.0)
-            ax_line.set_axis_off()
-            ax_line.text(
-                0.04, 0.95,  # x=0.98 (right), y=0.95 (top)
-                f"{k}",
-                transform=ax_line.transAxes,
-                ha="right",   # align right edge to position
-                va="top",     # align top edge to position
-                fontsize=8,
-                fontweight="bold",
-                color=col_k,
-                clip_on=False,
-            )
+                ax_line.plot(xx, feat_mean, linewidth=1.4, color=col_k, alpha=1.0)
+                ax_line.set_axis_off()
+                ax_line.text(
+                    0.04, 0.95,
+                    f"{k+1}",
+                    transform=ax_line.transAxes,
+                    ha="right",
+                    va="top",
+                    fontsize=8,
+                    fontweight="bold",
+                    color=col_k,
+                    clip_on=False,
+                )
 
             # --- pie (right) ---
             reg_sorted, frac_sorted, cols_sorted = _compute_wedges(mask_k)
@@ -5234,15 +5275,15 @@ def plot_cluster_profile(
             fs_min, fs_max = 2.5, 12.0
             r_label = 1.08
 
-            # reg_sorted / frac_sorted are already sorted desc by fraction
-            topN = min(5, len(reg_sorted))
+            # annotate ONLY the 5 largest wedges (by fraction), regardless of wedge order
+            top_idx = np.argsort(-frac_sorted)[:min(5, len(reg_sorted))]
 
-            for i in range(topN):
-                reg = reg_sorted[i]
-                colr = cols_sorted[i]
-                t0 = theta[i]
-                w = widths[i]
-                wn = w_norm[i]
+            for i in top_idx:
+                reg = reg_sorted[int(i)]
+                colr = cols_sorted[int(i)]
+                t0 = theta[int(i)]
+                w = widths[int(i)]
+                wn = w_norm[int(i)]
 
                 mid = t0 + 0.5 * w
                 ang = np.degrees(mid)
@@ -5315,7 +5356,7 @@ def plot_cluster_profile(
     title = f"{title_prefix} cluster {clus} of {nclus_total} (n={n_in_clus} neurons)"
     print(title)
 
-    if bare_line:
+    if bare_line and (not pie_only):
         ax_line = None
         fig_line = None
 
@@ -5334,7 +5375,7 @@ def plot_cluster_profile(
         ax_line.set_axis_off()
         ax_line.text(
             -0.02, 0.5,
-            f"{clus}",
+            f"{clus+1}",
             transform=ax_line.transAxes,
             ha="right",
             va="center",
@@ -5377,15 +5418,25 @@ def plot_cluster_profile(
 
     using_external_axes = axs is not None
     if using_external_axes:
-        ax_left, ax_right = axs
-        fig_pie = ax_left.figure
-        fig_line = ax_right.figure
+        if pie_only:
+            ax_left = axs[0] if isinstance(axs, (tuple, list)) else axs
+            fig_pie = ax_left.figure
+            ax_right = None
+            fig_line = None
+        else:
+            ax_left, ax_right = axs
+            fig_pie = ax_left.figure
+            fig_line = ax_right.figure
     else:
         fig_pie = plt.figure(figsize=(4, 4))
         ax_left = fig_pie.add_subplot(111, projection="polar")
 
-        fig_line = plt.figure(figsize=(6, 3))
-        ax_right = fig_line.add_subplot(111)
+        if pie_only:
+            fig_line = None
+            ax_right = None
+        else:
+            fig_line = plt.figure(figsize=(6, 3))
+            ax_right = fig_line.add_subplot(111)
 
     frac_sorted = frac_sorted / (frac_sorted.sum() + 1e-12)
     theta_edges = np.concatenate(([0.0], 2 * np.pi * np.cumsum(frac_sorted)))
@@ -5406,7 +5457,7 @@ def plot_cluster_profile(
 
     ax_left.text(
         -0.07, 1.2,
-        f"cluster \n {clus}/{nclus_total}",
+        f"cluster \n {clus+1}/{nclus_total}",
         transform=ax_left.transAxes,
         ha="left",
         va="top",
@@ -5425,7 +5476,15 @@ def plot_cluster_profile(
     fs_min, fs_max = 3, 15.0
     r_label = 1.12
 
-    for reg, colr, t0, w, wn in zip(reg_sorted, cols_sorted, theta, widths, w_norm):
+    # annotate ONLY the 5 largest wedges (by fraction), regardless of wedge order
+    top_idx = np.argsort(-frac_sorted)[:min(5, len(reg_sorted))]
+    for i in top_idx:
+        reg = reg_sorted[int(i)]
+        colr = cols_sorted[int(i)]
+        t0 = theta[int(i)]
+        w = widths[int(i)]
+        wn = w_norm[int(i)]
+
         mid = t0 + 0.5 * w
         ang = np.degrees(mid)
         if 90 < ang < 270:
@@ -5437,8 +5496,6 @@ def plot_cluster_profile(
         t = (float(wn) - w0) / denom
         t = float(np.clip(t, 0.0, 1.0))
         fontsize = fs_min + (fs_max - fs_min) * t
-        if fontsize < 5.0:
-            continue
         ax_left.text(
             mid,
             r_label,
@@ -5454,28 +5511,31 @@ def plot_cluster_profile(
             zorder=10,
         )
 
-    ax_right.plot(xx, feat_mean, linewidth=1.2, color="black", alpha=0.9)
+    if not pie_only:
+        ax_right.plot(xx, feat_mean, linewidth=1.2, color="black", alpha=0.9)
 
-    y_max_seen = float(np.nanmax(feat_mean))
-    pad = 0.1 * (np.nanmax(feat_mean) - np.nanmin(feat_mean) + 1e-6)
-    ax_right.set_ylim(np.nanmin(feat_mean) - pad, y_max_seen + pad)
+        y_max_seen = float(np.nanmax(feat_mean))
+        pad = 0.1 * (np.nanmax(feat_mean) - np.nanmin(feat_mean) + 1e-6)
+        ax_right.set_ylim(np.nanmin(feat_mean) - pad, y_max_seen + pad)
 
-    _draw_peth_boundaries(ax_right, r_map, vers, y_max_seen, c_sec)
+        _draw_peth_boundaries(ax_right, r_map, vers, y_max_seen, c_sec)
 
-    ax_right.set_xlabel("time [s]")
-    ax_right.set_ylabel("mean z-scored activity")
-    ax_right.spines["top"].set_visible(False)
-    ax_right.spines["right"].set_visible(False)
-    ax_right.spines["left"].set_visible(False)
-    ax_right.yaxis.set_ticks([])
-    ax_right.set_title(title)
+        ax_right.set_xlabel("time [s]")
+        ax_right.set_ylabel("mean z-scored activity")
+        ax_right.spines["top"].set_visible(False)
+        ax_right.spines["right"].set_visible(False)
+        ax_right.spines["left"].set_visible(False)
+        ax_right.yaxis.set_ticks([])
+        ax_right.set_title(title)
 
     if axs is None:
         fig_pie.tight_layout()
-        fig_line.tight_layout()
+        if fig_line is not None:
+            fig_line.tight_layout()
         try:
             fig_pie.canvas.manager.set_window_title(f"{title_prefix} cluster profile: region fractions (polar)")
-            fig_line.canvas.manager.set_window_title(f"{title_prefix} cluster profile: mean PETH")
+            if fig_line is not None:
+                fig_line.canvas.manager.set_window_title(f"{title_prefix} cluster profile: mean PETH")
         except Exception:
             pass
 
@@ -5493,15 +5553,18 @@ def plot_cluster_profile(
         )
 
         svg_pie = save_dir / f"{fstem}_polar.svg"
-        svg_line = save_dir / f"{fstem}_peth.svg"
         fig_pie.savefig(svg_pie, dpi=150, bbox_inches="tight")
-        fig_line.savefig(svg_line, dpi=150, bbox_inches="tight")
         print(f"[saved] {svg_pie}")
-        print(f"[saved] {svg_line}")
+
+        if fig_line is not None:
+            svg_line = save_dir / f"{fstem}_peth.svg"
+            fig_line.savefig(svg_line, dpi=150, bbox_inches="tight")
+            print(f"[saved] {svg_line}")
 
         if axs is None:
             plt.close(fig_pie)
-            plt.close(fig_line)
+            if fig_line is not None:
+                plt.close(fig_line)
 
 
 
