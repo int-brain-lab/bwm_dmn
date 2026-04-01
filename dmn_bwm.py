@@ -4971,8 +4971,8 @@ def plot_cluster_profile(
     savefig: bool = False,
     bare_line: bool = True,
     _full: bool = True,           # NEW: grid figure with all clusters
-    pie_only: bool = False,       # NEW: if True, suppress line plots and show only pie(s)
-    canonical_order: bool = False,# NEW: if True, order pie wedges by canonical Beryl order
+    pie_only: bool = True,       # NEW: if True, suppress line plots and show only pie(s)
+    canonical_order: bool = True,# NEW: if True, order pie wedges by canonical Beryl order
     min_region_n: int = 0,        # NEW: include only regions with >= this many neurons globally
 ):
     """
@@ -5170,13 +5170,13 @@ def plot_cluster_profile(
 
         # Use a single GridSpec for guaranteed identical axes sizes across clusters.
         # Avoid constrained_layout/tight_layout (they can make axes sizes vary due to text extents).
-        fig_w = ncols * 2.4
+        fig_w = ncols * 1.6
         fig_h = nrows * 1
         fig = plt.figure(figsize=(fig_w, fig_h))
 
         # global spacing (tight for pie-only, standard otherwise)
         if pie_only:
-            fig.subplots_adjust(left=0.005, right=0.995, top=0.995, bottom=0.005, wspace=0.02, hspace=0.02)
+            fig.subplots_adjust(left=0.005, right=0.995, top=0.995, bottom=0.005, wspace=0.005, hspace=0.06)
         else:
             fig.subplots_adjust(left=0.02, right=0.99, top=0.98, bottom=0.04, wspace=0.15, hspace=0.25)
 
