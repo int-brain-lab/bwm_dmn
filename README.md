@@ -11,7 +11,7 @@ Data accessible here: https://docs.internationalbrainlab.org/notebooks_external/
 
 ---
 
-## Main-figure functions (from `main.tex`)
+## Main-figure functions
 
 This README is limited to the functions needed for the main paper figures.
 
