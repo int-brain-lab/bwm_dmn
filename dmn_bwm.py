@@ -647,12 +647,56 @@ def concat_PETHs(pid, get_tts: bool = False, vers: str = 'concat',
     # Build outputs (no CV)
     tls: dict = {}
     ws: list = []
+    trial_indices: dict = {}
+    trial_meta: dict = {}
 
     for key in meta['trial_names']:
         align_col, trial_mask, (pre, post) = tts[key]
         # combine global + per-PETH mask
-        events_all = trials[align_col][np.bitwise_and.reduce([mask, trial_mask])].to_numpy()
+        comb_mask = np.bitwise_and.reduce([mask, trial_mask])
+        idx_all = np.where(np.asarray(comb_mask))[0].astype(np.int32)
+        events_all = trials[align_col].to_numpy()[idx_all]
         tls[key] = int(len(events_all))
+
+        # per-trial metadata (same order as events_all / ws trial axis)
+        if idx_all.size:
+            pl = trials['probabilityLeft'].to_numpy()[idx_all]
+            ch = trials['choice'].to_numpy()[idx_all]
+            cl = trials['contrastLeft'].to_numpy()[idx_all]
+            cr = trials['contrastRight'].to_numpy()[idx_all]
+            fb = trials['feedbackType'].to_numpy()[idx_all]
+
+            stim_side = np.where(np.isfinite(cl), 'L', np.where(np.isfinite(cr), 'R', 'NA'))
+            block_side = np.where(pl == 0.8, 'L', np.where(pl == 0.2, 'R', 'NA'))
+            choice_side = np.where(ch == 1, 'L', np.where(ch == -1, 'R', 'NA'))
+
+            trial_indices[key] = idx_all
+            trial_meta[key] = {
+                'trial_index': idx_all,
+                'align_event': np.asarray([align_col] * idx_all.size, dtype=object),
+                'block_probLeft': pl,
+                'block_side': np.asarray(block_side, dtype=object),
+                'choice': ch,
+                'choice_side': np.asarray(choice_side, dtype=object),
+                'contrastLeft': cl,
+                'contrastRight': cr,
+                'stim_side': np.asarray(stim_side, dtype=object),
+                'feedbackType': fb,
+            }
+        else:
+            trial_indices[key] = np.array([], dtype=np.int32)
+            trial_meta[key] = {
+                'trial_index': np.array([], dtype=np.int32),
+                'align_event': np.array([], dtype=object),
+                'block_probLeft': np.array([], dtype=float),
+                'block_side': np.array([], dtype=object),
+                'choice': np.array([], dtype=float),
+                'choice_side': np.array([], dtype=object),
+                'contrastLeft': np.array([], dtype=float),
+                'contrastRight': np.array([], dtype=float),
+                'stim_side': np.array([], dtype=object),
+                'feedbackType': np.array([], dtype=float),
+            }
 
         if tls[key] == 0:
             if require_all:
@@ -680,6 +724,8 @@ def concat_PETHs(pid, get_tts: bool = False, vers: str = 'concat',
     D = dict(meta)
     D['tls'] = tls
     D['ws']  = ws
+    D['trial_indices'] = trial_indices
+    D['trial_meta'] = trial_meta
 
     return D
 
@@ -2332,6 +2378,7 @@ def plot_dim_reduction(
     synthetic: bool = False,      # NEW
     syn_control: bool = False,    # NEW
     save_only: bool = False,
+    save_dpi: int = 150,
     rerun_umap: bool = False,
     umap_n_neighbors=None,
     umap_min_dist=None,
@@ -2514,7 +2561,7 @@ def plot_dim_reduction(
 
         out = Path(one.cache_dir, "dmn", "imgs",
                    f"{nclus}_{mapping}_{algo}_cv{int(cv)}_syn{int(synthetic)}{umap_tag}.png")
-        fig.savefig(out, dpi=150)
+        fig.savefig(out, dpi=save_dpi)
         if save_only:
             plt.close(fig)
 
@@ -2547,10 +2594,36 @@ def plot_dim_reduction(
 
     # --- cluster mean PETHs (uses r['len'] + r['peth_dict']) ---
     if exa_kmeans:
-        plot_cluster_mean_PETHs(r, mapping, feat, vers=vers, axx=axx, alone=True)
-        ff = plt.gcf()
+        # Build a dedicated lines figure with height scaling with number of clusters
+        # so high-nclus panels (e.g., 30/35) remain readable.
+        clu_vals = np.array(sorted(np.unique(r['acs'])))
+        n_clu = len(clu_vals)
 
-                        # --- SET ACTUAL WINDOW TITLE WITH nclus ---
+        if axx is None:
+            line_h = max(4.0, 0.30 * n_clu)
+            ff, ax_lines = plt.subplots(nrows=n_clu, sharex=True, sharey=False, figsize=(6.2, line_h))
+            if not isinstance(ax_lines, (list, np.ndarray)):
+                ax_lines = [ax_lines]
+        else:
+            ax_lines = axx
+            ff = plt.gcf()
+
+        plot_cluster_mean_PETHs(r, mapping, feat, vers=vers, axx=ax_lines, alone=False)
+
+        # tighter vertical spacing: smaller gaps between cluster traces
+        try:
+            ff.subplots_adjust(hspace=0.02)
+        except Exception:
+            pass
+
+        # slightly larger/top labels for segment names (first line panel)
+        try:
+            first_ax = ax_lines[0] if isinstance(ax_lines, (list, np.ndarray)) else ax_lines
+            for txt in first_ax.texts:
+                txt.set_fontsize(max(11, txt.get_fontsize()))
+        except Exception:
+            pass
+
         try:
             ff.canvas.manager.set_window_title(
                 f"Avg | {algo} | {mapping} | nclus={nclus} | cv={int(cv)} | {vers}"
@@ -2560,7 +2633,7 @@ def plot_dim_reduction(
 
         out2 = Path(one.cache_dir, 'dmn', 'imgs',
                     f'{nclus}_{mapping}_lines_{algo}_cv{cv}{umap_tag}.png')
-        ff.savefig(out2, dpi=150)
+        ff.savefig(out2, dpi=save_dpi)
         if save_only:
             plt.close(ff)
 
@@ -2618,6 +2691,128 @@ def plot_dim_reduction(
 def plot_dim_red(*args, **kwargs):
     return plot_dim_reduction(*args, **kwargs)
 
+
+def plot_umap_si_kmeans_grid(
+    nclus_list=(10, 15, 20, 25, 30, 35),
+    algo: str = "umap_z",
+    mapping: str = "kmeans",
+    vers: str = "concat",
+    cv: bool = True,
+    rerun: bool = False,
+    rerun_umap: bool = False,
+    out_pdf: Optional[Union[str, Path]] = None,
+    panel_w: float = 2.0,
+    panel_h: float = 3.4,
+    dpi: int = 170,
+):
+    """umap SI
+
+    Generate, for each nclus, a compact composite panel with:
+      - top: kmeans average response lines (from plot_dim_reduction exa_kmeans=True)
+      - bottom: UMAP cloud (from plot_dim_reduction)
+
+    Then concatenate all composites into a 2x3 PDF figure.
+
+    - All axes are removed in final SI layout.
+    - Panel title shows nclus.
+    - Space-efficient arrangement for readability.
+
+    Returns
+    -------
+    Path
+        Output PDF path.
+    """
+    nclus_list = [int(x) for x in nclus_list]
+    if len(nclus_list) != 6:
+        raise ValueError("nclus_list must contain exactly 6 entries for a 2x3 layout.")
+
+    img_dir = Path(one.cache_dir, "dmn", "imgs")
+    img_dir.mkdir(parents=True, exist_ok=True)
+
+    panel_imgs = []
+    for nclus in nclus_list:
+        # Bottom: UMAP cloud
+        plot_dim_reduction(
+            algo=algo,
+            mapping=mapping,
+            vers=vers,
+            nclus=nclus,
+            cv=cv,
+            rerun=rerun,
+            save_only=True,
+            rerun_umap=rerun_umap,
+        )
+        umap_png = img_dir / f"{nclus}_{mapping}_{algo}_cv{int(cv)}_syn0.png"
+
+        # Top: standard (separate) kmeans average-response lines panel
+        plot_dim_reduction(
+            algo=algo,
+            mapping=mapping,
+            vers=vers,
+            nclus=nclus,
+            cv=cv,
+            rerun=rerun,
+            save_only=True,
+            exa_kmeans=True,
+            save_dpi=450,
+            rerun_umap=rerun_umap,
+        )
+        lines_png = img_dir / f"{nclus}_{mapping}_lines_{algo}_cv{cv}.png"
+
+        if not umap_png.is_file():
+            raise FileNotFoundError(f"Expected UMAP image not found: {umap_png}")
+        if not lines_png.is_file():
+            raise FileNotFoundError(f"Expected lines image not found: {lines_png}")
+
+        panel_imgs.append((lines_png, umap_png))
+
+    if out_pdf is None:
+        out_pdf = img_dir / f"umap_si_{mapping}_{algo}_nclus_grid_cv{int(cv)}.pdf"
+    out_pdf = Path(out_pdf)
+    out_pdf.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, axs = plt.subplots(2, 3, figsize=(3 * panel_w, 2 * panel_h))
+    axs = np.array(axs).ravel()
+
+    for ax, nclus, (lines_png, umap_png) in zip(axs, nclus_list, panel_imgs):
+        im_lines = np.asarray(Image.open(lines_png).convert("RGB"))
+        im_umap = np.asarray(Image.open(umap_png).convert("RGB"))
+
+        # Keep the standard separate-lines panel mostly intact (light crop only)
+        hL, wL = im_lines.shape[:2]
+        y0 = int(0.04 * hL)
+        y1 = int(0.98 * hL)
+        x0 = int(0.01 * wL)
+        x1 = int(0.99 * wL)
+        im_lines_c = im_lines[y0:y1, x0:x1]
+
+        # Compose a single panel canvas (top lines + bottom umap)
+        h1, w1 = im_lines_c.shape[:2]
+        h2, w2 = im_umap.shape[:2]
+        w = max(w1, w2)
+        top_h = int(0.95 * h1)
+        ht = top_h + h2
+        canvas = np.ones((ht, w, 3), dtype=np.uint8) * 255
+
+        # resize top lines width to match canvas
+        imL = Image.fromarray(im_lines_c).resize((w, top_h), resample=Image.Resampling.BICUBIC)
+        imU = Image.fromarray(im_umap).resize((w, h2), resample=Image.Resampling.BICUBIC)
+        imL = np.asarray(imL)
+        imU = np.asarray(imU)
+
+        canvas[:imL.shape[0], :, :] = imL
+        canvas[imL.shape[0]:imL.shape[0] + imU.shape[0], :, :] = imU
+
+        ax.imshow(canvas)
+        ax.set_title(f"nclus={nclus}", fontsize=7, pad=2)
+        ax.axis("off")
+
+    fig.subplots_adjust(left=0.01, right=0.99, bottom=0.01, top=0.95, wspace=0.02, hspace=0.07)
+    fig.savefig(out_pdf, dpi=dpi, bbox_inches="tight", pad_inches=0.01)
+    plt.close(fig)
+
+    print(f"Saved: {out_pdf}")
+    return out_pdf
 
 
 def plot_cluster_mean_PETHs(
@@ -4439,6 +4634,329 @@ def plot_example_neurons(
 
 
 
+def plot_mistake_examples(
+    cells: Optional[Sequence[Union[dict, tuple, list, str]]] = None,
+    cells_csv: Optional[Union[str, Path]] = None,
+    concat_dir: Optional[Union[str, Path]] = None,
+    event_key: str = 'mistake_s',
+    n_cells: Optional[int] = None,
+    figsize_per_cell: Tuple[float, float] = (1.8, 5.0),
+    cmap: str = 'Greys',
+    vmin: Optional[float] = 0,
+    vmax: Optional[float] = None,
+    savefig: bool = True,
+    out_name: str = 'mistake_examples',
+    dpi: int = 200,
+):
+    """
+    Plot per-trial mistake activity for selected neurons, ordered by mistake type.
+
+    Layout
+    ------
+    One column per neuron with 3 stacked panels:
+      1) heatmap: trials x time bins (trial order grouped by mistake type)
+      2) mean trace per mistake type (8 canonical types)
+      3) mean trace across all mistake trials
+
+    Mistake type code
+    -----------------
+    Built from trial metadata as: "{stim}_s{choice}_c{block}_b"
+    e.g. "R_sL_cR_b".
+
+    Inputs
+    ------
+    cells:
+      - list of dicts with keys {'pid','uuid'} (preferred), or
+      - list of (pid, uuid) tuples, or
+      - list of uuid strings (pid inferred by scanning files; slower)
+    cells_csv:
+      optional CSV path with columns pid, uuid (e.g. mistake_example_neurons.csv)
+      If provided and `cells` is None, cells are loaded from CSV.
+    concat_dir:
+      directory containing per-insertion files "{eid}_{probe}.npy".
+      Default: Path(one.cache_dir, 'dmn', 'concat').
+
+    Returns
+    -------
+    dict with per-cell plotting indices and trial type assignments.
+    """
+
+    if concat_dir is None:
+        concat_dir = Path(one.cache_dir, 'dmn', 'concat')
+    concat_dir = Path(concat_dir)
+
+    if cells is None:
+        if cells_csv is None:
+            raise ValueError("Provide either `cells` or `cells_csv`.")
+        dfc = pd.read_csv(cells_csv)
+        if not {'pid', 'uuid'}.issubset(set(dfc.columns)):
+            raise ValueError("cells_csv must contain columns: pid, uuid")
+        cells = [
+            {'pid': str(r.pid), 'uuid': str(r.uuid)}
+            for _, r in dfc[['pid', 'uuid']].iterrows()
+        ]
+
+    # normalize cell specs
+    norm_cells = []
+    for c in cells:
+        if isinstance(c, dict):
+            pid = str(c.get('pid')) if c.get('pid', None) is not None else None
+            uuid = str(c.get('uuid')) if c.get('uuid', None) is not None else None
+        elif isinstance(c, (tuple, list)) and len(c) >= 2:
+            pid, uuid = str(c[0]), str(c[1])
+        else:
+            pid, uuid = None, str(c)
+        if uuid is None:
+            continue
+        norm_cells.append({'pid': pid, 'uuid': uuid})
+
+    if n_cells is not None:
+        norm_cells = norm_cells[:int(n_cells)]
+
+    if len(norm_cells) == 0:
+        raise ValueError("No valid cells to plot.")
+
+    # canonical mistake types (focus on mismatched stim/choice x block side)
+    type_order = [
+        'L_sR_cL_b', 'L_sR_cR_b',
+        'R_sL_cL_b', 'R_sL_cR_b',
+    ]
+
+    type_colors = {
+        t: plt.cm.tab10(i % 10)
+        for i, t in enumerate(type_order)
+    }
+
+    def _to_type(stim, choice, block):
+        return f"{stim}_s{choice}_c{block}_b"
+
+    def _resolve_file(pid: Optional[str], uuid: str) -> Tuple[Path, dict, int]:
+        """Return (file_path, D, neuron_idx)."""
+        # fast path: pid provided -> deterministic filename
+        if pid is not None and pid != 'None':
+            try:
+                eid, probe = one.pid2eid(pid)
+                fp = concat_dir / f"{eid}_{probe}.npy"
+                if fp.is_file():
+                    D = np.load(fp, allow_pickle=True).flat[0]
+                    uu = np.asarray([str(u) for u in D['uuids']])
+                    hit = np.where(uu == str(uuid))[0]
+                    if len(hit):
+                        return fp, D, int(hit[0])
+            except Exception:
+                pass
+
+        # fallback: scan files for uuid
+        for fp in sorted(concat_dir.glob('*.npy')):
+            try:
+                D = np.load(fp, allow_pickle=True).flat[0]
+                uu = np.asarray([str(u) for u in D['uuids']])
+                hit = np.where(uu == str(uuid))[0]
+                if len(hit):
+                    return fp, D, int(hit[0])
+            except Exception:
+                continue
+
+        raise FileNotFoundError(f"UUID {uuid} not found in concat files.")
+
+    # ---------- precompute per-cell payload so we can enforce shared trial-axis height ----------
+    payload = []
+    max_trials = 0
+
+    for cell in norm_cells:
+        pid = cell['pid']
+        uuid = cell['uuid']
+        fp, D, ni = _resolve_file(pid, uuid)
+
+        if 'trial_meta' not in D:
+            raise KeyError(f"{fp.name} has no 'trial_meta'. Recompute with updated concat_PETHs first.")
+        if event_key not in D['trial_meta']:
+            raise KeyError(f"event_key '{event_key}' not found in trial_meta for {fp.name}")
+
+        tmeta = D['trial_meta'][event_key]
+        tnames = list(D['trial_names'])
+        k = tnames.index(event_key)
+
+        X = np.asarray(D['ws'][k])[:, ni, :]
+        if X.ndim != 2:
+            raise ValueError(f"Unexpected ws shape for {event_key} in {fp.name}: {D['ws'][k].shape}")
+
+        stim = np.asarray(tmeta['stim_side']).astype(str)
+        choice = np.asarray(tmeta['choice_side']).astype(str)
+        block = np.asarray(tmeta['block_side']).astype(str)
+        trial_idx = np.asarray(tmeta['trial_index'])
+        tlabels = np.array([_to_type(s, c, b) for s, c, b in zip(stim, choice, block)], dtype=object)
+        # collapse any NA-containing label into a single bucket
+        tlabels = np.array(['Other/NA' if ('NA' in str(tt)) else str(tt) for tt in tlabels], dtype=object)
+
+        order_keys = {tt: i for i, tt in enumerate(type_order)}
+        ord_code = np.array([order_keys.get(tt, 999) for tt in tlabels])
+        ord_idx = np.lexsort((trial_idx, ord_code))
+
+        Xs = X[ord_idx]
+        labs_s = tlabels[ord_idx]
+        tids_s = trial_idx[ord_idx]
+
+        payload.append(dict(pid=pid, uuid=uuid, fp=fp, D=D, ni=ni, Xs=Xs, labs_s=labs_s, tids_s=tids_s))
+        max_trials = max(max_trials, Xs.shape[0])
+
+    # prepare figure
+    n = len(payload)
+    fig_w = max(5, n * figsize_per_cell[0])
+    fig_h = figsize_per_cell[1]
+    fig = plt.figure(figsize=(fig_w, fig_h))
+    gs = fig.add_gridspec(3, n, height_ratios=[7, 2.2, 1.2], hspace=0.15, wspace=0.15)
+
+    out = {}
+    ax0_ref = None
+
+    # make NaNs white in heatmaps (for padded trial rows)
+    cmap_obj = plt.get_cmap(cmap).copy()
+    cmap_obj.set_bad(color='white')
+
+    def _tt_to_latex(tt: str) -> str:
+        if tt == 'Other/NA':
+            return 'Other/NA'
+        # 'R_sL_cR_b' -> '$R_sL_cR_b$'
+        return rf"${tt}$"
+
+    for cidx, P in enumerate(payload):
+        pid, uuid, fp, D, ni = P['pid'], P['uuid'], P['fp'], P['D'], P['ni']
+        Xs, labs_s, tids_s = P['Xs'], P['labs_s'], P['tids_s']
+
+        out[uuid] = {
+            'pid': pid,
+            'file': str(fp),
+            'neuron_index_in_file': int(ni),
+            'trial_index_sorted': tids_s,
+            'mistake_type_sorted': labs_s,
+        }
+
+        # pad to max_trials so one row height equals one trial across all columns
+        Xpad = np.full((max_trials, Xs.shape[1]), np.nan, dtype=float)
+        Xpad[:Xs.shape[0], :] = Xs
+
+        # ---------- row 1: heatmap ----------
+        ax0 = fig.add_subplot(gs[0, cidx], sharey=ax0_ref)
+        if ax0_ref is None:
+            ax0_ref = ax0
+
+        im = ax0.imshow(Xpad, aspect='auto', interpolation='nearest', cmap=cmap_obj, vmin=vmin, vmax=vmax)
+
+        # include 'Other/NA' (collapsed) plus any truly extra labels at the end
+        type_colors.setdefault('Other/NA', 'k')
+        extra_types = [tt for tt in np.unique(labs_s) if (tt not in type_order and tt != 'Other/NA')]
+        for tt in extra_types:
+            type_colors.setdefault(tt, 'k')
+        plot_order = list(type_order)
+        if np.any(labs_s == 'Other/NA'):
+            plot_order += ['Other/NA']
+        plot_order += sorted(extra_types)
+
+        # draw colored blocks + horizontal separators between mistake types
+        y0 = 0
+        for tt in plot_order:
+            ntt = int(np.sum(labs_s == tt))
+            if ntt <= 0:
+                continue
+            y1 = y0 + ntt
+            ax0.axhspan(y0 - 0.5, y1 - 0.5, color=type_colors[tt], alpha=0.10, zorder=1)
+            ax0.axhline(y1 - 0.5, color=type_colors[tt], linewidth=1.1, alpha=0.95, zorder=2)
+            if cidx == 0:
+                ax0.text(-0.52, (y0 + y1) / 2.0, _tt_to_latex(tt),
+                         transform=ax0.get_yaxis_transform(),
+                         va='center', ha='right', fontsize=7,
+                         color=type_colors[tt], clip_on=False)
+            y0 = y1
+
+        ax0.set_ylim(max_trials - 0.5, -0.5)
+        ax0.set_title(f"{uuid[:8]}", fontsize=8)
+        ax0.set_xticks([])
+
+        if cidx == 0:
+            ax0.set_ylabel('mistake trials (sorted)')
+            ax0.set_yticks([0, max(0, max_trials // 2), max(0, max_trials - 1)])
+        else:
+            ax0.tick_params(axis='y', left=False, labelleft=False)
+
+        # x-axis for line plots in bin units
+        xx = np.arange(Xs.shape[1], dtype=float)
+
+        # ---------- row 2: mean per type ----------
+        ax1 = fig.add_subplot(gs[1, cidx])
+        any_line = False
+        for tt in plot_order:
+            m = (labs_s == tt)
+            if np.any(m):
+                yy = np.nanmean(Xs[m, :], axis=0)
+                ax1.plot(xx, yy, color=type_colors[tt], linewidth=1.2, alpha=1.0)
+                any_line = True
+        if not any_line:
+            ax1.plot(xx, np.zeros_like(xx), color='k', linewidth=0.8)
+
+        if cidx == 0:
+            ax1.set_ylabel('mean\nper type', fontsize=7)
+        else:
+            ax1.set_yticks([])
+        ax1.set_xlim(0, Xs.shape[1] - 1)
+        ax1.tick_params(axis='x', labelbottom=False)
+        ax1.spines['top'].set_visible(False)
+        ax1.spines['right'].set_visible(False)
+
+        # ---------- row 3: mean over all + non-mistake baseline ----------
+        ax2 = fig.add_subplot(gs[2, cidx])
+        yy_all = np.nanmean(Xs, axis=0)
+        ax2.plot(xx, yy_all, color='black', linewidth=1.2, label='all mistake')
+
+        # Baseline null: average across all NON-mistake trials with same time-bin length
+        nonmist = []
+        for nm, wnm in zip(D['trial_names'], D['ws']):
+            if ('mistake' in str(nm)):
+                continue
+            wnm = np.asarray(wnm)
+            if wnm.ndim != 3:
+                continue
+            if wnm.shape[2] != Xs.shape[1]:
+                continue
+            if ni >= wnm.shape[1]:
+                continue
+            v = np.asarray(wnm[:, ni, :], dtype=float)
+            if v.size:
+                nonmist.append(v)
+
+        if len(nonmist):
+            nm_all = np.concatenate(nonmist, axis=0)
+            yy_nm = np.nanmean(nm_all, axis=0)
+            ax2.plot(xx, yy_nm, color='tab:blue', linewidth=1.0, linestyle='--', alpha=0.95, label='non-mistake null')
+
+        if cidx == 0:
+            ax2.set_ylabel('mean\nall', fontsize=7)
+            ax2.legend(frameon=False, fontsize=6, loc='upper right', bbox_to_anchor=(1.0, 1.52))
+        else:
+            ax2.set_yticks([])
+        ax2.set_xlim(0, Xs.shape[1] - 1)
+        ax2.set_xlabel('time bins', fontsize=7)
+        ax2.spines['top'].set_visible(False)
+        ax2.spines['right'].set_visible(False)
+
+    # one shared colorbar for heatmaps
+    cax = fig.add_axes([0.92, 0.55, 0.012, 0.30])
+    fig.colorbar(im, cax=cax, label='spikes/bin')
+
+    fig.suptitle(f"Mistake examples ({event_key})", fontsize=11)
+    fig.tight_layout(rect=[0.02, 0.02, 0.90, 0.96])
+
+    if savefig:
+        outdir = Path(one.cache_dir, 'dmn', 'figs')
+        outdir.mkdir(parents=True, exist_ok=True)
+        fpath = outdir / f"{out_name}_{event_key}.svg"
+        fig.savefig(fpath, dpi=dpi, bbox_inches='tight')
+        print(f"saved: {fpath}")
+
+    plt.show()
+    return out
+
+
 def plot_cluster_profile(
     clus: int = 0,
     mapping: str = "kmeans",          # 'rm' or 'kmeans'
@@ -4453,6 +4971,10 @@ def plot_cluster_profile(
     savefig: bool = False,
     bare_line: bool = True,
     _full: bool = True,           # NEW: grid figure with all clusters
+    pie_only: bool = False,       # NEW: if True, suppress line plots and show only pie(s)
+    canonical_order: bool = False,# NEW: if True, order pie wedges by canonical Beryl order
+    min_region_n_global: int = 0,  # NEW: include only regions with >= this many neurons globally
+    min_region_n_cluster: int = 0, # NEW: include only regions with >= this many neurons in cluster
 ):
     """
     Inspect either a Rastermap ('rm') cluster or a KMeans ('kmeans') cluster.
@@ -4583,6 +5105,13 @@ def plot_cluster_profile(
 
     global_counts = Counter(acs_B)
 
+    # canonical Beryl order (optional wedge ordering)
+    try:
+        p_can = Path(iblatlas.__file__).parent / "beryl.npy"
+        beryl_canonical = list(br.id2acronym(np.load(p_can), mapping="Beryl"))
+    except Exception:
+        beryl_canonical = []
+
     # ---- cluster color helper ----
     def _cluster_color(mask_):
         col = "black"
@@ -4599,7 +5128,15 @@ def plot_cluster_profile(
         regs_in_clus = acs_B[mask_]
         counts = Counter(regs_in_clus)
 
-        regs = list(counts.keys())
+        # optional region-size filters
+        regs = [
+            r for r in counts.keys()
+            if (global_counts.get(r, 0) >= int(min_region_n_global))
+            and (counts.get(r, 0) >= int(min_region_n_cluster))
+        ]
+        if len(regs) == 0:
+            return [], np.array([], dtype=float), []
+
         raw = np.array([counts[r] for r in regs], dtype=float)
 
         if norm_reg_count:
@@ -4612,9 +5149,18 @@ def plot_cluster_profile(
         else:
             frac = raw / (raw.sum() + 1e-12)
 
-        sort_idx = sorted(range(len(regs)), key=lambda i: (-frac[i], str(regs[i])))
-        reg_sorted = [regs[i] for i in sort_idx]
-        frac_sorted = np.asarray(frac[sort_idx], dtype=float)
+        if canonical_order and len(beryl_canonical) > 0:
+            # keep only present regs, in canonical order; append unknowns alphabetically
+            present = set(regs)
+            reg_sorted = [r for r in beryl_canonical if r in present]
+            reg_sorted += sorted([r for r in regs if r not in set(reg_sorted)], key=str)
+            idx_map = {r: i for i, r in enumerate(regs)}
+            frac_sorted = np.asarray([frac[idx_map[r]] for r in reg_sorted], dtype=float)
+        else:
+            sort_idx = sorted(range(len(regs)), key=lambda i: (-frac[i], str(regs[i])))
+            reg_sorted = [regs[i] for i in sort_idx]
+            frac_sorted = np.asarray(frac[sort_idx], dtype=float)
+
         cols_sorted = [reg2col[r] for r in reg_sorted]
         return reg_sorted, frac_sorted, cols_sorted
 
@@ -4629,12 +5175,15 @@ def plot_cluster_profile(
 
         # Use a single GridSpec for guaranteed identical axes sizes across clusters.
         # Avoid constrained_layout/tight_layout (they can make axes sizes vary due to text extents).
-        fig_w = ncols * 2.4
+        fig_w = ncols * 1.6
         fig_h = nrows * 1
         fig = plt.figure(figsize=(fig_w, fig_h))
 
-        # global spacing (tune if needed)
-        fig.subplots_adjust(left=0.02, right=0.99, top=0.98, bottom=0.04, wspace=0.15, hspace=0.25)
+        # global spacing (tight for pie-only, standard otherwise)
+        if pie_only:
+            fig.subplots_adjust(left=0.005, right=0.995, top=0.995, bottom=0.005, wspace=0.005, hspace=0.06)
+        else:
+            fig.subplots_adjust(left=0.02, right=0.99, top=0.98, bottom=0.04, wspace=0.15, hspace=0.25)
 
         gs = fig.add_gridspec(nrows=nrows, ncols=ncols)
 
@@ -4661,28 +5210,43 @@ def plot_cluster_profile(
                 ax_blank.set_axis_off()
                 continue
 
-            # Within each cell: line (left) + pie (right), same height, fixed width ratio
-            sub = cell.subgridspec(1, 2, width_ratios=(2.2, 1), wspace=0.02)
-            ax_line = fig.add_subplot(sub[0, 0])
-            ax_pie = fig.add_subplot(sub[0, 1], projection="polar")
+            if pie_only:
+                ax_pie = fig.add_subplot(cell, projection="polar")
+                col_k = _cluster_color(mask_k)
+                ax_pie.text(
+                    -0.07, 1.15,
+                    f"{k+1}",
+                    transform=ax_pie.transAxes,
+                    ha="left",
+                    va="top",
+                    fontsize=8,
+                    fontweight="bold",
+                    color=col_k,
+                    clip_on=False,
+                )
+            else:
+                # Within each cell: line (left) + pie (right), same height, fixed width ratio
+                sub = cell.subgridspec(1, 2, width_ratios=(2.2, 1), wspace=0.02)
+                ax_line = fig.add_subplot(sub[0, 0])
+                ax_pie = fig.add_subplot(sub[0, 1], projection="polar")
 
-            # --- bare line (left) ---
-            feat_mean = np.asarray(feat_mat[mask_k, :]).mean(axis=0)
-            col_k = _cluster_color(mask_k)
+                # --- bare line (left) ---
+                feat_mean = np.asarray(feat_mat[mask_k, :]).mean(axis=0)
+                col_k = _cluster_color(mask_k)
 
-            ax_line.plot(xx, feat_mean, linewidth=1.4, color=col_k, alpha=1.0)
-            ax_line.set_axis_off()
-            ax_line.text(
-                0.04, 0.95,  # x=0.98 (right), y=0.95 (top)
-                f"{k}",
-                transform=ax_line.transAxes,
-                ha="right",   # align right edge to position
-                va="top",     # align top edge to position
-                fontsize=8,
-                fontweight="bold",
-                color=col_k,
-                clip_on=False,
-            )
+                ax_line.plot(xx, feat_mean, linewidth=1.4, color=col_k, alpha=1.0)
+                ax_line.set_axis_off()
+                ax_line.text(
+                    0.04, 0.95,
+                    f"{k+1}",
+                    transform=ax_line.transAxes,
+                    ha="right",
+                    va="top",
+                    fontsize=8,
+                    fontweight="bold",
+                    color=col_k,
+                    clip_on=False,
+                )
 
             # --- pie (right) ---
             reg_sorted, frac_sorted, cols_sorted = _compute_wedges(mask_k)
@@ -4716,15 +5280,15 @@ def plot_cluster_profile(
             fs_min, fs_max = 2.5, 12.0
             r_label = 1.08
 
-            # reg_sorted / frac_sorted are already sorted desc by fraction
-            topN = min(5, len(reg_sorted))
+            # annotate ONLY the 5 largest wedges (by fraction), regardless of wedge order
+            top_idx = np.argsort(-frac_sorted)[:min(5, len(reg_sorted))]
 
-            for i in range(topN):
-                reg = reg_sorted[i]
-                colr = cols_sorted[i]
-                t0 = theta[i]
-                w = widths[i]
-                wn = w_norm[i]
+            for i in top_idx:
+                reg = reg_sorted[int(i)]
+                colr = cols_sorted[int(i)]
+                t0 = theta[int(i)]
+                w = widths[int(i)]
+                wn = w_norm[int(i)]
 
                 mid = t0 + 0.5 * w
                 ang = np.degrees(mid)
@@ -4797,7 +5361,7 @@ def plot_cluster_profile(
     title = f"{title_prefix} cluster {clus} of {nclus_total} (n={n_in_clus} neurons)"
     print(title)
 
-    if bare_line:
+    if bare_line and (not pie_only):
         ax_line = None
         fig_line = None
 
@@ -4816,7 +5380,7 @@ def plot_cluster_profile(
         ax_line.set_axis_off()
         ax_line.text(
             -0.02, 0.5,
-            f"{clus}",
+            f"{clus+1}",
             transform=ax_line.transAxes,
             ha="right",
             va="center",
@@ -4859,15 +5423,25 @@ def plot_cluster_profile(
 
     using_external_axes = axs is not None
     if using_external_axes:
-        ax_left, ax_right = axs
-        fig_pie = ax_left.figure
-        fig_line = ax_right.figure
+        if pie_only:
+            ax_left = axs[0] if isinstance(axs, (tuple, list)) else axs
+            fig_pie = ax_left.figure
+            ax_right = None
+            fig_line = None
+        else:
+            ax_left, ax_right = axs
+            fig_pie = ax_left.figure
+            fig_line = ax_right.figure
     else:
         fig_pie = plt.figure(figsize=(4, 4))
         ax_left = fig_pie.add_subplot(111, projection="polar")
 
-        fig_line = plt.figure(figsize=(6, 3))
-        ax_right = fig_line.add_subplot(111)
+        if pie_only:
+            fig_line = None
+            ax_right = None
+        else:
+            fig_line = plt.figure(figsize=(6, 3))
+            ax_right = fig_line.add_subplot(111)
 
     frac_sorted = frac_sorted / (frac_sorted.sum() + 1e-12)
     theta_edges = np.concatenate(([0.0], 2 * np.pi * np.cumsum(frac_sorted)))
@@ -4888,7 +5462,7 @@ def plot_cluster_profile(
 
     ax_left.text(
         -0.07, 1.2,
-        f"cluster \n {clus}/{nclus_total}",
+        f"cluster \n {clus+1}/{nclus_total}",
         transform=ax_left.transAxes,
         ha="left",
         va="top",
@@ -4907,7 +5481,15 @@ def plot_cluster_profile(
     fs_min, fs_max = 3, 15.0
     r_label = 1.12
 
-    for reg, colr, t0, w, wn in zip(reg_sorted, cols_sorted, theta, widths, w_norm):
+    # annotate ONLY the 5 largest wedges (by fraction), regardless of wedge order
+    top_idx = np.argsort(-frac_sorted)[:min(5, len(reg_sorted))]
+    for i in top_idx:
+        reg = reg_sorted[int(i)]
+        colr = cols_sorted[int(i)]
+        t0 = theta[int(i)]
+        w = widths[int(i)]
+        wn = w_norm[int(i)]
+
         mid = t0 + 0.5 * w
         ang = np.degrees(mid)
         if 90 < ang < 270:
@@ -4919,8 +5501,6 @@ def plot_cluster_profile(
         t = (float(wn) - w0) / denom
         t = float(np.clip(t, 0.0, 1.0))
         fontsize = fs_min + (fs_max - fs_min) * t
-        if fontsize < 5.0:
-            continue
         ax_left.text(
             mid,
             r_label,
@@ -4936,28 +5516,31 @@ def plot_cluster_profile(
             zorder=10,
         )
 
-    ax_right.plot(xx, feat_mean, linewidth=1.2, color="black", alpha=0.9)
+    if not pie_only:
+        ax_right.plot(xx, feat_mean, linewidth=1.2, color="black", alpha=0.9)
 
-    y_max_seen = float(np.nanmax(feat_mean))
-    pad = 0.1 * (np.nanmax(feat_mean) - np.nanmin(feat_mean) + 1e-6)
-    ax_right.set_ylim(np.nanmin(feat_mean) - pad, y_max_seen + pad)
+        y_max_seen = float(np.nanmax(feat_mean))
+        pad = 0.1 * (np.nanmax(feat_mean) - np.nanmin(feat_mean) + 1e-6)
+        ax_right.set_ylim(np.nanmin(feat_mean) - pad, y_max_seen + pad)
 
-    _draw_peth_boundaries(ax_right, r_map, vers, y_max_seen, c_sec)
+        _draw_peth_boundaries(ax_right, r_map, vers, y_max_seen, c_sec)
 
-    ax_right.set_xlabel("time [s]")
-    ax_right.set_ylabel("mean z-scored activity")
-    ax_right.spines["top"].set_visible(False)
-    ax_right.spines["right"].set_visible(False)
-    ax_right.spines["left"].set_visible(False)
-    ax_right.yaxis.set_ticks([])
-    ax_right.set_title(title)
+        ax_right.set_xlabel("time [s]")
+        ax_right.set_ylabel("mean z-scored activity")
+        ax_right.spines["top"].set_visible(False)
+        ax_right.spines["right"].set_visible(False)
+        ax_right.spines["left"].set_visible(False)
+        ax_right.yaxis.set_ticks([])
+        ax_right.set_title(title)
 
     if axs is None:
         fig_pie.tight_layout()
-        fig_line.tight_layout()
+        if fig_line is not None:
+            fig_line.tight_layout()
         try:
             fig_pie.canvas.manager.set_window_title(f"{title_prefix} cluster profile: region fractions (polar)")
-            fig_line.canvas.manager.set_window_title(f"{title_prefix} cluster profile: mean PETH")
+            if fig_line is not None:
+                fig_line.canvas.manager.set_window_title(f"{title_prefix} cluster profile: mean PETH")
         except Exception:
             pass
 
@@ -4975,15 +5558,18 @@ def plot_cluster_profile(
         )
 
         svg_pie = save_dir / f"{fstem}_polar.svg"
-        svg_line = save_dir / f"{fstem}_peth.svg"
         fig_pie.savefig(svg_pie, dpi=150, bbox_inches="tight")
-        fig_line.savefig(svg_line, dpi=150, bbox_inches="tight")
         print(f"[saved] {svg_pie}")
-        print(f"[saved] {svg_line}")
+
+        if fig_line is not None:
+            svg_line = save_dir / f"{fstem}_peth.svg"
+            fig_line.savefig(svg_line, dpi=150, bbox_inches="tight")
+            print(f"[saved] {svg_line}")
 
         if axs is None:
             plt.close(fig_pie)
-            plt.close(fig_line)
+            if fig_line is not None:
+                plt.close(fig_line)
 
 
 
@@ -5973,6 +6559,7 @@ def plot_region_counts_svg():
 def flatness_entropy_score(d, get_cells=False):
     '''
     Measures how close the distribution is to uniform using normalized entropy.
+    1 = perfectly flat (uniform), 0 = most peaked (Dirac delta-like).
     '''
     scores = {}
     for reg in d:
@@ -7060,11 +7647,14 @@ def plot_synthetic_marginals_compare_blocks(
             hb, _ = np.histogram(bvals, bins=edges, density=density)
 
             # edges-only histogram lines (no fills)
-            ax.stairs(hb, edges, color="black", linewidth=1.0)
-            ax.stairs(hc, edges, color="blue", linewidth=1.0)
+            # draw black first, then green on top for overlap visibility
+            ax.stairs(hb, edges, color="black", linewidth=3.0, linestyle="-", label="synth")
+            ax.stairs(hc, edges, color="lime", linewidth=1.6, linestyle=":", label="real")
 
             # keep alpha identity but remove axes
             ax.text(0.02, 0.9, f"α={alpha}", transform=ax.transAxes, fontsize=8, color="k")
+            if block == 0 and row == 0:
+                ax.legend(frameon=False, fontsize=7, loc="upper right")
             ax.axis("off")
 
     plt.tight_layout()
@@ -7078,34 +7668,52 @@ def plot_coeff_correlation_heatmaps(
     nclus: int = 100,
     nclus_s: int = 100,
     vlim: float | None = None,
-    figsize: tuple[float, float] = (12, 3),
+    figsize: tuple[float, float] = (15, 4.5),
     cmap: str = "coolwarm",
     savepath: str | None = None,
     zsc: bool = True,
+    max_neurons_corr: int = 2000,
 ):
     """
-    One-row heatmaps:
+    Composite layout (3 rows x 5 cols):
+      col1 (rows 1..3): C (real coeff matrix), unsorted display
+      col2 row1: corr(C) hierarchically sorted
+      col2 row2: corr(neurons in C coefficients), hier sorted (capped)
+      col2 row3: corr(neurons in real feature vectors), hier sorted (capped)
+      col3 (rows 1..3): synthetic marginals comparison (15 examples)
+      col4 (rows 1..3): B (synthetic coeff matrix), unsorted display
+      col5 row1: corr(B) hierarchically sorted
+      col5 row2: corr(neurons in B coefficients), hier sorted (capped)
+      col5 row3: corr(neurons in synthetic feature vectors), hier sorted (capped)
 
-        C | corr(C) | B | corr(B)
-
-    Each panel has its own colorbar.
-
-    Interpretation:
-      - C, B      : raw coefficient matrices (neurons × alphas)
-      - corr(C)   : structured off-diagonals → real population structure
-      - corr(B)   : ~identity → synthetic null
+    Note: neuron x neuron correlations are capped by `max_neurons_corr` for memory safety.
     """
 
-    from mpl_toolkits.axes_grid1 import make_axes_locatable
+    def _horder_corr(mat: np.ndarray) -> np.ndarray:
+        mat = np.asarray(mat, float)
+        mat = np.nan_to_num(mat, nan=0.0, posinf=0.0, neginf=0.0)
+        if mat.shape[0] < 3:
+            return np.arange(mat.shape[0], dtype=int)
+        dist = 1.0 - mat
+        dist = np.clip(dist, 0.0, None)
+        np.fill_diagonal(dist, 0.0)
+        v = squareform(dist, checks=False)
+        Z = hierarchy.linkage(v, method='average')
+        return hierarchy.leaves_list(Z)
 
-    # --- load synthetic result ---
+    def _corr_rows(X: np.ndarray) -> np.ndarray:
+        X = np.asarray(X, float)
+        return np.corrcoef(X, rowvar=True)
+
+    # --- load synthetic result (for C, B, and synthetic features) ---
     r = regional_group(
         mapping="kmeans",
         vers=vers,
         synthetic=True,
         cv=False,
         nclus=int(nclus),
-        nclus_s=int(nclus_s), zsc=zsc,
+        nclus_s=int(nclus_s),
+        zsc=zsc,
     )
 
     if "C" not in r or "B" not in r:
@@ -7117,71 +7725,189 @@ def plot_coeff_correlation_heatmaps(
     if C.shape != B.shape or C.ndim != 2:
         raise ValueError(f"Invalid shapes: C{C.shape}, B{B.shape}")
 
-    # --- correlations ---
+    # alpha-wise correlations
     corr_C = np.corrcoef(C, rowvar=False)
     corr_B = np.corrcoef(B, rowvar=False)
+    ord_C = _horder_corr(corr_C)
+    ord_B = _horder_corr(corr_B)
+    corr_Cs = corr_C[np.ix_(ord_C, ord_C)]
+    corr_Bs = corr_B[np.ix_(ord_B, ord_B)]
 
-    # --- correlation color scale ---
+    # hierarchically sort coefficient matrices for display (alpha axis)
+    C_show = C[:, ord_C]
+    B_show = B[:, ord_B]
+
+    # --- neuron-neuron correlations from coefficient matrices (capped) ---
+    nN = C.shape[0]
+    if nN > int(max_neurons_corr):
+        idx = np.linspace(0, nN - 1, int(max_neurons_corr)).round().astype(int)
+    else:
+        idx = np.arange(nN, dtype=int)
+
+    Cn = C[idx]
+    Bn = B[idx]
+
+    corr_realN = _corr_rows(Cn)
+    corr_synN = _corr_rows(Bn)
+    ord_realN = _horder_corr(corr_realN)
+    ord_synN = _horder_corr(corr_synN)
+    corr_realNs = corr_realN[np.ix_(ord_realN, ord_realN)]
+    corr_synNs = corr_synN[np.ix_(ord_synN, ord_synN)]
+
+    # --- neuron-neuron correlations from actual feature vectors (capped) ---
+    feat_real_key = "concat_z" if zsc else "concat"
+    feat_syn_key = "concat_zs" if zsc else "concat_s"
+    if feat_real_key not in r or feat_syn_key not in r:
+        raise KeyError(f"Expected feature keys '{feat_real_key}' and '{feat_syn_key}' in synthetic output.")
+
+    X_real = np.asarray(r[feat_real_key], float)[idx]
+    X_syn = np.asarray(r[feat_syn_key], float)[idx]
+
+    corr_realF = _corr_rows(X_real)
+    corr_synF = _corr_rows(X_syn)
+    ord_realF = _horder_corr(corr_realF)
+    ord_synF = _horder_corr(corr_synF)
+    corr_realFs = corr_realF[np.ix_(ord_realF, ord_realF)]
+    corr_synFs = corr_synF[np.ix_(ord_synF, ord_synF)]
+
+    # color scales
     if vlim is None:
-        vlim = float(
-            max(
-                np.nanmax(np.abs(corr_C)),
-                np.nanmax(np.abs(corr_B)),
-            )
-        )
+        vlim = float(max(
+            np.nanmax(np.abs(corr_Cs)), np.nanmax(np.abs(corr_Bs)),
+            np.nanmax(np.abs(corr_realNs)), np.nanmax(np.abs(corr_synNs)),
+            np.nanmax(np.abs(corr_realFs)), np.nanmax(np.abs(corr_synFs))
+        ))
 
-    # --- robust scaling for raw matrices ---
     def _robust_limits(X):
         return np.percentile(X, [2, 98])
 
-    vmin_C, vmax_C = _robust_limits(C)
-    vmin_B, vmax_B = _robust_limits(B)
+    vmin_C, vmax_C = _robust_limits(C_show)
+    vmin_B, vmax_B = _robust_limits(B_show)
 
-    fig, axs = plt.subplots(1, 4, figsize=figsize)
+    fig = plt.figure(figsize=figsize)
+    gs = fig.add_gridspec(3, 5, width_ratios=[1.2, 1.0, 1.2, 1.2, 1.0], wspace=0.35, hspace=0.25)
 
-    panels = [
-        (axs[0], C,       vmin_C, vmax_C, "C (real)",        "coeff"),
-        (axs[1], corr_C, -vlim,   vlim,   "corr(C)",         "corr"),
-        (axs[2], B,       vmin_B, vmax_B, "B (synthetic)",   "coeff"),
-        (axs[3], corr_B, -vlim,   vlim,   "corr(B)",         "corr"),
-    ]
+    # col1 (rowspan3): C
+    axC = fig.add_subplot(gs[:, 0])
+    imC = axC.imshow(C_show, vmin=vmin_C, vmax=vmax_C, cmap=cmap, origin='lower', aspect='auto')
+    axC.set_title('C\n(real, hier α)', fontsize=8, pad=2)
+    axC.set_xlabel('α (hier)')
+    axC.set_ylabel('neuron')
+    fig.colorbar(imC, ax=axC, fraction=0.046, pad=0.02).set_label('coeff', fontsize=8)
 
-    for ax, X, vmin, vmax, title, cblabel in panels:
-        im = ax.imshow(
-            X,
-            vmin=vmin,
-            vmax=vmax,
-            cmap=cmap,
-            origin="lower",
-            aspect="auto" if X.ndim == 2 and X.shape[0] != X.shape[1] else "equal",
-        )
-        ax.set_title(title, fontsize=10)
-        ax.set_xlabel("α")
-        if ax is axs[0]:
-            ax.set_ylabel("neuron")
-        else:
-            ax.set_ylabel("α" if X.shape[0] == X.shape[1] else "")
+    # col2 row1: corr(C)
+    axCC = fig.add_subplot(gs[0, 1])
+    imCC = axCC.imshow(corr_Cs, vmin=-vlim, vmax=vlim, cmap=cmap, origin='lower', aspect='equal')
+    axCC.set_title('corr(C)\n(hier)', fontsize=8, pad=2)
+    axCC.set_xlabel('α')
+    axCC.set_ylabel('α')
 
-        # individual colorbar
-        divider = make_axes_locatable(ax)
-        cax = divider.append_axes("right", size="4%", pad=0.05)
-        cb = fig.colorbar(im, cax=cax)
-        cb.set_label(cblabel, fontsize=8)
-        cb.ax.tick_params(labelsize=8)
+    # col2 row2: corr(neurons in C coefficients)
+    axRN = fig.add_subplot(gs[1, 1])
+    imRN = axRN.imshow(corr_realNs, vmin=-vlim, vmax=vlim, cmap=cmap, origin='lower', aspect='equal')
+    axRN.set_title(f"corr(neurons in C coeff)\n(hier), N={corr_realNs.shape[0]}", fontsize=8, pad=2)
+    axRN.set_xlabel('neuron')
+    axRN.set_ylabel('neuron')
 
-    fig.suptitle(
-        f"Coefficient matrices and correlation structure (nclus_s={nclus_s}, zsc={zsc})",
-        fontsize=12,
-    )
+    # col2 row3: corr(neurons in real feature vectors)
+    axRF = fig.add_subplot(gs[2, 1])
+    imRF = axRF.imshow(corr_realFs, vmin=-vlim, vmax=vlim, cmap=cmap, origin='lower', aspect='equal')
+    axRF.set_title(f"corr(neurons in real features)\n(hier), N={corr_realFs.shape[0]}", fontsize=8, pad=2)
+    axRF.set_xlabel('neuron')
+    axRF.set_ylabel('neuron')
 
-    plt.tight_layout(rect=[0, 0, 1, 0.92])
+    # col3 (rowspan2): synthetic marginals compare blocks (embedded)
+    host = fig.add_subplot(gs[:, 2])
+    host.set_title('synthetic marginals\ncompare blocks', fontsize=8, pad=2)
+    host.axis('off')
+    nrows_ex, ncols_ex = 5, 3
+    n_show = nrows_ex * ncols_ex  # 15 equally spaced example marginals
+    sub = gs[:, 2].subgridspec(nrows_ex, ncols_ex, hspace=0.15, wspace=0.12)
+    bins = 200
+    ex_alphas = np.linspace(0, int(nclus_s) - 1, n_show).round().astype(int)
+
+    for p, a in enumerate(ex_alphas):
+        row = p % nrows_ex
+        col = p // nrows_ex
+        axm = fig.add_subplot(sub[row, col])
+
+        if a >= int(nclus_s) or a >= C_show.shape[1]:
+            axm.axis('off')
+            continue
+
+        # IMPORTANT: compare matched alpha index between real and synth
+        # (use original coefficient columns, not independently hier-sorted views)
+        cvals = C[:, a]
+        bvals = B[:, a]
+        allv = np.concatenate([cvals[np.isfinite(cvals)], bvals[np.isfinite(bvals)]])
+        if allv.size == 0:
+            axm.axis('off')
+            continue
+
+        lo, hi = float(np.min(allv)), float(np.max(allv))
+        if (not np.isfinite(lo)) or (not np.isfinite(hi)) or (lo == hi):
+            lo, hi = lo - 1.0, hi + 1.0
+        edges = np.linspace(lo, hi, bins + 1)
+        hc, _ = np.histogram(cvals[np.isfinite(cvals)], bins=edges, density=True)
+        hb, _ = np.histogram(bvals[np.isfinite(bvals)], bins=edges, density=True)
+
+        axm.stairs(hb, edges, color='black', linewidth=3.0, linestyle='-', label='synth')
+        axm.stairs(hc, edges, color='lime', linewidth=1.6, linestyle=':', label='real')
+        if p == 0:
+            axm.legend(frameon=False, fontsize=6, loc='upper right')
+        axm.text(0.03, 0.82, f"α={a}", transform=axm.transAxes, fontsize=6)
+        axm.axis('off')
+
+    # shared correlation colorbar for column 2 (placed by middle panel)
+    cb2 = fig.colorbar(imRN, ax=[axCC, axRN, axRF], fraction=0.046, pad=0.02)
+    cb2.set_label('corr', fontsize=8)
+
+    # col4 (rowspan3): B tall (unsorted display)
+    axB = fig.add_subplot(gs[:, 3])
+    imB = axB.imshow(B_show, vmin=vmin_B, vmax=vmax_B, cmap=cmap, origin='lower', aspect='auto')
+    axB.set_title('B\n(synthetic, hier α)', fontsize=8, pad=2)
+    axB.set_xlabel('α (hier)')
+    axB.set_ylabel('neuron')
+    fig.colorbar(imB, ax=axB, fraction=0.046, pad=0.02).set_label('coeff', fontsize=8)
+
+    # col5 row1: corr(B)
+    axBB = fig.add_subplot(gs[0, 4])
+    imBB = axBB.imshow(corr_Bs, vmin=-vlim, vmax=vlim, cmap=cmap, origin='lower', aspect='equal')
+    axBB.set_title('corr(B)\n(hier)', fontsize=8, pad=2)
+    axBB.set_xlabel('α')
+    axBB.set_ylabel('α')
+
+    # col5 row2: corr(neurons in B coefficients)
+    axSN = fig.add_subplot(gs[1, 4])
+    imSN = axSN.imshow(corr_synNs, vmin=-vlim, vmax=vlim, cmap=cmap, origin='lower', aspect='equal')
+    axSN.set_title(f"corr(neurons in B coeff)\n(hier), N={corr_synNs.shape[0]}", fontsize=8, pad=2)
+    axSN.set_xlabel('neuron')
+    axSN.set_ylabel('neuron')
+
+    # col5 row3: corr(neurons in synthetic feature vectors)
+    axSF = fig.add_subplot(gs[2, 4])
+    imSF = axSF.imshow(corr_synFs, vmin=-vlim, vmax=vlim, cmap=cmap, origin='lower', aspect='equal')
+    axSF.set_title(f"corr(neurons in synthetic features)\n(hier), N={corr_synFs.shape[0]}", fontsize=8, pad=2)
+    axSF.set_xlabel('neuron')
+    axSF.set_ylabel('neuron')
+    # shared correlation colorbar for column 5 (placed by middle panel)
+    cb5 = fig.colorbar(imSN, ax=[axBB, axSN, axSF], fraction=0.046, pad=0.02)
+    cb5.set_label('corr', fontsize=8)
+
+    # reduce ticks: max 3 per axis on all matrix panels
+    for _ax in [axC, axCC, axRN, axRF, axB, axBB, axSN, axSF]:
+        _ax.xaxis.set_major_locator(MaxNLocator(nbins=3))
+        _ax.yaxis.set_major_locator(MaxNLocator(nbins=3))
+        _ax.tick_params(labelsize=7)
+
+    # no supertitle; tight layout
+    plt.tight_layout()
 
     if savepath is not None:
-        fig.savefig(savepath, dpi=150, bbox_inches="tight", facecolor="white")
+        fig.savefig(savepath, dpi=150, bbox_inches='tight', facecolor='white')
 
     plt.ion()
     plt.show()
-
 
 
 
@@ -7191,7 +7917,7 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     nclus_s: int = 100,
     bins: int = 60,
     figsize_hist: tuple[float, float] = (3, 3),   # UPDATED
-    figsize_bars: tuple[float, float] = (8, 5),  # UPDATED
+    figsize_bars: tuple[float, float] = (16, 9),  # UPDATED (larger / near full-screen)
     metric: str = "entropy",    # "entropy" | "PC0"
     weight: str = "abs",          # "abs" | "sq" | "relu" (used for entropy)
     eps: float = 1e-12,
@@ -7199,6 +7925,7 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     savepath_hist: str | None = None,
     savepath_bars: str | None = None,
     savepath_scatter: str | None = None,          # NEW
+    savepath_combined: str | None = None,
     figsize_scatter: tuple[float, float] = (9, 4), # NEW
     min_group_n: int = 20,   
     zsc: bool = True,        
@@ -7210,16 +7937,28 @@ def plot_coeff_entropy_flatness_real_vs_synth(
       3) Group summary (median vs variance) for Beryl regions and KMeans clusters
 
     metric:
-      - 'entropy': flatness_i = H(p_i)/log(M) in [0,1],
-                   where p_i is row-normalized nonnegative transform of coefficients.
-      - 'PC0': PC1 score per neuron after fitting PCA(n_components=1) on real C
-               and projecting both C and B.
+      Available metrics:
+      - 'entropy'   : H(p)/log(M), with p from row-normalized transformed coefficients.
+      - 'PC0'       : first principal-component score (fit on real C; project C and B).
+      - 'gini_simp' : Gini-Simpson diversity = 1 - Σ p_i^2.
+      - 'energy'    : 1 / (n * Σ p_i^2).
+      - 'spec'      : spectral flatness = geometric_mean(w) / arithmetic_mean(w).
+      - 'gini'      : Gini coefficient of transformed coefficients.
+      - 'cof_var'   : coefficient of variation = std(w) / mean(w).
+
+      Here w is the nonnegative coefficient transform controlled by `weight`
+      (abs/sq/relu), and p is row-normalized w.
 
     Scatter figure:
       - Panel 1: per-Beryl-region medians (x=synth, y=real), colored by Beryl (pal)
       - Panel 2: per-kmeans-cluster medians (x=synth, y=real), colored by tab20 cycle
       - Point size ~ sqrt(group size)
       - Annotate Pearson r and Spearman rho
+
+    Saving:
+      - Optional individual saves via savepath_hist/savepath_bars/savepath_scatter.
+      - Always produces a vertically stacked combined PNG (hist + bars + scatter),
+        saved to savepath_combined (or by default under one.cache_dir/dmn/figs with metric name).
     """
 
     def _despine(ax):
@@ -7256,7 +7995,7 @@ def plot_coeff_entropy_flatness_real_vs_synth(
 
     metric_key = str(metric).strip().lower()
 
-    def _to_prob(X: np.ndarray) -> np.ndarray:
+    def _to_weight(X: np.ndarray) -> np.ndarray:
         X = np.asarray(X, dtype=float)
         X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -7269,7 +8008,10 @@ def plot_coeff_entropy_flatness_real_vs_synth(
         else:
             raise ValueError("weight must be one of: 'abs', 'sq', 'relu'")
 
-        W = W + float(eps)
+        return W + float(eps)
+
+    def _to_prob(X: np.ndarray) -> np.ndarray:
+        W = _to_weight(X)
         row_sum = W.sum(axis=1, keepdims=True)
         row_sum = np.where(row_sum > 0, row_sum, 1.0)
         return W / row_sum
@@ -7280,6 +8022,40 @@ def plot_coeff_entropy_flatness_real_vs_synth(
         if maxH <= 0:
             return np.zeros(P.shape[0], dtype=float)
         return np.clip(H / maxH, 0.0, 1.0)
+
+    def _gini_simp(P: np.ndarray) -> np.ndarray:
+        return 1.0 - np.sum(P * P, axis=1)
+
+    def _energy(P: np.ndarray) -> np.ndarray:
+        # requested definition: 1 / (n * sum_i p_i^2)
+        n = float(P.shape[1])
+        denom = n * np.sum(P * P, axis=1)
+        denom = np.where(denom > 0, denom, np.nan)
+        return 1.0 / denom
+
+    def _spec_flat(X: np.ndarray) -> np.ndarray:
+        W = _to_weight(X)
+        gmean = np.exp(np.mean(np.log(W), axis=1))
+        amean = np.mean(W, axis=1)
+        amean = np.where(amean > 0, amean, np.nan)
+        return gmean / amean
+
+    def _gini_coef(X: np.ndarray) -> np.ndarray:
+        W = _to_weight(X)
+        W = np.sort(W, axis=1)
+        n = W.shape[1]
+        idx = np.arange(1, n + 1, dtype=float)
+        sum_w = np.sum(W, axis=1)
+        sum_w = np.where(sum_w > 0, sum_w, np.nan)
+        num = 2.0 * np.sum(W * idx[None, :], axis=1)
+        return (num / (n * sum_w)) - (n + 1.0) / n
+
+    def _coef_var(X: np.ndarray) -> np.ndarray:
+        W = _to_weight(X)
+        mu = np.mean(W, axis=1)
+        sd = np.std(W, axis=1)
+        mu = np.where(mu > 0, mu, np.nan)
+        return sd / mu
 
     if metric_key == "entropy":
         P_C = _to_prob(C)
@@ -7295,15 +8071,67 @@ def plot_coeff_entropy_flatness_real_vs_synth(
         metric_synth = pca0.transform(B)[:, 0]
         metric_label = "PC0 score"
         metric_name = "PC0"
+    elif metric_key == "gini_simp":
+        P_C = _to_prob(C)
+        P_B = _to_prob(B)
+        metric_real = _gini_simp(P_C)
+        metric_synth = _gini_simp(P_B)
+        metric_label = "Gini-Simpson diversity"
+        metric_name = "gini_simp"
+    elif metric_key == "energy":
+        P_C = _to_prob(C)
+        P_B = _to_prob(B)
+        metric_real = _energy(P_C)
+        metric_synth = _energy(P_B)
+        metric_label = "energy = 1/(n·Σp²)"
+        metric_name = "energy"
+    elif metric_key == "spec":
+        metric_real = _spec_flat(C)
+        metric_synth = _spec_flat(B)
+        metric_label = "spectral flatness (geom/arith)"
+        metric_name = "spec"
+    elif metric_key == "gini":
+        metric_real = _gini_coef(C)
+        metric_synth = _gini_coef(B)
+        metric_label = "Gini coefficient"
+        metric_name = "gini"
+    elif metric_key == "cof_var":
+        metric_real = _coef_var(C)
+        metric_synth = _coef_var(B)
+        metric_label = "cof_var (std/mean)"
+        metric_name = "cof_var"
     else:
-        raise ValueError("metric must be one of: 'entropy', 'PC0'")
+        raise ValueError(
+            "metric must be one of: 'entropy', 'PC0', 'gini_simp', 'energy', 'spec', 'gini', 'cof_var'"
+        )
 
-    # --- pick 5 highest / lowest metric values ---
+    # keep finite values only for plotting/statistics
+    metric_real = np.asarray(metric_real, dtype=float)
+    metric_synth = np.asarray(metric_synth, dtype=float)
+    good = np.isfinite(metric_real) & np.isfinite(metric_synth)
+    metric_real = metric_real[good]
+    metric_synth = metric_synth[good]
+    C = C[good]
+    B = B[good]
+    if 'Beryl' in r and len(np.asarray(r['Beryl'])) == len(good):
+        r['Beryl'] = np.asarray(r['Beryl'])[good]
+    if 'acs' in r and len(np.asarray(r['acs'])) == len(good):
+        r['acs'] = np.asarray(r['acs'])[good]
+
+    # --- pick extremes + 3 middle rows (closest to median) ---
     k = 5
+    n_mid_rows = 3
+    n_mid = k * n_mid_rows
+
     idx_real_hi = np.argsort(metric_real)[-k:][::-1]
     idx_real_lo = np.argsort(metric_real)[:k]
     idx_synth_hi = np.argsort(metric_synth)[-k:][::-1]
     idx_synth_lo = np.argsort(metric_synth)[:k]
+
+    med_real = np.median(metric_real)
+    med_synth = np.median(metric_synth)
+    idx_real_mid_all = np.argsort(np.abs(metric_real - med_real))[:n_mid]
+    idx_synth_mid_all = np.argsort(np.abs(metric_synth - med_synth))[:n_mid]
 
     # ---------------- Figure 1: overlapping distributions (envelope only) ----------------
     fig_hist, ax = plt.subplots(1, 1, figsize=figsize_hist)
@@ -7340,6 +8168,10 @@ def plot_coeff_entropy_flatness_real_vs_synth(
 
     # ---------------- Figure 2: bar plots for extremes (layout fixed) ----------------
     fig_bars = plt.figure(figsize=figsize_bars)
+    try:
+        fig_bars.canvas.manager.full_screen_toggle()
+    except Exception:
+        pass
 
     fig_bars.subplots_adjust(
         left=0.05,
@@ -7352,9 +8184,10 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     outer = fig_bars.add_gridspec(1, 2, wspace=0.3)
 
     def _panel(gs, X: np.ndarray, score: np.ndarray,
-               idx_hi: np.ndarray, idx_lo: np.ndarray):
-        sub = gs.subgridspec(2, k, hspace=0.55, wspace=0.22)
-        axs_sub = np.empty((2, k), dtype=object)
+               idx_hi: np.ndarray, idx_mid_all: np.ndarray, idx_lo: np.ndarray):
+        n_rows = 2 + n_mid_rows  # top + middle rows + bottom
+        sub = gs.subgridspec(n_rows, k, hspace=0.55, wspace=0.22)
+        axs_sub = np.empty((n_rows, k), dtype=object)
 
         def _decorate_axis(ax, i: int, sval: float):
             ax.set_title(
@@ -7383,14 +8216,36 @@ def plot_coeff_entropy_flatness_real_vs_synth(
             else:
                 ax.set_yticklabels([])
 
+        # middle rows: closest to median metric (3 rows)
+        for rr in range(n_mid_rows):
+            idx_mid = idx_mid_all[rr * k:(rr + 1) * k]
+            row_id = 1 + rr
+            for j, i in enumerate(idx_mid):
+                ax = fig_bars.add_subplot(
+                    sub[row_id, j],
+                    sharex=axs_sub[0, 0],
+                    sharey=axs_sub[row_id, 0] if j > 0 else None,
+                )
+                axs_sub[row_id, j] = ax
+
+                ax.bar(np.arange(M), X[i, :])
+                _decorate_axis(ax, i, score[i])
+
+                ax.set_xticks([])
+                if j == 0:
+                    ax.set_ylabel(f"median {metric_name}\ncoeff", fontsize=9, labelpad=10)
+                else:
+                    ax.set_yticklabels([])
+
         # bottom row: lowest metric
+        bottom_row = n_mid_rows + 1
         for j, i in enumerate(idx_lo):
             ax = fig_bars.add_subplot(
-                sub[1, j],
+                sub[bottom_row, j],
                 sharex=axs_sub[0, 0],
-                sharey=axs_sub[1, 0] if j > 0 else None,
+                sharey=axs_sub[bottom_row, 0] if j > 0 else None,
             )
-            axs_sub[1, j] = ax
+            axs_sub[bottom_row, j] = ax
 
             ax.bar(np.arange(M), X[i, :])
             _decorate_axis(ax, i, score[i])
@@ -7402,8 +8257,8 @@ def plot_coeff_entropy_flatness_real_vs_synth(
             else:
                 ax.set_yticklabels([])
 
-    _panel(outer[0], C, metric_real, idx_real_hi, idx_real_lo)
-    _panel(outer[1], B, metric_synth, idx_synth_hi, idx_synth_lo)
+    _panel(outer[0], C, metric_real, idx_real_hi, idx_real_mid_all, idx_real_lo)
+    _panel(outer[1], B, metric_synth, idx_synth_hi, idx_synth_mid_all, idx_synth_lo)
 
     metric_desc = f"metric={metric_name}" if metric_key == "pc0" else f"metric={metric_name}, weight={weight}"
     fig_bars.suptitle(
@@ -7418,7 +8273,7 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     fig_bars.text(
         0.5 * (bbox_L.x0 + bbox_L.x1),
         0.86,
-        f"Real (C): top 5 / bottom 5 by {metric_name} (zsc={zsc})",
+        f"Real (C): top 5 / median 15 (3 rows) / bottom 5 by {metric_name} (zsc={zsc})",
         ha="center",
         va="bottom",
         fontsize=11,
@@ -7426,7 +8281,7 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     fig_bars.text(
         0.5 * (bbox_R.x0 + bbox_R.x1),
         0.86,
-        f"Synthetic (B): top 5 / bottom 5 by {metric_name} (zsc={zsc})",
+        f"Synthetic (B): top 5 / median 15 (3 rows) / bottom 5 by {metric_name} (zsc={zsc})",
         ha="center",
         va="bottom",
         fontsize=11,
@@ -7546,7 +8401,24 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     s_reg = _sizes_linear_global(n_reg, nmin=nmin_global, nmax=nmax_global, smin=8.0, smax=200.0)
     s_c   = _sizes_linear_global(n_c,   nmin=nmin_global, nmax=nmax_global, smin=8.0, smax=200.0)
 
-    fig_scatter, axs = plt.subplots(1, 2, figsize=figsize_scatter, sharey=True, sharex=True)
+    # random-control partitions with the same group sizes
+    rng_ctrl = np.random.default_rng(0)
+    beryl_ctrl = rng_ctrl.permutation(beryl)
+    acs_ctrl = rng_ctrl.permutation(acs)
+
+    labs_reg_r, x_reg_r, y_reg_r, n_reg_r = _group_stats(
+        beryl_ctrl, exclude_labels={"root", "void"}, nmin=min_group_n
+    )
+    labs_c_r, x_c_r, y_c_r, n_c_r = _group_stats(
+        acs_ctrl, nmin=min_group_n
+    )
+
+    # Ensure random controls use the same group-size -> marker-size mapping
+    s_reg_r = _sizes_linear_global(n_reg_r, nmin=nmin_global, nmax=nmax_global, smin=8.0, smax=200.0)
+    s_c_r   = _sizes_linear_global(n_c_r,   nmin=nmin_global, nmax=nmax_global, smin=8.0, smax=200.0)
+
+    fig_scatter, axs2 = plt.subplots(2, 2, figsize=(max(figsize_scatter[0], 10), max(figsize_scatter[1], 8)), sharey=True, sharex=True)
+    axs = axs2.flatten()
 
     for ax in axs:
         ax.set_xlabel(f"variance of {metric_name}")
@@ -7555,23 +8427,35 @@ def plot_coeff_entropy_flatness_real_vs_synth(
         ax.ticklabel_format(axis="x", style="plain", useOffset=False)
         _despine(ax)
 
-    # --- Left panel: Beryl regions (exclude root/void) ---
+    # --- Panel 1: Beryl regions (real) ---
     ax = axs[0]
     c_reg = np.array([pal[reg] for reg in labs_reg])
     ax.scatter(x_reg, y_reg, s=s_reg, c=c_reg, alpha=0.85, linewidths=0)
-    ax.set_title(f"Beryl regions (excl root/void): n={x_reg.size}, zsc={zsc}")
+    ax.set_title(f"Beryl (real): n={x_reg.size}, zsc={zsc}")
     _annotate_size_legend(ax, n_reg, nmin=nmin_global, nmax=nmax_global, smin=8.0, smax=200.0)
 
-    # --- Right panel: KMeans clusters ---
+    # --- Panel 2: Beryl random control (same group sizes) ---
     ax = axs[1]
+    c_reg_r = np.array([pal[reg] for reg in labs_reg_r])
+    ax.scatter(x_reg_r, y_reg_r, s=s_reg_r, c=c_reg_r, alpha=0.85, linewidths=0)
+    ax.set_title(f"Beryl (random ctrl): n={x_reg_r.size}")
+
+    # --- Panel 3: KMeans clusters (real) ---
+    ax = axs[2]
     cmap = plt.get_cmap("tab20")
     c_c = np.array([cmap(int(lab) % 20) for lab in labs_c])
     ax.scatter(x_c, y_c, s=s_c, c=c_c, alpha=0.85, linewidths=0)
-    ax.set_title(f"KMeans clusters: n={x_c.size}, zsc={zsc}")
+    ax.set_title(f"KMeans (real): n={x_c.size}, zsc={zsc}")
     _annotate_size_legend(ax, n_c, nmin=nmin_global, nmax=nmax_global, smin=8.0, smax=200.0)
 
+    # --- Panel 4: KMeans random control (same group sizes) ---
+    ax = axs[3]
+    c_c_r = np.array([cmap(int(lab) % 20) for lab in labs_c_r])
+    ax.scatter(x_c_r, y_c_r, s=s_c_r, c=c_c_r, alpha=0.85, linewidths=0)
+    ax.set_title(f"KMeans (random ctrl): n={x_c_r.size}")
+
     fig_scatter.suptitle(
-        f"{metric_name} (real only): group median vs within-group variance (M={M}, zsc={zsc})",
+        f"{metric_name} (real): group median vs within-group variance + random controls (M={M}, zsc={zsc})",
         y=0.99,
         fontsize=12,
     )
@@ -7582,4 +8466,41 @@ def plot_coeff_entropy_flatness_real_vs_synth(
 
     if savepath_scatter is not None:
         fig_scatter.savefig(savepath_scatter, dpi=150, bbox_inches="tight", facecolor="white")
+
+    # ---------------- Combined figure: stack the 3 figures vertically ----------------
+    def _fig_to_rgb_array(fig):
+        fig.canvas.draw()
+        w, h = fig.canvas.get_width_height()
+        buf = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+        return buf.reshape(h, w, 3)
+
+    arr_hist = _fig_to_rgb_array(fig_hist)
+    arr_bars = _fig_to_rgb_array(fig_bars)
+    arr_scatter = _fig_to_rgb_array(fig_scatter)
+
+    target_w = int(max(arr_hist.shape[1], arr_bars.shape[1], arr_scatter.shape[1]))
+
+    def _pad_to_width(arr, w):
+        h, ww, _ = arr.shape
+        if ww == w:
+            return arr
+        pad = np.full((h, w - ww, 3), 255, dtype=np.uint8)
+        return np.concatenate([arr, pad], axis=1)
+
+    arr_hist = _pad_to_width(arr_hist, target_w)
+    arr_bars = _pad_to_width(arr_bars, target_w)
+    arr_scatter = _pad_to_width(arr_scatter, target_w)
+
+    stacked = np.concatenate([arr_hist, arr_bars, arr_scatter], axis=0)
+
+    if savepath_combined is None:
+        out_dir = Path(one.cache_dir, 'dmn', 'figs')
+        out_dir.mkdir(parents=True, exist_ok=True)
+        savepath_combined = out_dir / f"coeff_entropy_flatness_real_vs_synth_{metric_name}.png"
+    else:
+        savepath_combined = Path(savepath_combined)
+        savepath_combined.parent.mkdir(parents=True, exist_ok=True)
+
+    Image.fromarray(stacked).save(savepath_combined)
+    print(f"saved combined figure: {savepath_combined}")
 

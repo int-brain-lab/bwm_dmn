@@ -11,46 +11,37 @@ Data accessible here: https://docs.internationalbrainlab.org/notebooks_external/
 
 ---
 
-## Key Figures Documented Here
+## Main-figure functions (from `main.tex`)
 
-### 1. Rastermap Figure (Population Dynamics)
-- **What it does:**  
-  Applies **Rastermap**, a nonlinear dimensionality reduction algorithm tailored for neural population recordings.  
-- **Purpose:**  
-  - Orders neurons by similarity in activity across trials.  
-  - Produces smooth embeddings that reveal structure in population-level dynamics.  
-- **Implementation details:**  
-  - Uses concatenated z-scored PETHs (`concat_z`).  
-  - Rastermap parameters: `n_PCs=200`, `n_clusters=100`, `locality=0.75`, `time_lag_window=5`.  
-  - Outputs a sorting index (`isort`) used to reorder neurons for visualization.  
-- **Interpretation:**  
-  Highlights the diversity of neural responses across the whole hemisphere. 
+This README is limited to the functions needed for the main paper figures.
 
----
+### 1) Build per-insertion PETH data and stack to a supersession
+- `get_all_PETHs_parallel(...)`  
+  Computes/saves per-insertion PETH bundles.
+- `stack_concat(vers='concat', cv=False/True, ...)`  
+  Builds the concatenated feature matrix (`concat`, `concat_z`) and embeddings/sorting metadata.
+- `concat_PETHs(...)`  
+  Defines the 21 PETH conditions used in the main analysis (stimulus-, movement-, and feedback-aligned windows).
 
-### 2. Swanson Plot (Regional Specialization)
-- **What it does:**  
-  Generates **Swanson-style flatmap plots** of the mouse brain to visualize regional specialization.  
-- **Purpose:**  
-  - Projects decoding or clustering results onto a simplified 2D anatomical schematic.  
-  - Colors encode anatomical regions from Allen (Beryl) mapping.  
-- **Implementation details:**  
-  - Uses `plot_swanson_vector` from `iblatlas.plots`.  
-  - Region membership derived from histology.
-- **Interpretation:**  
-  Provides an overview of which brain areas exhibit stronger specialization; also using a specialisation scroe from the decoding analysis of **A Brain-Wide Map of Neural Activity during Complex Behaviour** (https://www.biorxiv.org/content/10.1101/2023.07.04.547681v2).
+### 2) Functional clustering/embedding and rastermap figures
+- `plot_dim_reduction(mapping='kmeans', algo='umap_z', ...)`  
+  UMAP colored by k-means clusters; with `exa_kmeans=True` also shows cluster-average feature vectors.
+- `plot_rastermap(...)`  
+  Rastermap-sorted population plot (including CV usage from odd/even trial split produced by `stack_concat(cv=True)`).
+- `plot_example_neurons(...)`  
+  Single-cell example feature vectors per cluster.
 
----
-
-### 3. Correlation Plot (Decoding vs Cluster Specialization)
-- **What it does:**  
-  Quantifies the relationship between **decoding specialization** and **cluster specialization**.  
-- **Purpose:**  
-  - Tests whether regions that show broad decodability across main variables (low specialisation) also show a broad distribution across neuronal response types, based on clustering concatenated PETHs.
-- **Implementation details:**  
-  - Decoding scores: from **A Brain-Wide Map of Neural Activity during Complex Behaviour** (https://www.biorxiv.org/content/10.1101/2023.07.04.547681v2) compared against decoding results from **Spatially Distributed and Regionally Unbound Cellular-Resolution Brain-Wide Processing Loops in Mice** (https://www.biorxiv.org/content/10.1101/2025.07.30.667641v1).    
-- **Interpretation:**  
-  A strong positive correlation links decoding specialization (decoding of task variables) with neural response specialization (clusters), supporting each as a measure of functional specialisation per region.
+### 3) Function–anatomy comparison and specialization
+- `plot_dim_reduction(mapping='Beryl', ...)` and `plot_xyz(mapping='kmeans', ...)`  
+  2D functional embedding vs 3D anatomical location views.
+- `plot_cluster_profile(...)`  
+  Per-cluster regional composition (pie/polar views).
+- `clus_freqs(...)`  
+  Region-wise functional composition / specialization summaries.
+- `plot_three_swansons(...)`  
+  Swanson maps for specialization-related summaries.
+- `scat_dec_clus(...)`  
+  Correlation between decoding-based and cluster-based specialization metrics.
 
 ---
 
@@ -62,9 +53,8 @@ Data accessible here: https://docs.internationalbrainlab.org/notebooks_external/
 
 ## Usage
 Typical workflow:
-1. **Preprocessing:** Concatenate and stack PETHs with `stack_concat`.  
-2. **Dimensionality reduction:** Compute Rastermap, UMAP, PCA embeddings.  
-3. **Regional specialization:** Generate Swanson-style anatomical plots.  
-4. **Correlation analysis:** Compare Brain-Wide Map decoding with Supersession decoding, and relate to cluster specialization.  
+1. **Per-insertion PETHs:** `get_all_PETHs_parallel(...)`  
+2. **Supersession stack:** `stack_concat(vers='concat', cv=False)` and `stack_concat(vers='concat', cv=True)`  
+3. **Main figure generation:** use the functions listed above (`plot_dim_reduction`, `plot_rastermap`, `plot_example_neurons`, `plot_xyz`, `plot_cluster_profile`, `clus_freqs`, `plot_three_swansons`, `scat_dec_clus`).
 
-Figures are saved into the local ONE cache directory (`dmn/imgs/`).  
+Outputs are written under the local ONE cache `dmn/` tree (notably `dmn/res/`, `dmn/imgs/`, and `dmn/figs/`).
