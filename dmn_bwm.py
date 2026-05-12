@@ -1394,6 +1394,51 @@ def regional_group(
             r["isort"] = isort_rm
             r["rm_labels"] = labels_rm
 
+    elif mapping == "fr":
+        # Map per-neuron firing rates to a red colormap with nonlinear contrast
+        # so higher-FR neurons are emphasized more strongly.
+        fr_key = None
+        for k in ("fr", "firing_rate", "firing_rates"):
+            if k in r:
+                fr_key = k
+                break
+        if fr_key is None:
+            raise KeyError(
+                "mapping='fr' requested, but no firing-rate key found in stack. "
+                "Expected one of: 'fr', 'firing_rate', 'firing_rates'."
+            )
+
+        fr = np.asarray(r[fr_key], dtype=float).reshape(-1)
+        if fr.shape[0] != n_rows:
+            raise ValueError(
+                f"Firing-rate vector length ({fr.shape[0]}) does not match neuron count ({n_rows})."
+            )
+
+        # Robust clipping to suppress extreme outliers before nonlinear remap.
+        lo, hi = np.nanpercentile(fr, [1.0, 99.0])
+        if (not np.isfinite(lo)) or (not np.isfinite(hi)) or (hi <= lo):
+            lo = float(np.nanmin(fr)) if np.isfinite(np.nanmin(fr)) else 0.0
+            hi = float(np.nanmax(fr)) if np.isfinite(np.nanmax(fr)) else 1.0
+            if hi <= lo:
+                hi = lo + 1.0
+
+        fr_clip = np.clip(fr, lo, hi)
+        fr_norm = (fr_clip - lo) / (hi - lo + 1e-12)
+
+        # Nonlinear emphasis: power < 1 boosts upper range visibility.
+        gamma = 0.45
+        fr_nl = np.power(np.clip(fr_norm, 0.0, 1.0), gamma)
+
+        cmap_fr = mpl.colormaps["Reds"]
+        cols = cmap_fr(fr_nl)
+
+        # Keep raw FR as labels for downstream grouping/statistics if needed.
+        r["acs"] = fr
+        r["cols"] = cols
+        r["fr"] = fr
+        r["fr_norm"] = fr_nl
+        r["fr_clip_bounds"] = (float(lo), float(hi))
+
     else:
         acs = np.array(br.id2acronym(r["ids"], mapping=mapping))
         cols = np.array([pal[reg] for reg in acs])
@@ -4971,9 +5016,10 @@ def plot_cluster_profile(
     savefig: bool = False,
     bare_line: bool = True,
     _full: bool = True,           # NEW: grid figure with all clusters
-    pie_only: bool = True,       # NEW: if True, suppress line plots and show only pie(s)
-    canonical_order: bool = True,# NEW: if True, order pie wedges by canonical Beryl order
-    min_region_n: int = 0,        # NEW: include only regions with >= this many neurons globally
+    pie_only: bool = False,       # NEW: if True, suppress line plots and show only pie(s)
+    canonical_order: bool = False,# NEW: if True, order pie wedges by canonical Beryl order
+    min_region_n_global: int = 0,  # NEW: include only regions with >= this many neurons globally
+    min_region_n_cluster: int = 0, # NEW: include only regions with >= this many neurons in cluster
 ):
     """
     Inspect either a Rastermap ('rm') cluster or a KMeans ('kmeans') cluster.
@@ -5127,8 +5173,12 @@ def plot_cluster_profile(
         regs_in_clus = acs_B[mask_]
         counts = Counter(regs_in_clus)
 
-        # optional global region-size filter
-        regs = [r for r in counts.keys() if global_counts.get(r, 0) >= int(min_region_n)]
+        # optional region-size filters
+        regs = [
+            r for r in counts.keys()
+            if (global_counts.get(r, 0) >= int(min_region_n_global))
+            and (counts.get(r, 0) >= int(min_region_n_cluster))
+        ]
         if len(regs) == 0:
             return [], np.array([], dtype=float), []
 
@@ -7913,7 +7963,7 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     bins: int = 60,
     figsize_hist: tuple[float, float] = (3, 3),   # UPDATED
     figsize_bars: tuple[float, float] = (16, 9),  # UPDATED (larger / near full-screen)
-    metric: str = "entropy",    # "entropy" | "PC0"
+    metric: str = "PC0",    # "entropy" | "PC0"
     weight: str = "abs",          # "abs" | "sq" | "relu" (used for entropy)
     eps: float = 1e-12,
     density: bool = True,
@@ -7921,9 +7971,12 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     savepath_bars: str | None = None,
     savepath_scatter: str | None = None,          # NEW
     savepath_combined: str | None = None,
-    figsize_scatter: tuple[float, float] = (9, 4), # NEW
-    min_group_n: int = 20,   
-    zsc: bool = True,        
+    figsize_scatter: tuple[float, float] = (9, 4),
+    savepath_medians: str | None = None,
+    figsize_medians: tuple[float, float] = (8, 4),
+    min_group_n: int = 20,
+    zsc: bool = True,
+    m2: str = 'var',         # 'var' | 'se'
 ):
     """
     Compute a per-neuron scalar metric from coefficient vectors and plot:
@@ -7951,14 +8004,34 @@ def plot_coeff_entropy_flatness_real_vs_synth(
       - Annotate Pearson r and Spearman rho
 
     Saving:
-      - Optional individual saves via savepath_hist/savepath_bars/savepath_scatter.
-      - Always produces a vertically stacked combined PNG (hist + bars + scatter),
-        saved to savepath_combined (or by default under one.cache_dir/dmn/figs with metric name).
+      - Individual figures (hist/bars/scatter) are saved as both .png and .svg.
+      - Combined stacked figure is also saved as both .png and .svg.
+      - Paths are controlled by savepath_hist/savepath_bars/savepath_scatter/savepath_combined
+        (extension ignored; both formats are written).
     """
 
     def _despine(ax):
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
+
+    def _save_both(fig, path_like, default_stem: str):
+        """Save a matplotlib figure as both PNG and SVG."""
+        if path_like is None:
+            out_dir = Path(one.cache_dir, 'dmn', 'figs')
+            out_dir.mkdir(parents=True, exist_ok=True)
+            stem_path = out_dir / default_stem
+        else:
+            p = Path(path_like)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            stem_path = p.with_suffix('')
+
+        png_path = stem_path.with_suffix('.png')
+        svg_path = stem_path.with_suffix('.svg')
+        fig.savefig(png_path, dpi=150, bbox_inches="tight", facecolor="white")
+        fig.savefig(svg_path, bbox_inches="tight", facecolor="white")
+        print(f"saved: {png_path}")
+        print(f"saved: {svg_path}")
+        return png_path, svg_path
 
     # --- load synthetic result (real + synthetic coeff matrices) ---
     r = regional_group(
@@ -8148,9 +8221,11 @@ def plot_coeff_entropy_flatness_real_vs_synth(
         label="synth",
     )
 
+    _range = np.nanmax(np.concatenate([metric_real, metric_synth])) - np.nanmin(np.concatenate([metric_real, metric_synth]))
+    emd_neurons = wasserstein_distance(metric_real, metric_synth) / _range if _range > 0 else 0.0
     ax.set_xlabel(metric_label)
     ax.set_ylabel("dens" if density else "count")
-    ax.set_title(f"M={M}, zsc={zsc}", fontsize=10)
+    ax.set_title(f"M={M}, zsc={zsc}, EMD={emd_neurons:.3g}", fontsize=10)
     ax.legend(frameon=False, fontsize=8)
     _despine(ax)
 
@@ -8158,8 +8233,7 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     plt.ion()
     plt.show()
 
-    if savepath_hist is not None:
-        fig_hist.savefig(savepath_hist, dpi=150, bbox_inches="tight", facecolor="white")
+    _save_both(fig_hist, savepath_hist, f"coeff_entropy_flatness_hist_{metric_name}")
 
     # ---------------- Figure 2: bar plots for extremes (layout fixed) ----------------
     fig_bars = plt.figure(figsize=figsize_bars)
@@ -8282,8 +8356,7 @@ def plot_coeff_entropy_flatness_real_vs_synth(
         fontsize=11,
     )
 
-    if savepath_bars is not None:
-        fig_bars.savefig(savepath_bars, dpi=150, bbox_inches="tight", facecolor="white")
+    _save_both(fig_bars, savepath_bars, f"coeff_entropy_flatness_bars_{metric_name}")
 
     plt.ion()
     plt.show()
@@ -8368,7 +8441,10 @@ def plot_coeff_entropy_flatness_real_vs_synth(
                 continue
             labs.append(lab)
             ys.append(float(np.median(v)))
-            xs.append(float(np.var(v)))  # use np.var(v, ddof=1) if you prefer sample variance
+            if m2 == 'var':
+                xs.append(float(np.var(v)))
+            else:
+                xs.append(float(np.std(v, ddof=1) / np.sqrt(len(v))))
             ns.append(n)
 
         return np.asarray(labs), np.asarray(xs), np.asarray(ys), np.asarray(ns)
@@ -8415,8 +8491,9 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     fig_scatter, axs2 = plt.subplots(2, 2, figsize=(max(figsize_scatter[0], 10), max(figsize_scatter[1], 8)), sharey=True, sharex=True)
     axs = axs2.flatten()
 
+    m2_label = f"var({metric_name})" if m2 == 'var' else f"SE({metric_name})"
     for ax in axs:
-        ax.set_xlabel(f"variance of {metric_name}")
+        ax.set_xlabel(m2_label)
         ax.set_ylabel(f"median {metric_name}")
         ax.xaxis.set_major_locator(MaxNLocator(nbins=3, prune=None))
         ax.ticklabel_format(axis="x", style="plain", useOffset=False)
@@ -8450,7 +8527,7 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     ax.set_title(f"KMeans (random ctrl): n={x_c_r.size}")
 
     fig_scatter.suptitle(
-        f"{metric_name} (real): group median vs within-group variance + random controls (M={M}, zsc={zsc})",
+        f"{metric_name} (real): group median vs {m2_label} + random controls (M={M}, zsc={zsc})",
         y=0.99,
         fontsize=12,
     )
@@ -8459,8 +8536,43 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     plt.ion()
     plt.show()
 
-    if savepath_scatter is not None:
-        fig_scatter.savefig(savepath_scatter, dpi=150, bbox_inches="tight", facecolor="white")
+    _save_both(fig_scatter, savepath_scatter, f"coeff_entropy_flatness_scatter_{metric_name}")
+
+    # ---------------- Figure 4: distribution of per-group medians (real vs random) ----------------
+    fig_medians, axs_med = plt.subplots(2, 3, figsize=(max(figsize_medians[0], 14), max(figsize_medians[1], 7)))
+
+    # cols 0-1: real vs random per grouping; col 2: Beryl vs KMeans (real only)
+    panel_specs = [
+        (axs_med[0, 0], x_reg,  x_reg_r, m2_label,                "Beryl regions",   "real",   "random"),
+        (axs_med[0, 1], x_c,    x_c_r,   m2_label,                "KMeans clusters", "real",   "random"),
+        (axs_med[0, 2], x_reg,  x_c,     m2_label,                "Beryl vs KMeans", "Beryl",  "KMeans"),
+        (axs_med[1, 0], y_reg,  y_reg_r, f"median {metric_name}", "Beryl regions",   "real",   "random"),
+        (axs_med[1, 1], y_c,    y_c_r,   f"median {metric_name}", "KMeans clusters", "real",   "random"),
+        (axs_med[1, 2], y_reg,  y_c,     f"median {metric_name}", "Beryl vs KMeans", "Beryl",  "KMeans"),
+    ]
+
+    for ax, vals_a, vals_b, xlabel, grouping, label_a, label_b in panel_specs:
+        all_vals = np.concatenate([vals_a, vals_b])
+        bins_p = np.linspace(np.nanmin(all_vals), np.nanmax(all_vals), 30)
+        _range_p = np.nanmax(all_vals) - np.nanmin(all_vals)
+        emd_p = wasserstein_distance(vals_a, vals_b) / _range_p if _range_p > 0 else 0.0
+        ax.hist(vals_a, bins=bins_p, histtype="step", linewidth=2, label=label_a)
+        ax.hist(vals_b, bins=bins_p, histtype="step", linewidth=2, label=label_b)
+        ax.set_xlabel(f"{xlabel} per group")
+        ax.set_ylabel("count")
+        ax.set_title(f"{grouping}, EMD={emd_p:.3g}")
+        ax.legend(frameon=False, fontsize=8)
+        _despine(ax)
+
+    fig_medians.suptitle(
+        f"{metric_name}: per-group {m2_label} and median — real vs random, Beryl vs KMeans (M={M}, zsc={zsc})",
+        fontsize=11,
+    )
+    plt.tight_layout()
+    plt.ion()
+    plt.show()
+
+    _save_both(fig_medians, savepath_medians, f"coeff_entropy_flatness_medians_{metric_name}")
 
     # ---------------- Combined figure: stack the 3 figures vertically ----------------
     def _fig_to_rgb_array(fig):
@@ -8472,8 +8584,9 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     arr_hist = _fig_to_rgb_array(fig_hist)
     arr_bars = _fig_to_rgb_array(fig_bars)
     arr_scatter = _fig_to_rgb_array(fig_scatter)
+    arr_medians = _fig_to_rgb_array(fig_medians)
 
-    target_w = int(max(arr_hist.shape[1], arr_bars.shape[1], arr_scatter.shape[1]))
+    target_w = int(max(arr_hist.shape[1], arr_bars.shape[1], arr_scatter.shape[1], arr_medians.shape[1]))
 
     def _pad_to_width(arr, w):
         h, ww, _ = arr.shape
@@ -8485,17 +8598,15 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     arr_hist = _pad_to_width(arr_hist, target_w)
     arr_bars = _pad_to_width(arr_bars, target_w)
     arr_scatter = _pad_to_width(arr_scatter, target_w)
+    arr_medians = _pad_to_width(arr_medians, target_w)
 
-    stacked = np.concatenate([arr_hist, arr_bars, arr_scatter], axis=0)
+    stacked = np.concatenate([arr_hist, arr_bars, arr_scatter, arr_medians], axis=0)
 
-    if savepath_combined is None:
-        out_dir = Path(one.cache_dir, 'dmn', 'figs')
-        out_dir.mkdir(parents=True, exist_ok=True)
-        savepath_combined = out_dir / f"coeff_entropy_flatness_real_vs_synth_{metric_name}.png"
-    else:
-        savepath_combined = Path(savepath_combined)
-        savepath_combined.parent.mkdir(parents=True, exist_ok=True)
+    # Save combined stacked panel as both PNG and SVG
+    fig_combined, axc = plt.subplots(1, 1, figsize=(target_w / 150.0, stacked.shape[0] / 150.0))
+    axc.imshow(stacked)
+    axc.axis('off')
+    plt.tight_layout(pad=0)
 
-    Image.fromarray(stacked).save(savepath_combined)
-    print(f"saved combined figure: {savepath_combined}")
+    _save_both(fig_combined, savepath_combined, f"coeff_entropy_flatness_real_vs_synth_{metric_name}")
 
