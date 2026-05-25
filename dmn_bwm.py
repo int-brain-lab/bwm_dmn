@@ -8,7 +8,6 @@ import iblatlas
 from iblatlas.plots import plot_swanson_vector 
 from brainbox.io.one import SessionLoader
 import ephys_atlas.data
-#from reproducible_ephys_functions import figure_style, labs
 from sklearn.manifold import SpectralEmbedding
 import sys
 sys.path.append('Dropbox/scripts/IBL/')
@@ -91,7 +90,6 @@ from numpy.linalg import norm
 
 import warnings
 warnings.filterwarnings("ignore")
-#mpl.use('QtAgg')
 
 plt.ion() 
 
@@ -119,24 +117,9 @@ handle_length = 1
 handle_pad = 0.5
 
 
-def set_max_ticks(ax, num_ticks=4):
-    x_ticks = len(ax.get_xticks())
-    ax.xaxis.set_major_locator(ticker.MaxNLocator(nbins=np.min([x_ticks, num_ticks])))
-    y_ticks = len(ax.get_yticks())
-    ax.yaxis.set_major_locator(ticker.MaxNLocator(nbins=np.min([y_ticks, num_ticks])))
-
 # -------------------------------------------------------------------------------------------------
 # Plotting utils
 # -------------------------------------------------------------------------------------------------
-
-def adjust_subplots(fig, adjust=5, extra=2):
-    width, height = fig.get_size_inches() / MM_TO_INCH
-    if not isinstance(adjust, int):
-        assert len(adjust) == 4
-    else:
-        adjust = [adjust] *  4
-    fig.subplots_adjust(top=1 - adjust[0] / height, bottom=(adjust[1] + extra) / height,
-                        left=adjust[2] / width, right=1 - adjust[3] / width)
 
 plt.rcParams.update(plt.rcParamsDefault)
 
@@ -152,15 +135,12 @@ sts = 0.002  # stride size in [sec] for overlapping bins
 # conversion divident to get bins in seconds 
 # (taking striding into account)
 
+# bins per second in the strided representation (T_BIN=12.5ms, stride sts=2ms → 6 shifts → 480 bins/s)
 c_sec =  1.0 / (T_BIN / int(T_BIN // sts))
 
 one = ONE()
 
-#base_url='https://openalyx.internationalbrainlab.org',
-#          password='international', silent=True 
-                   
 br = BrainRegions()
-#units_df = bwm_units(one)  # canonical set of cells
 
 
 # save results here
@@ -275,13 +255,6 @@ def _concat_trials_over_members(D, members, extractor):
         if X.shape[0] != N0 or X.shape[1] != T0:
             raise ValueError(f"Inconsistent shapes among members: expected (N={N0},T={T0}), got {X.shape}")
     return np.concatenate(Xs, axis=2)  # stack trials
-
-
-def put_panel_label(ax, k):
-    ax.annotate(string.ascii_lowercase[k], (-0.05, 1.15),
-                xycoords='axes fraction',
-                fontsize=f_size * 1.5, va='top',
-                ha='right', weight='bold')
 
 
 def beryl_to_cosmos(beryl_acronym, br):
@@ -634,7 +607,7 @@ def concat_PETHs(pid, get_tts: bool = False, vers: str = 'concat',
         ntr, nn, nbin = bis[0].shape
         ar = np.zeros((ntr, nn, st * nbin), dtype=np.float32)
         for ts in range(st):
-            ar[:, :, ts::st] = bis[ts]
+            ar[:, :, ts::st] = bis[ts]  # interleave shifts → effective 2ms resolution
         return ar  # (n_trials, n_neurons, n_timebins_concat), float32
 
 
@@ -866,80 +839,6 @@ def get_hierarchy(reg):
         f'<font color="{col}">{get_name(br.id2acronym(x))} (<b>{br.id2acronym(x)[0]}</b>)</font>'
         for x in idp_int
     ])
-
-
-def print_full_structure_tree(filename='structure_tree.pdf'):
-    '''
-    Print all Beryl region hierarchies line by line in two-column PDF.
-    Each line is colored according to its Beryl region color (pal[reg]).
-    Font is very small (3 pt) for compact layout.
-    '''
-    from reportlab.lib.pagesizes import A4
-    from reportlab.platypus import Paragraph, SimpleDocTemplate, Frame, PageTemplate
-    from reportlab.lib.styles import ParagraphStyle
-    from reportlab.lib.enums import TA_LEFT
-    from reportlab.lib.units import mm
-    from reportlab.pdfgen.canvas import Canvas
-    from reportlab.lib import colors
-
-    # Load region data and palette
-    r = regional_group('Beryl', vers='concat', ephys=False, rerun=False)
-    p = Path(iblatlas.__file__).parent / 'beryl.npy'
-    regs_can = br.id2acronym(np.load(p), mapping='Beryl')
-    regs_ = Counter(r['acs'])
-    reg_ord = [reg for reg in regs_can if reg in regs_]
-
-    a, pal_raw = get_allen_info()
-    pal = {k: rgb_to_hex(v) for k, v in pal_raw.items()}  # acronym → hex
-
-    a['Cosmos'] = br.id2acronym(a['id'].values, mapping='Cosmos')
-    cosmos_acronyms = set(a['Cosmos']) - {'root', 'void'}
-    cosmos_ids = set(br.acronym2id(list(cosmos_acronyms)))
-
-    id2name = dict(zip(br.id, br.name))
-    id2acr = dict(zip(br.id, br.acronym))
-
-
-    # Page setup: 2 columns
-    width = 180 * mm
-    height = 170 * mm
-    margin = 1 * mm
-    gap = 1 * mm
-    usable_width = width - 2 * margin - gap
-    column_height = height - 2 * margin
-    left_width = usable_width * 3.2 / 5
-    right_width = usable_width * 1.8 / 5
-
-    frame_left = Frame(margin, margin, left_width, column_height,
-                       leftPadding=0, rightPadding=2, topPadding=0, bottomPadding=0)
-    frame_right = Frame(margin + left_width + gap, margin, right_width, column_height,
-                        leftPadding=2, rightPadding=0, topPadding=0, bottomPadding=0)
-
-
-    template = PageTemplate(id='TwoCol', frames=[frame_left, frame_right])
-    doc = SimpleDocTemplate(filename, pagesize=(width, height))
-    doc.addPageTemplates([template])
-
-    # Very tight style
-    style = ParagraphStyle(
-        name='Tight',
-        fontSize=3,
-        leading=3.5,
-        spaceBefore=0,
-        spaceAfter=0,
-        alignment=TA_LEFT
-    )
-
-    story = []
-    for reg in reg_ord:
-        try:
-            hierarchy_text = get_hierarchy(reg)
-            story.append(Paragraph(hierarchy_text, style))
-        except Exception as e:
-            print(f"Skipping {reg} due to error: {e}")
-
-    doc.build(story)
-
 
 
 def regional_group(
@@ -1394,6 +1293,51 @@ def regional_group(
             r["isort"] = isort_rm
             r["rm_labels"] = labels_rm
 
+    elif mapping == "fr":
+        # Map per-neuron firing rates to a red colormap with nonlinear contrast
+        # so higher-FR neurons are emphasized more strongly.
+        fr_key = None
+        for k in ("fr", "firing_rate", "firing_rates"):
+            if k in r:
+                fr_key = k
+                break
+        if fr_key is None:
+            raise KeyError(
+                "mapping='fr' requested, but no firing-rate key found in stack. "
+                "Expected one of: 'fr', 'firing_rate', 'firing_rates'."
+            )
+
+        fr = np.asarray(r[fr_key], dtype=float).reshape(-1)
+        if fr.shape[0] != n_rows:
+            raise ValueError(
+                f"Firing-rate vector length ({fr.shape[0]}) does not match neuron count ({n_rows})."
+            )
+
+        # Robust clipping to suppress extreme outliers before nonlinear remap.
+        lo, hi = np.nanpercentile(fr, [1.0, 99.0])
+        if (not np.isfinite(lo)) or (not np.isfinite(hi)) or (hi <= lo):
+            lo = float(np.nanmin(fr)) if np.isfinite(np.nanmin(fr)) else 0.0
+            hi = float(np.nanmax(fr)) if np.isfinite(np.nanmax(fr)) else 1.0
+            if hi <= lo:
+                hi = lo + 1.0
+
+        fr_clip = np.clip(fr, lo, hi)
+        fr_norm = (fr_clip - lo) / (hi - lo + 1e-12)
+
+        # Nonlinear emphasis: power < 1 boosts upper range visibility.
+        gamma = 0.45
+        fr_nl = np.power(np.clip(fr_norm, 0.0, 1.0), gamma)
+
+        cmap_fr = mpl.colormaps["Reds"]
+        cols = cmap_fr(fr_nl)
+
+        # Keep raw FR as labels for downstream grouping/statistics if needed.
+        r["acs"] = fr
+        r["cols"] = cols
+        r["fr"] = fr
+        r["fr_norm"] = fr_nl
+        r["fr_clip_bounds"] = (float(lo), float(hi))
+
     else:
         acs = np.array(br.id2acronym(r["ids"], mapping=mapping))
         cols = np.array([pal[reg] for reg in acs])
@@ -1412,11 +1356,6 @@ def regional_group(
     r["_feat_map"] = feat_key_map
     r["_zsc"] = bool(zsc)
     return r
-
-
-
-
-
 
 
 def get_umap_dist(rerun=False, algo='umap_z', 
@@ -1607,25 +1546,6 @@ def decode(src='concat_z', mapping='Beryl', minreg=20, decoder='LR',
     return res, res_shuf
 
 
-def decode_bulk():
-    re = {}
-    sources = ['concat_z', 'ephysTF']
-    targets = ['kmeans', 'Beryl', 'Cosmos', 
-                        'layers', 'functional']
-
-    k = 0 
-    for src in sources:
-        for mapping in targets:
-
-            re[f'{src} {mapping}'] = decode(src=src,n_runs=10,
-                 mapping=mapping)
-            k +=1
-            print(f'{k} out of {len(sources)*len(targets)} done')
-
-    np.save(Path(pth_dmn,'decode.npy'), re, allow_pickle=True)
-
-
-
 def lz76_complexity(s: str) -> int:
     """
     Fast LZ76 parser for a binary string.
@@ -1689,74 +1609,6 @@ def lzs_pci(x: np.ndarray, rng: np.random.Generator) -> float:
     if c_w == 0:
         return 0.0
     return c_s / c_w
-
-
-def add_lz_to_stack(vers: str = 'concat',
-                    ephys: bool = False,
-                    cv: bool = False,
-                    cv2: bool = False,
-                    overwrite: bool = True,
-                    seed: int = 0) -> Path:
-    """
-    Load the appropriate 'vers_*' .npy stack, compute LZ complexity per neuron
-    using PCI-style LZs (Hilbert envelope threshold + LZ76 ratio),
-    store as r['lz'], and save back to disk.
-    """
-    rng = np.random.default_rng(seed)
-
-    pth_res = Path(one.cache_dir, 'dmn', 'res')
-
-    def _stack_fname() -> Path:
-        if cv and cv2:
-            raise ValueError("cv and cv2 cannot both be True.")
-        if cv:
-            return pth_res / f"{vers}_cvTrue_ephysFalse.npy"
-        if cv2:
-            return pth_res / f"{vers}_cv2True_ephysFalse.npy"
-        return pth_res / f"{vers}_cvFalse_ephysFalse.npy"
-
-    stack_path = _stack_fname()
-    if not stack_path.is_file():
-        raise FileNotFoundError(stack_path)
-
-    # Load
-    t0 = time.perf_counter()
-    r = np.load(stack_path, allow_pickle=True).flat[0]
-
-    if 'lz' in r and not overwrite:
-        print("[info] lz already exists; skipping computation.")
-        return stack_path
-
-    if 'concat_z' not in r:
-        raise KeyError(f"'concat_z' not found in {stack_path}")
-
-    data = np.asarray(r['concat_z'])
-    if data.ndim != 2:
-        raise ValueError("r['concat_z'] must be 2D (neurons × time).")
-
-    N = data.shape[0]
-    print(f"[info] Computing LZs for {N} neurons…")
-
-    # Compute LZs per neuron
-    t1 = time.perf_counter()
-    lz_vals = np.zeros(N, float)
-    for i in range(N):
-        lz_vals[i] = lzs_pci(data[i], rng)
-
-    t2 = time.perf_counter()
-
-    # Store and save
-    r['lz'] = lz_vals
-    np.save(stack_path, r, allow_pickle=True)
-
-    t3 = time.perf_counter()
-
-    print(f"[timing] load:       {t1 - t0:6.3f} s")
-    print(f"[timing] LZ compute: {t2 - t1:6.3f} s (≈ {(t2 - t1)/N*1000:.2f} ms/neuron)")
-    print(f"[timing] save:       {t3 - t2:6.3f} s")
-    print(f"[timing] total:      {t3 - t0:6.3f} s")
-
-    return stack_path
 
 
 '''
@@ -2356,7 +2208,7 @@ def stack_concat(
 
 def plot_dim_reduction(
     algo: str = "umap_z",
-    mapping: str = "rm",
+    mapping: str = "kmeans",
     ephys: bool = False,
     feat: str = "concat_z",
     means: bool = False,
@@ -2684,7 +2536,6 @@ def plot_dim_reduction(
                          fontsize=10, color='k', ha='center')
                 h += seg_len
     plt.show()
-    #plt.close('all')
 
 
 # Backward-compatible alias used in some notebooks/scripts.
@@ -3787,10 +3638,8 @@ def plot_connectivity_matrix(metric='umap_z', mapping='Beryl',
         vers = '30 ephysAtlas'
         
     ax0.set_title(f'{metric}, {vers}')
-    #ax0.set_ylabel(mapping)
-    cbar = plt.colorbar(ims,fraction=0.046, pad=0.04, 
-                        extend='neither')#, ticks=[0, 0.5, 1]
-    #cbar.ax.yaxis.set_major_locator(MaxNLocator(nbins=3))
+    cbar = plt.colorbar(ims,fraction=0.046, pad=0.04,
+                        extend='neither')
 
     if not ari:
         # plot dendrogram
@@ -3800,21 +3649,12 @@ def plot_connectivity_matrix(metric='umap_z', mapping='Beryl',
 
             
         ax_dendro.set_axis_off()
-    
-#    ax_dendro.set_yticklabels(regs)
-#    [ax_dendro.spines[s].set_visible(False) for s in
-#        ['left', 'right', 'top', 'bottom']]
-#    ax_dendro.get_xaxis().set_visible(False)
-#    [t.set_color(i) for (i,t) in    
-#        zip([pal[reg] for reg in regs],
-#        ax_dendro.yaxis.get_ticklabels())]    
-    
+
     plt.subplots_adjust(wspace=0.05)
     
     if alone:
         fig.tight_layout()
 
-    #fig0.suptitle(f'{algo}, {mapping}')
     else:
         return ordered_indices
     
@@ -3834,7 +3674,6 @@ def plot_multi_matrices(ticktype='rectangles', add_clus=True,
     pth_matrices = Path(one.cache_dir, 'dmn', 'd.npy')
     
     if (not pth_matrices.is_file() or rerun):        
-        #verss = list(PETH_types_dict.keys()) + ['cartesian']
         verss = ['concat','stim_surp_incon', 'resting']
         D = {}
         for vers in verss:
@@ -3950,11 +3789,6 @@ def plot_multi_matrices(ticktype='rectangles', add_clus=True,
         plot_dist_clusters(anno=False, axs=axs[-len(verss):])
         [ax.axis('off') for ax in axs]
         
-#    #fig.suptitle('all matrices ordered by data of row number')
-#    fig.tight_layout()
-#    fig.savefig(Path(one.cache_dir,'dmn', 'figs','matrices.svg'))    
-#    fig.savefig(Path(one.cache_dir,'dmn', 'figs','matrices.pdf'),
-#                dpi=150)
 
 
 def plot_dendrograms():
@@ -4029,7 +3863,6 @@ def plot_dendrograms():
         for xtick, reg in zip(ax.get_xticklabels(), ordered_regions):
             xtick.set_color(pal[reg])
 
-        # ax.set_title(f"{vers}")
         ax.text(0.5, 0.9, f"{vers}", transform=ax.transAxes, 
         ha='center', va='bottom', fontsize=12)
         ax.spines['top'].set_visible(False)
@@ -4079,24 +3912,10 @@ def scatter_Beryl_similarity(ranks=False, hexbin_=False, anno=False):
     
     D['cartesian']= trans_(get_centroids(dist_=True))
 
-#         '30ephys': trans_(get_umap_dist(algo='umap_e')),
-#         #'coherence': get_res(metric='coherence', 
-                              #sig_only=True, combine_=True),
-         #'granger': get_res(metric='granger', 
-                           # sig_only=True, combine_=True),
-         #'structural3_sp': get_structural(fign=3, shortestp=True),
-         #'axonal': get_structural(fign=3)
-         
-     
     tt = len(list(combinations(list(D.keys()),2)))
     ncols = math.ceil(math.sqrt(tt))
     nrows = math.ceil(tt / ncols)
 
-       
-#    nrows = 3
-#    ncols = 1    
-        
-     
     fig, ax = plt.subplots(ncols=ncols, nrows=nrows,
                            figsize=[10.34, 9.74])     
     ax = np.array(ax).flatten()
@@ -4162,16 +3981,8 @@ def scatter_Beryl_similarity(ranks=False, hexbin_=False, anno=False):
         
     # Check if axes is taken, if not, switch axes off
     [a.axis('off') for a in ax if not a.title.get_text()]
-            
-            
-#    fig.tight_layout()
-#    fig.savefig(Path(one.cache_dir,'dmn', 'figs',
-#                    'scatters.svg'))
-#    fig.savefig(Path(one.cache_dir,'dmn', 'figs',
-#                    'scatters.pdf'), dpi=250,
-#                     bbox_inches='tight', format='pdf')
 
-    
+
 def plot_venn():
 
     '''
@@ -4184,15 +3995,8 @@ def plot_venn():
          'umap_z_surprise': trans_(get_umap_dist(algo='umap_z',
                                      vers='surprise')),
          'umap_z_resting': trans_(get_umap_dist(algo='umap_z',
-                                     vers='resting'))}#,
-##         'coherence': get_res(metric='coherence', 
-##                              sig_only=True, combine_=True),
-#         'granger': get_res(metric='granger', 
-#                            sig_only=True, combine_=True),          
-#         #'structural3': get_structural(fign=3, rerun=True),
-#         'structural4': get_structural(fign=4, rerun=True)}        
-    
-    
+                                     vers='resting'))}
+
     sets = dict(zip(list(D.keys()), 
                     [set(list(D[s].keys())) for s in D]))
     
@@ -4250,9 +4054,6 @@ right=0.98,
 hspace=0.05,
 wspace=0.05)
 
-#    fig.savefig(Path(one.cache_dir,'dmn', 'figs','umap_cell.svg'))
-#    fig.savefig(Path(one.cache_dir,'dmn', 'figs','umap_cell.pdf'),
-#                dpi=150, bbox_inches='tight')    
 
 
 def plot_dist_clusters(anno=True, axs=None):
@@ -6803,7 +6604,6 @@ def scat_dec_clus(norm_=True, harris=False, nclus=25, nclus_rm=100,
         slope, intercept, _, _, _ = linregress(x, y)
         xx = np.linspace(min(x), max(x), 100)
         yy = slope * xx + intercept
-        #ax.plot(xx, yy, "--", color="black", lw=1)
 
         # Scatter + optional per-point label
         for i in range(len(x)):
@@ -7725,17 +7525,16 @@ def plot_coeff_correlation_heatmaps(
     if C.shape != B.shape or C.ndim != 2:
         raise ValueError(f"Invalid shapes: C{C.shape}, B{B.shape}")
 
-    # alpha-wise correlations
+    # alpha-wise correlations — only C defines the cluster order; B uses same
     corr_C = np.corrcoef(C, rowvar=False)
     corr_B = np.corrcoef(B, rowvar=False)
     ord_C = _horder_corr(corr_C)
-    ord_B = _horder_corr(corr_B)
     corr_Cs = corr_C[np.ix_(ord_C, ord_C)]
-    corr_Bs = corr_B[np.ix_(ord_B, ord_B)]
+    corr_Bs = corr_B[np.ix_(ord_C, ord_C)]
 
-    # hierarchically sort coefficient matrices for display (alpha axis)
+    # sort coefficient matrices for display — both use ord_C
     C_show = C[:, ord_C]
-    B_show = B[:, ord_B]
+    B_show = B[:, ord_C]
 
     # --- neuron-neuron correlations from coefficient matrices (capped) ---
     nN = C.shape[0]
@@ -7865,7 +7664,7 @@ def plot_coeff_correlation_heatmaps(
     # col4 (rowspan3): B tall (unsorted display)
     axB = fig.add_subplot(gs[:, 3])
     imB = axB.imshow(B_show, vmin=vmin_B, vmax=vmax_B, cmap=cmap, origin='lower', aspect='auto')
-    axB.set_title('B\n(synthetic, hier α)', fontsize=8, pad=2)
+    axB.set_title('B\n(synthetic, C-order α)', fontsize=8, pad=2)
     axB.set_xlabel('α (hier)')
     axB.set_ylabel('neuron')
     fig.colorbar(imB, ax=axB, fraction=0.046, pad=0.02).set_label('coeff', fontsize=8)
@@ -7904,7 +7703,12 @@ def plot_coeff_correlation_heatmaps(
     plt.tight_layout()
 
     if savepath is not None:
+        savepath = Path(savepath)
         fig.savefig(savepath, dpi=150, bbox_inches='tight', facecolor='white')
+        print(f"Saved: {savepath}")
+        svg_path = savepath.with_suffix('.svg')
+        fig.savefig(svg_path, bbox_inches='tight', facecolor='white')
+        print(f"Saved: {svg_path}")
 
     plt.ion()
     plt.show()
@@ -7918,7 +7722,7 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     bins: int = 60,
     figsize_hist: tuple[float, float] = (3, 3),   # UPDATED
     figsize_bars: tuple[float, float] = (16, 9),  # UPDATED (larger / near full-screen)
-    metric: str = "entropy",    # "entropy" | "PC0"
+    metric: str = "PC0",    # "entropy" | "PC0"
     weight: str = "abs",          # "abs" | "sq" | "relu" (used for entropy)
     eps: float = 1e-12,
     density: bool = True,
@@ -7926,9 +7730,12 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     savepath_bars: str | None = None,
     savepath_scatter: str | None = None,          # NEW
     savepath_combined: str | None = None,
-    figsize_scatter: tuple[float, float] = (9, 4), # NEW
-    min_group_n: int = 20,   
-    zsc: bool = True,        
+    figsize_scatter: tuple[float, float] = (9, 4),
+    savepath_medians: str | None = None,
+    figsize_medians: tuple[float, float] = (8, 4),
+    min_group_n: int = 20,
+    zsc: bool = True,
+    m2: str = 'se',         # 'var' | 'se'
 ):
     """
     Compute a per-neuron scalar metric from coefficient vectors and plot:
@@ -7956,14 +7763,34 @@ def plot_coeff_entropy_flatness_real_vs_synth(
       - Annotate Pearson r and Spearman rho
 
     Saving:
-      - Optional individual saves via savepath_hist/savepath_bars/savepath_scatter.
-      - Always produces a vertically stacked combined PNG (hist + bars + scatter),
-        saved to savepath_combined (or by default under one.cache_dir/dmn/figs with metric name).
+      - Individual figures (hist/bars/scatter) are saved as both .png and .svg.
+      - Combined stacked figure is also saved as both .png and .svg.
+      - Paths are controlled by savepath_hist/savepath_bars/savepath_scatter/savepath_combined
+        (extension ignored; both formats are written).
     """
 
     def _despine(ax):
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
+
+    def _save_both(fig, path_like, default_stem: str):
+        """Save a matplotlib figure as both PNG and SVG."""
+        if path_like is None:
+            out_dir = Path(one.cache_dir, 'dmn', 'figs')
+            out_dir.mkdir(parents=True, exist_ok=True)
+            stem_path = out_dir / default_stem
+        else:
+            p = Path(path_like)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            stem_path = p.with_suffix('')
+
+        png_path = stem_path.with_suffix('.png')
+        svg_path = stem_path.with_suffix('.svg')
+        fig.savefig(png_path, dpi=150, bbox_inches="tight", facecolor="white")
+        fig.savefig(svg_path, bbox_inches="tight", facecolor="white")
+        print(f"saved: {png_path}")
+        print(f"saved: {svg_path}")
+        return png_path, svg_path
 
     # --- load synthetic result (real + synthetic coeff matrices) ---
     r = regional_group(
@@ -8153,9 +7980,11 @@ def plot_coeff_entropy_flatness_real_vs_synth(
         label="synth",
     )
 
+    _range = np.nanmax(np.concatenate([metric_real, metric_synth])) - np.nanmin(np.concatenate([metric_real, metric_synth]))
+    emd_neurons = wasserstein_distance(metric_real, metric_synth) / _range if _range > 0 else 0.0
     ax.set_xlabel(metric_label)
     ax.set_ylabel("dens" if density else "count")
-    ax.set_title(f"M={M}, zsc={zsc}", fontsize=10)
+    ax.set_title(f"M={M}, zsc={zsc}, EMD={emd_neurons:.3g}", fontsize=10)
     ax.legend(frameon=False, fontsize=8)
     _despine(ax)
 
@@ -8163,8 +7992,7 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     plt.ion()
     plt.show()
 
-    if savepath_hist is not None:
-        fig_hist.savefig(savepath_hist, dpi=150, bbox_inches="tight", facecolor="white")
+    _save_both(fig_hist, savepath_hist, f"coeff_entropy_flatness_hist_{metric_name}")
 
     # ---------------- Figure 2: bar plots for extremes (layout fixed) ----------------
     fig_bars = plt.figure(figsize=figsize_bars)
@@ -8287,8 +8115,7 @@ def plot_coeff_entropy_flatness_real_vs_synth(
         fontsize=11,
     )
 
-    if savepath_bars is not None:
-        fig_bars.savefig(savepath_bars, dpi=150, bbox_inches="tight", facecolor="white")
+    _save_both(fig_bars, savepath_bars, f"coeff_entropy_flatness_bars_{metric_name}")
 
     plt.ion()
     plt.show()
@@ -8373,7 +8200,10 @@ def plot_coeff_entropy_flatness_real_vs_synth(
                 continue
             labs.append(lab)
             ys.append(float(np.median(v)))
-            xs.append(float(np.var(v)))  # use np.var(v, ddof=1) if you prefer sample variance
+            if m2 == 'var':
+                xs.append(float(np.var(v)))
+            else:
+                xs.append(float(np.std(v, ddof=1) / np.sqrt(len(v))))
             ns.append(n)
 
         return np.asarray(labs), np.asarray(xs), np.asarray(ys), np.asarray(ns)
@@ -8420,8 +8250,9 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     fig_scatter, axs2 = plt.subplots(2, 2, figsize=(max(figsize_scatter[0], 10), max(figsize_scatter[1], 8)), sharey=True, sharex=True)
     axs = axs2.flatten()
 
+    m2_label = f"var({metric_name})" if m2 == 'var' else f"SE({metric_name})"
     for ax in axs:
-        ax.set_xlabel(f"variance of {metric_name}")
+        ax.set_xlabel(m2_label)
         ax.set_ylabel(f"median {metric_name}")
         ax.xaxis.set_major_locator(MaxNLocator(nbins=3, prune=None))
         ax.ticklabel_format(axis="x", style="plain", useOffset=False)
@@ -8455,7 +8286,7 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     ax.set_title(f"KMeans (random ctrl): n={x_c_r.size}")
 
     fig_scatter.suptitle(
-        f"{metric_name} (real): group median vs within-group variance + random controls (M={M}, zsc={zsc})",
+        f"{metric_name} (real): group median vs {m2_label} + random controls (M={M}, zsc={zsc})",
         y=0.99,
         fontsize=12,
     )
@@ -8464,8 +8295,43 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     plt.ion()
     plt.show()
 
-    if savepath_scatter is not None:
-        fig_scatter.savefig(savepath_scatter, dpi=150, bbox_inches="tight", facecolor="white")
+    _save_both(fig_scatter, savepath_scatter, f"coeff_entropy_flatness_scatter_{metric_name}")
+
+    # ---------------- Figure 4: distribution of per-group medians (real vs random) ----------------
+    fig_medians, axs_med = plt.subplots(2, 3, figsize=(max(figsize_medians[0], 14), max(figsize_medians[1], 7)))
+
+    # cols 0-1: real vs random per grouping; col 2: Beryl vs KMeans (real only)
+    panel_specs = [
+        (axs_med[0, 0], x_reg,  x_reg_r, m2_label,                "Beryl regions",   "real",   "random"),
+        (axs_med[0, 1], x_c,    x_c_r,   m2_label,                "KMeans clusters", "real",   "random"),
+        (axs_med[0, 2], x_reg,  x_c,     m2_label,                "Beryl vs KMeans", "Beryl",  "KMeans"),
+        (axs_med[1, 0], y_reg,  y_reg_r, f"median {metric_name}", "Beryl regions",   "real",   "random"),
+        (axs_med[1, 1], y_c,    y_c_r,   f"median {metric_name}", "KMeans clusters", "real",   "random"),
+        (axs_med[1, 2], y_reg,  y_c,     f"median {metric_name}", "Beryl vs KMeans", "Beryl",  "KMeans"),
+    ]
+
+    for ax, vals_a, vals_b, xlabel, grouping, label_a, label_b in panel_specs:
+        all_vals = np.concatenate([vals_a, vals_b])
+        bins_p = np.linspace(np.nanmin(all_vals), np.nanmax(all_vals), 30)
+        _range_p = np.nanmax(all_vals) - np.nanmin(all_vals)
+        emd_p = wasserstein_distance(vals_a, vals_b) / _range_p if _range_p > 0 else 0.0
+        ax.hist(vals_a, bins=bins_p, histtype="step", linewidth=2, label=label_a)
+        ax.hist(vals_b, bins=bins_p, histtype="step", linewidth=2, label=label_b)
+        ax.set_xlabel(f"{xlabel} per group")
+        ax.set_ylabel("count")
+        ax.set_title(f"{grouping}, EMD={emd_p:.3g}")
+        ax.legend(frameon=False, fontsize=8)
+        _despine(ax)
+
+    fig_medians.suptitle(
+        f"{metric_name}: per-group {m2_label} and median — real vs random, Beryl vs KMeans (M={M}, zsc={zsc})",
+        fontsize=11,
+    )
+    plt.tight_layout()
+    plt.ion()
+    plt.show()
+
+    _save_both(fig_medians, savepath_medians, f"coeff_entropy_flatness_medians_{metric_name}")
 
     # ---------------- Combined figure: stack the 3 figures vertically ----------------
     def _fig_to_rgb_array(fig):
@@ -8477,8 +8343,9 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     arr_hist = _fig_to_rgb_array(fig_hist)
     arr_bars = _fig_to_rgb_array(fig_bars)
     arr_scatter = _fig_to_rgb_array(fig_scatter)
+    arr_medians = _fig_to_rgb_array(fig_medians)
 
-    target_w = int(max(arr_hist.shape[1], arr_bars.shape[1], arr_scatter.shape[1]))
+    target_w = int(max(arr_hist.shape[1], arr_bars.shape[1], arr_scatter.shape[1], arr_medians.shape[1]))
 
     def _pad_to_width(arr, w):
         h, ww, _ = arr.shape
@@ -8490,17 +8357,507 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     arr_hist = _pad_to_width(arr_hist, target_w)
     arr_bars = _pad_to_width(arr_bars, target_w)
     arr_scatter = _pad_to_width(arr_scatter, target_w)
+    arr_medians = _pad_to_width(arr_medians, target_w)
 
-    stacked = np.concatenate([arr_hist, arr_bars, arr_scatter], axis=0)
+    stacked = np.concatenate([arr_hist, arr_bars, arr_scatter, arr_medians], axis=0)
 
-    if savepath_combined is None:
-        out_dir = Path(one.cache_dir, 'dmn', 'figs')
-        out_dir.mkdir(parents=True, exist_ok=True)
-        savepath_combined = out_dir / f"coeff_entropy_flatness_real_vs_synth_{metric_name}.png"
+    # Save combined stacked panel as both PNG and SVG
+    fig_combined, axc = plt.subplots(1, 1, figsize=(target_w / 150.0, stacked.shape[0] / 150.0))
+    axc.imshow(stacked)
+    axc.axis('off')
+    plt.tight_layout(pad=0)
+
+    _save_both(fig_combined, savepath_combined, f"coeff_entropy_flatness_real_vs_synth_{metric_name}")
+
+
+def plot_umaps_si(
+    algo: str = "umap_z",
+    feat: str = "concat_z",
+    vers: str = "concat",
+    cv: bool = True,
+    ds: float = 0.3,
+    rerun: bool = False,
+    out_pdf: str = None,
+):
+    """
+    SI figure: UMAP point clouds + cluster-mean PETH stacks for nclus in [10,20,30,40,100].
+
+    Layout (3 columns, line stack above scatter in each slot):
+      Col 0 : nclus=10 (top)  | nclus=40 (bottom)
+      Col 1 : nclus=20 (top)  | nclus=30 (bottom)
+      Col 2 : nclus=100       (full column height)
+
+    GridSpec rows:  1 row per cluster line,  SCATTER rows for scatter,  GAP rows between slots.
+    Saved as PDF to  <one.cache_dir>/dmn/imgs/si_umaps_nclus.pdf
+    """
+    from matplotlib import gridspec as mgridspec
+
+    mapping   = "kmeans"
+    SCATTER   = 25   # GridSpec rows per scatter panel
+    GAP       = 5    # GridSpec rows between the two slots in cols 0-1
+    NROWS     = 125  # total GridSpec rows  (= 100 lines + 25 scatter for col 2)
+
+    # Row slices — cols 0 and 1 leave ~20 empty rows at the bottom
+    #  Col 0 ─ nclus=10
+    C0_10_L  = (0,   10)    # line rows  [0, 10)
+    C0_10_S  = (10,  35)    # scatter    [10, 35)
+    #  Col 0 ─ nclus=40    (gap rows 35-39 left empty)
+    C0_40_L  = (40,  80)
+    C0_40_S  = (80,  105)
+    #  Col 1 ─ nclus=20
+    C1_20_L  = (0,   20)
+    C1_20_S  = (20,  45)
+    #  Col 1 ─ nclus=30    (gap rows 45-49 left empty)
+    C1_30_L  = (50,  80)
+    C1_30_S  = (80,  105)
+    #  Col 2 ─ nclus=100
+    C2_100_L = (0,   100)
+    C2_100_S = (100, 125)
+
+    slots = [
+        (10,  0, C0_10_L,  C0_10_S),
+        (40,  0, C0_40_L,  C0_40_S),
+        (20,  1, C1_20_L,  C1_20_S),
+        (30,  1, C1_30_L,  C1_30_S),
+        (100, 2, C2_100_L, C2_100_S),
+    ]
+
+    # ── load data ────────────────────────────────────────────────────────────
+    data = {}
+    for nc, *_ in slots:
+        if nc not in data:
+            print(f"  loading nclus={nc} ...", flush=True)
+            data[nc] = regional_group(
+                mapping=mapping, vers=vers, cv=cv, nclus=nc, rerun=rerun
+            )
+
+    # ── figure & GridSpec ────────────────────────────────────────────────────
+    row_h_in = 0.055          # inches per GridSpec row
+    col_w_in = 2.8            # inches per column
+    fig_h    = NROWS * row_h_in
+    fig_w    = 3 * col_w_in + 0.6
+
+    fig = plt.figure(figsize=(fig_w, fig_h))
+    gs  = mgridspec.GridSpec(
+        NROWS, 3, figure=fig,
+        hspace=0, wspace=0.4,
+    )
+
+    # ── inner draw helper ────────────────────────────────────────────────────
+    def _draw_lines(r, nc, l0, l1, col):
+        """One thin axis per cluster, stacked; no 50-cluster safety cap."""
+        clu_vals = np.array(sorted(np.unique(r["acs"])))
+        n_clu    = len(clu_vals)
+        n_rows   = l1 - l0
+        if n_rows != n_clu:
+            raise ValueError(
+                f"GridSpec rows {n_rows} ≠ n_clu {n_clu} for nclus row [{l0},{l1})"
+            )
+
+        n_bins          = r[feat].shape[1]
+        xx              = np.arange(n_bins) / c_sec
+        ordered_segs    = list(r["len"].keys())
+        peth_dict       = r.get("peth_dict", {s: s for s in ordered_segs})
+
+        axes = []
+        for k, clu in enumerate(clu_vals):
+            ax = fig.add_subplot(gs[l0 + k, col])
+            axes.append(ax)
+
+            idx = np.where(r["acs"] == clu)[0]
+            yy  = np.mean(r[feat][idx, :], axis=0)
+            col_rgb = r["cols"][idx[0]]
+            ax.plot(xx, yy, color=col_rgb, lw=0.6)
+            ax.set_xlim(0, n_bins / c_sec)
+            ax.set_ylabel(str(int(clu)), rotation=0, fontsize=4,
+                          labelpad=8, va="center")
+
+            for sp in ["top", "right", "left", "bottom"]:
+                ax.spines[sp].set_visible(False)
+            ax.tick_params(left=False, labelleft=False,
+                           bottom=False, labelbottom=False)
+
+            # nclus title on first row
+            if k == 0:
+                ax.set_title(f"k = {nc}", fontsize=f_size_s, pad=2)
+
+            # segment dividers + labels on first row only
+            h = 0
+            ymax = float(np.max(yy)) if yy.size else 0.0
+            for s in ordered_segs:
+                seg_len = r["len"][s]
+                if h + seg_len > n_bins:
+                    break
+                ax.axvline((h + seg_len) / c_sec, ls="--", lw=0.25, color="grey")
+                if k == 0:
+                    ax.text((h + seg_len / 2) / c_sec, ymax,
+                            "   " + peth_dict.get(s, s),
+                            rotation=90, fontsize=3.5, ha="center", color="k",
+                            va="bottom")
+                h += seg_len
+
+    def _draw_scatter(r, s0, s1, col):
+        ax = fig.add_subplot(gs[s0:s1, col])
+        ax.scatter(r[algo][:, 0], r[algo][:, 1],
+                   marker=".", c=r["cols"], s=0.1, rasterized=True)
+        ax.axis("off")
+
+    # ── draw all slots ───────────────────────────────────────────────────────
+    for nc, col, (l0, l1), (s0, s1) in slots:
+        r = data[nc]
+        _draw_lines(r, nc, l0, l1, col)
+        _draw_scatter(r, s0, s1, col)
+
+    # ── save ─────────────────────────────────────────────────────────────────
+    if out_pdf is not None:
+        out = Path(out_pdf)
     else:
-        savepath_combined = Path(savepath_combined)
-        savepath_combined.parent.mkdir(parents=True, exist_ok=True)
+        out = Path(one.cache_dir, "dmn", "imgs", "si_umaps_nclus.pdf")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, bbox_inches="tight")
+    print(f"Saved: {out}")
+    pdf_out = out.with_suffix(".pdf")
+    fig.savefig(pdf_out, bbox_inches="tight")
+    print(f"Saved: {pdf_out}")
+    plt.show()
+    return fig
 
-    Image.fromarray(stacked).save(savepath_combined)
-    print(f"saved combined figure: {savepath_combined}")
+
+def plot_fig4_assembly(
+    vers: str = "concat",
+    nclus: int = 100,
+    nclus_s: int = 100,
+    savepath: str | None = None,
+    zsc: bool = True,
+    max_neurons_corr: int = 2000,
+    rastermap_img: str | None = None,
+    metric: str = "PC0",
+    min_group_n: int = 20,
+    m2: str = "se",
+    vlim_corr: float | None = None,
+    cmap: str = "coolwarm",
+    figsize: tuple = (20, 12),
+    bins: int = 60,
+):
+    """
+    Single-figure assembly of fig4 panels, sharing ord_C across all cluster-axis panels.
+
+    Top section (3 rows × 5 cols):
+      col 0: C heatmap (real, ord_C)
+      col 1: corr(C) α×α | corr(C) n×n | corr(real features) n×n
+      col 2: synthetic marginals (15 examples)
+      col 3: B heatmap (synthetic, ord_C)
+      col 4: corr(B) α×α | corr(B) n×n | corr(synth features) n×n
+
+    Bottom row (1 row × 4 cols):
+      col 0: rastermap image (optional, pass rastermap_img path)
+      col 1: PC0 score distribution real vs synth
+      col 2: SE(PC0) per Beryl region, real vs random
+      col 3: SE(PC0) Beryl vs KMeans
+
+    Saves both SVG and PDF to savepath (extension ignored).
+    """
+    from scipy.spatial.distance import squareform
+    from scipy.cluster import hierarchy as _hier
+    from scipy.stats import wasserstein_distance
+    from sklearn.decomposition import PCA
+
+    def _horder(mat):
+        mat = np.nan_to_num(np.asarray(mat, float), nan=0.0, posinf=0.0, neginf=0.0)
+        if mat.shape[0] < 3:
+            return np.arange(mat.shape[0], dtype=int)
+        dist = np.clip(1.0 - mat, 0.0, None)
+        np.fill_diagonal(dist, 0.0)
+        Z = _hier.linkage(squareform(dist, checks=False), method='average')
+        return _hier.leaves_list(Z)
+
+    def _despine(ax):
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+    # ── load data ──────────────────────────────────────────────────────────────
+    r = regional_group(
+        mapping="kmeans", vers=vers, synthetic=True,
+        cv=False, nclus=nclus, nclus_s=nclus_s, zsc=zsc,
+    )
+    C = np.asarray(r["C"], float)[:, :nclus_s]
+    B = np.asarray(r["B"], float)[:, :nclus_s]
+
+    # ── ord_C: hierarchical order from corr(C) — applied to all cluster panels ─
+    corr_C  = np.corrcoef(C, rowvar=False)
+    corr_B  = np.corrcoef(B, rowvar=False)
+    ord_C   = _horder(corr_C)
+    corr_Cs = corr_C[np.ix_(ord_C, ord_C)]
+    corr_Bs = corr_B[np.ix_(ord_C, ord_C)]
+    C_show  = C[:, ord_C]
+    B_show  = B[:, ord_C]
+
+    # neuron×neuron correlations (capped, independent sort — different axis)
+    nN    = C.shape[0]
+    idx_n = (np.linspace(0, nN - 1, max_neurons_corr).round().astype(int)
+             if nN > max_neurons_corr else np.arange(nN))
+    corr_realN  = np.corrcoef(C[idx_n], rowvar=True)
+    corr_synN   = np.corrcoef(B[idx_n], rowvar=True)
+    corr_realNs = corr_realN[np.ix_(_horder(corr_realN), _horder(corr_realN))]
+    corr_synNs  = corr_synN [np.ix_(_horder(corr_synN),  _horder(corr_synN))]
+
+    if vlim_corr is None:
+        vlim_corr = float(max(
+            np.nanmax(np.abs(m)) for m in
+            [corr_Cs, corr_Bs, corr_realNs, corr_synNs]
+        ))
+
+    vmin_C, vmax_C = float(np.percentile(C_show, 2)),  float(np.percentile(C_show, 98))
+    vmin_B, vmax_B = float(np.percentile(B_show, 2)),  float(np.percentile(B_show, 98))
+
+    # ── metric (PC0) ──────────────────────────────────────────────────────────
+    pca0 = PCA(n_components=1).fit(C)
+    mr   = pca0.transform(C)[:, 0]
+    ms   = pca0.transform(B)[:, 0]
+    good = np.isfinite(mr) & np.isfinite(ms)
+    mr, ms = mr[good], ms[good]
+
+    beryl = np.asarray(r.get("Beryl", []))
+    acs   = np.asarray(r.get("acs",   []))
+    if len(beryl) == len(good): beryl = beryl[good]
+    if len(acs)   == len(good): acs   = acs[good]
+
+    def _grp(labels, exclude=None, nmin=1):
+        labels  = np.asarray(labels)
+        exclude = set(exclude or [])
+        labs, xs, ys, ns = [], [], [], []
+        for lab in np.unique(labels):
+            if str(lab) in exclude: continue
+            v = mr[labels == lab]; v = v[np.isfinite(v)]
+            if len(v) < nmin: continue
+            labs.append(lab); ys.append(float(np.median(v)))
+            xs.append(float(np.std(v, ddof=1) / np.sqrt(len(v))) if m2 == 'se' else float(np.var(v)))
+            ns.append(len(v))
+        return np.asarray(labs), np.asarray(xs), np.asarray(ys), np.asarray(ns)
+
+    rng0 = np.random.default_rng(0)
+    labs_reg,   x_reg,   y_reg,   _ = _grp(beryl, exclude={"root", "void"}, nmin=min_group_n)
+    labs_c,     x_c,     y_c,     _ = _grp(acs, nmin=min_group_n)
+    _,          x_reg_r, _,       _ = _grp(rng0.permutation(beryl), exclude={"root", "void"}, nmin=min_group_n)
+    _,          x_c_r,   _,       _ = _grp(rng0.permutation(acs), nmin=min_group_n)
+    m2_label = f"SE(PC0)"
+
+    # ── figure ────────────────────────────────────────────────────────────────
+    fig    = plt.figure(figsize=figsize)
+    outer  = fig.add_gridspec(2, 1, height_ratios=[2.5, 1.0], hspace=0.35)
+    top    = outer[0].subgridspec(3, 5, width_ratios=[1.2, 1.0, 1.2, 1.2, 1.0],
+                                  wspace=0.35, hspace=0.25)
+
+    # panel a — C heatmap
+    axC  = fig.add_subplot(top[:, 0])
+    imC  = axC.imshow(C_show, vmin=vmin_C, vmax=vmax_C, cmap=cmap, origin='lower', aspect='auto')
+    axC.set_title('C (real, hier α)', fontsize=8, pad=2)
+    axC.set_xlabel('α (hier)'); axC.set_ylabel('neuron')
+    fig.colorbar(imC, ax=axC, fraction=0.046, pad=0.02).set_label('coeff', fontsize=8)
+
+    # panel b — corr(C) α×α
+    axCC = fig.add_subplot(top[0, 1])
+    imCC = axCC.imshow(corr_Cs, vmin=-vlim_corr, vmax=vlim_corr, cmap=cmap, origin='lower', aspect='equal')
+    axCC.set_title('corr(C) (hier)', fontsize=8, pad=2)
+    axCC.set_xlabel('α'); axCC.set_ylabel('α')
+
+    # panel c — corr(C) neuron×neuron (spans rows 1-2)
+    axRN = fig.add_subplot(top[1:3, 1])
+    imRN = axRN.imshow(corr_realNs, vmin=-vlim_corr, vmax=vlim_corr, cmap=cmap, origin='lower', aspect='equal')
+    axRN.set_title(f'corr(C) neurons, N={len(idx_n)}', fontsize=8, pad=2)
+    axRN.set_xlabel('neuron'); axRN.set_ylabel('neuron')
+    fig.colorbar(imRN, ax=[axCC, axRN], fraction=0.046, pad=0.02).set_label('corr', fontsize=8)
+
+    # panel d — synthetic marginals
+    host = fig.add_subplot(top[:, 2])
+    host.axis('off')
+    host.set_title('synthetic marginals', fontsize=8, pad=2)
+    sub_m = top[0:3, 2].subgridspec(5, 3, hspace=0.15, wspace=0.12)
+    ex_alphas = np.linspace(0, nclus_s - 1, 15).round().astype(int)
+    for p, a in enumerate(ex_alphas):
+        axm = fig.add_subplot(sub_m[p % 5, p // 5])
+        cvals, bvals = C[:, a], B[:, a]
+        allv = np.concatenate([cvals[np.isfinite(cvals)], bvals[np.isfinite(bvals)]])
+        if allv.size == 0: axm.axis('off'); continue
+        lo, hi = float(np.min(allv)), float(np.max(allv))
+        if lo == hi: lo, hi = lo - 1, hi + 1
+        edges = np.linspace(lo, hi, 201)
+        hc, _ = np.histogram(cvals[np.isfinite(cvals)], bins=edges, density=True)
+        hb, _ = np.histogram(bvals[np.isfinite(bvals)], bins=edges, density=True)
+        axm.stairs(hb, edges, color='black', lw=3.0, label='synth')
+        axm.stairs(hc, edges, color='lime',  lw=1.6, linestyle=':', label='real')
+        if p == 0: axm.legend(frameon=False, fontsize=6, loc='upper right')
+        axm.text(0.03, 0.82, f"α={a}", transform=axm.transAxes, fontsize=6)
+        axm.axis('off')
+
+    # panel e — B heatmap
+    axB  = fig.add_subplot(top[:, 3])
+    imB  = axB.imshow(B_show, vmin=vmin_B, vmax=vmax_B, cmap=cmap, origin='lower', aspect='auto')
+    axB.set_title('B (synthetic, C-order)', fontsize=8, pad=2)
+    axB.set_xlabel('α (C-order)'); axB.set_ylabel('neuron')
+    fig.colorbar(imB, ax=axB, fraction=0.046, pad=0.02).set_label('coeff', fontsize=8)
+
+    # panel f — corr(B) α×α
+    axBB = fig.add_subplot(top[0, 4])
+    imBB = axBB.imshow(corr_Bs, vmin=-vlim_corr, vmax=vlim_corr, cmap=cmap, origin='lower', aspect='equal')
+    axBB.set_title('corr(B) (C-order)', fontsize=8, pad=2)
+    axBB.set_xlabel('α'); axBB.set_ylabel('α')
+
+    # panel g — corr(B) neuron×neuron (spans rows 1-2)
+    axSN = fig.add_subplot(top[1:3, 4])
+    imSN = axSN.imshow(corr_synNs, vmin=-vlim_corr, vmax=vlim_corr, cmap=cmap, origin='lower', aspect='equal')
+    axSN.set_title(f'corr(B) neurons, N={len(idx_n)}', fontsize=8, pad=2)
+    axSN.set_xlabel('neuron'); axSN.set_ylabel('neuron')
+    fig.colorbar(imSN, ax=[axBB, axSN], fraction=0.046, pad=0.02).set_label('corr', fontsize=8)
+
+    for _ax in [axC, axCC, axRN, axB, axBB, axSN]:
+        _ax.xaxis.set_major_locator(MaxNLocator(nbins=3))
+        _ax.yaxis.set_major_locator(MaxNLocator(nbins=3))
+        _ax.tick_params(labelsize=7)
+
+    # ── bottom row ────────────────────────────────────────────────────────────
+    bot = outer[1].subgridspec(1, 4, width_ratios=[2.5, 1.0, 1.5, 1.5], wspace=0.4)
+
+    # panel h — rastermap image (optional)
+    axH = fig.add_subplot(bot[0, 0])
+    if rastermap_img is not None:
+        import matplotlib.image as mpimg
+        axH.imshow(mpimg.imread(rastermap_img), aspect='auto')
+    axH.axis('off')
+    axH.set_title('rastermap', fontsize=8)
+
+    # panel i — PC0 distribution
+    axI = fig.add_subplot(bot[0, 1])
+    _rng = np.nanmax(np.concatenate([mr, ms])) - np.nanmin(np.concatenate([mr, ms]))
+    emd  = wasserstein_distance(mr, ms) / _rng if _rng > 0 else 0.0
+    axI.hist(mr, bins=bins, density=True, histtype='step', lw=2, label='real',   color='black')
+    axI.hist(ms, bins=bins, density=True, histtype='step', lw=2, label='synth',  color='orange')
+    axI.set_xlabel('PC0 score'); axI.set_ylabel('dens')
+    axI.set_title(f'EMD={emd:.3g}', fontsize=8)
+    axI.legend(frameon=False, fontsize=7)
+    _despine(axI)
+
+    # panel j — SE(PC0) per Beryl region, real vs random
+    axJ = fig.add_subplot(bot[0, 2])
+    all_j  = np.concatenate([x_reg, x_reg_r])
+    bins_j = np.linspace(np.nanmin(all_j), np.nanmax(all_j), 30)
+    rng_j  = np.nanmax(all_j) - np.nanmin(all_j)
+    emd_j  = wasserstein_distance(x_reg, x_reg_r) / rng_j if rng_j > 0 else 0.0
+    axJ.hist(x_reg,   bins=bins_j, histtype='step', lw=2, label='real',   color='blue')
+    axJ.hist(x_reg_r, bins=bins_j, histtype='step', lw=2, label='random', color='red')
+    axJ.set_xlabel(f'{m2_label} per group'); axJ.set_ylabel('count')
+    axJ.set_title(f'Beryl regions, EMD={emd_j:.3g}', fontsize=8)
+    axJ.legend(frameon=False, fontsize=7)
+    _despine(axJ)
+
+    # panel k — SE(PC0) Beryl vs KMeans
+    axK = fig.add_subplot(bot[0, 3])
+    all_k  = np.concatenate([x_reg, x_c])
+    bins_k = np.linspace(np.nanmin(all_k), np.nanmax(all_k), 30)
+    rng_k  = np.nanmax(all_k) - np.nanmin(all_k)
+    emd_k  = wasserstein_distance(x_reg, x_c) / rng_k if rng_k > 0 else 0.0
+    axK.hist(x_reg, bins=bins_k, histtype='step', lw=2, label='Beryl',  color='blue')
+    axK.hist(x_c,   bins=bins_k, histtype='step', lw=2, label='KMeans', color='green')
+    axK.set_xlabel(f'{m2_label} per group'); axK.set_ylabel('count')
+    axK.set_title(f'Beryl vs KMeans, EMD={emd_k:.3g}', fontsize=8)
+    axK.legend(frameon=False, fontsize=7)
+    _despine(axK)
+
+    # ── save ──────────────────────────────────────────────────────────────────
+    if savepath is not None:
+        p = Path(savepath).with_suffix('')
+        p.parent.mkdir(parents=True, exist_ok=True)
+        for ext in ('.svg', '.pdf'):
+            out = p.with_suffix(ext)
+            kw  = dict(bbox_inches='tight', facecolor='white')
+            if ext == '.pdf': kw['dpi'] = 150
+            fig.savefig(out, **kw)
+            print(f"Saved: {out}")
+
+    plt.tight_layout()
+    plt.show()
+    return fig
+
+
+def plot_sorted_cluster_lines(
+    vers: str = "concat",
+    feat: str = "concat_z",
+    nclus: int = 100,
+    cv: bool = False,
+    savepath: str | None = None,
+    figsize: tuple | None = None,
+):
+    """
+    Plot nclus k-means cluster mean PETHs sorted by ord_C.
+    ord_C is derived from hierarchical clustering of corr(C) from the
+    synthetic analysis (cv=False), so the cluster order matches the
+    basis-vector ordering used in the synthetic figure panels.
+    """
+    from scipy.spatial.distance import squareform
+    from scipy.cluster import hierarchy as _hier
+
+    # compute ord_C from synthetic C matrix
+    r_syn = regional_group(
+        mapping="kmeans", vers=vers, synthetic=True,
+        cv=False, nclus=nclus, nclus_s=nclus, zsc=True,
+    )
+    C      = np.asarray(r_syn["C"], float)[:, :nclus]
+    corr_C = np.corrcoef(C, rowvar=False)
+    corr_C = np.nan_to_num(corr_C, nan=0.0, posinf=0.0, neginf=0.0)
+    dist   = np.clip(1.0 - corr_C, 0.0, None); np.fill_diagonal(dist, 0.0)
+    Z      = _hier.linkage(squareform(dist, checks=False), method='average')
+    ord_C  = _hier.leaves_list(Z)
+
+    # load real data
+    r = regional_group(
+        mapping="kmeans", vers=vers, synthetic=False,
+        cv=cv, nclus=nclus, zsc=True,
+    )
+    clu_vals     = np.array(sorted(np.unique(r["acs"])))
+    sorted_clus  = clu_vals[ord_C]
+    n_clu        = len(sorted_clus)
+    n_bins       = r[feat].shape[1]
+    xx           = np.arange(n_bins) / c_sec
+    ordered_segs = list(r["len"].keys())
+    peth_dict    = r.get("peth_dict", {s: s for s in ordered_segs})
+
+    fh = figsize or (4, max(4, n_clu * 0.09))
+    fig = plt.figure(figsize=fh)
+    gs  = fig.add_gridspec(n_clu, 1, hspace=0)
+
+    for k, clu in enumerate(sorted_clus):
+        ax  = fig.add_subplot(gs[k, 0])
+        idx = np.where(r["acs"] == clu)[0]
+        yy  = np.mean(r[feat][idx, :], axis=0)
+        ax.plot(xx, yy, color=r["cols"][idx[0]], lw=0.6)
+        ax.set_xlim(0, n_bins / c_sec)
+        ax.set_ylabel(str(k), rotation=0, fontsize=4, labelpad=8, va='center')
+        for sp in ["top", "right", "left", "bottom"]:
+            ax.spines[sp].set_visible(False)
+        ax.tick_params(left=False, labelleft=False, bottom=False, labelbottom=False)
+
+        h = 0
+        ymax = float(np.max(yy)) if yy.size else 0.0
+        for s in ordered_segs:
+            seg_len = r["len"][s]
+            if h + seg_len > n_bins: break
+            ax.axvline((h + seg_len) / c_sec, ls="--", lw=0.25, color="grey")
+            if k == 0:
+                ax.text((h + seg_len / 2) / c_sec, ymax, "   " + peth_dict.get(s, s),
+                        rotation=90, fontsize=3.5, ha="center", color="k", va="bottom")
+            h += seg_len
+
+    if savepath is not None:
+        p = Path(savepath).with_suffix('')
+        p.parent.mkdir(parents=True, exist_ok=True)
+        for ext in ('.svg', '.pdf'):
+            out = p.with_suffix(ext)
+            kw  = dict(bbox_inches='tight', facecolor='white')
+            if ext == '.pdf': kw['dpi'] = 150
+            fig.savefig(out, **kw)
+            print(f"Saved: {out}")
+
+    plt.tight_layout(pad=0)
+    plt.show()
+    return fig
 
