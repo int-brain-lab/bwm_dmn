@@ -1,60 +1,322 @@
-
 # Spatially Distributed and Regionally Unbound Cellular-Resolution Brain-Wide Processing Loops in Mice
 
-This repository contains the main analysis code supporting the publication:
+Analysis code supporting:
 
-Schartner, Michael, et al. "Spatially distributed and regionally unbound cellular resolution brain-wide processing loops in mice." bioRxiv (2025): 2025-07.
-https://www.biorxiv.org/content/10.1101/2025.07.30.667641v1
+> Schartner, Michael, et al. "Spatially distributed and regionally unbound cellular resolution brain-wide processing loops in mice." *bioRxiv* (2025). https://www.biorxiv.org/content/10.1101/2025.07.30.667641v1
 
-The script `dmn_bwm.py` implements data processing, dimensionality reduction, anatomical mapping, and specialization analyses for the IBL Brain-Wide Map dataset (paper about the data and basic correlates: https://www.nature.com/articles/s41586-025-09235-0).
-Data accessible here: https://docs.internationalbrainlab.org/notebooks_external/data_structure.html  
-
----
-
-## Main-figure functions
-
-This README is limited to the functions needed for the main paper figures.
-
-### 1) Build per-insertion PETH data and stack to a supersession
-- `get_all_PETHs_parallel(...)`  
-  Computes/saves per-insertion PETH bundles.
-- `stack_concat(vers='concat', cv=False/True, ...)`  
-  Builds the concatenated feature matrix (`concat`, `concat_z`) and embeddings/sorting metadata.
-- `concat_PETHs(...)`  
-  Defines the 21 PETH conditions used in the main analysis (stimulus-, movement-, and feedback-aligned windows).
-
-### 2) Functional clustering/embedding and rastermap figures
-- `plot_dim_reduction(mapping='kmeans', algo='umap_z', ...)`  
-  UMAP colored by k-means clusters; with `exa_kmeans=True` also shows cluster-average feature vectors.
-- `plot_rastermap(...)`  
-  Rastermap-sorted population plot (including CV usage from odd/even trial split produced by `stack_concat(cv=True)`).
-- `plot_example_neurons(...)`  
-  Single-cell example feature vectors per cluster.
-
-### 3) Function–anatomy comparison and specialization
-- `plot_dim_reduction(mapping='Beryl', ...)` and `plot_xyz(mapping='kmeans', ...)`  
-  2D functional embedding vs 3D anatomical location views.
-- `plot_cluster_profile(...)`  
-  Per-cluster regional composition (pie/polar views).
-- `clus_freqs(...)`  
-  Region-wise functional composition / specialization summaries.
-- `plot_three_swansons(...)`  
-  Swanson maps for specialization-related summaries.
-- `scat_dec_clus(...)`  
-  Correlation between decoding-based and cluster-based specialization metrics.
+Built on the IBL Brain-Wide Map dataset: https://www.nature.com/articles/s41586-025-09235-0  
+Data access: https://docs.internationalbrainlab.org/notebooks_external/data_structure.html
 
 ---
 
 ## Requirements
-- Python 3.10+  
-- Dependencies: `numpy`, `scipy`, `pandas`, `matplotlib`, `seaborn`, `scikit-learn`, `umap-learn`, `rastermap`, `iblatlas`, `brainbox`, `one.api`.  
+
+Python 3.10+, with: `numpy`, `scipy`, `pandas`, `matplotlib`, `seaborn`, `scikit-learn`, `umap-learn`, `rastermap`, `iblatlas`, `brainbox`, `one.api`.
 
 ---
 
-## Usage
-Typical workflow:
-1. **Per-insertion PETHs:** `get_all_PETHs_parallel(...)`  
-2. **Supersession stack:** `stack_concat(vers='concat', cv=False)` and `stack_concat(vers='concat', cv=True)`  
-3. **Main figure generation:** use the functions listed above (`plot_dim_reduction`, `plot_rastermap`, `plot_example_neurons`, `plot_xyz`, `plot_cluster_profile`, `clus_freqs`, `plot_three_swansons`, `scat_dec_clus`).
+## Figure generation
 
-Outputs are written under the local ONE cache `dmn/` tree (notably `dmn/res/`, `dmn/imgs/`, and `dmn/figs/`).
+All figures are generated from `dmn_bwm.py`. Start an interactive Python session and import the script:
+
+```python
+import matplotlib
+matplotlib.use('Agg')  # or 'QtAgg' for interactive display
+import sys; sys.path.insert(0, '/home/mic/Dropbox/scripts/IBL/')
+from dmn_bwm import *
+```
+
+Global outputs write to `one.cache_dir/dmn/` (`/media/mic/.../FlatIron/dmn/`).  
+Sub-folders: `res/` (cached results), `imgs/` (figures), `figs/` (misc).
+
+---
+
+## Prerequisites — build the data stacks
+
+Everything downstream depends on the supersession stacks.  
+Run once per configuration; results are cached to disk.
+
+```python
+# Step 1: compute per-insertion PETH bundles (parallelised over insertions)
+get_all_PETHs_parallel(...)
+
+# Step 2: build the concatenated feature matrix and embeddings
+stack_concat(vers='concat', cv=True)   # cv=True used for most figures
+stack_concat(vers='concat', cv=False)  # needed for synthetic/mixed-selectivity figures
+```
+
+Regional group caches are built on first call to `regional_group(...)` and reused thereafter.
+
+---
+
+## Figure 1 — Task structure and feature-vector pipeline
+
+Figure 1 is a schematic / illustration panel (panels a–c) combined with data panels.  
+The grand-average PETHs (panels d–e) and the mean feature vector (panel f) are generated by:
+
+```python
+# Panel e: grand-average brain-wide neural responses per PETH type
+plot_ave_PETHs(vers='concat', cv=True)
+# Saves: imgs/mean_time_aligned_PETHs.svg
+
+# Panel f: average concatenated feature vector across all neurons
+plot_ave_PETHs(vers='concat', cv=True)   # second output in same function
+# Saves: imgs/mean_concat_feature_vector.svg
+
+# Panel g: UMAP embedding of all ~50k cells coloured by k-means cluster
+plot_dim_reduction(algo='umap_z', mapping='kmeans', vers='concat', nclus=25, cv=True)
+# Saves: imgs/25_kmeans_umap_z_cv1_syn0.png
+```
+
+---
+
+## Figure 2 — K-means cluster prototypes, rastermap, UMAP
+
+```python
+# Panels a–c: 25 k-means cluster average PETHs (sorted by hierarchical clustering of corr(C))
+plot_sorted_cluster_lines(
+    vers='concat', nclus=100, cv=False,
+    savepath='path/to/sorted_cluster_lines_100'
+)
+# Saves .svg and .pdf at the given path.
+# For the 25-cluster version used in main panels:
+plot_sorted_cluster_lines(
+    vers='concat', nclus=25, cv=True,
+    savepath='path/to/sorted_cluster_lines_25'
+)
+
+# Panel d / e: rastermap of ~50k cells sorted by Rastermap, coloured by k-means cluster
+plot_rastermap(
+    vers='concat', feat='concat_z',
+    mapping='rm', nclus=25, nclus_rm=100,
+    cv=True, bounds=True, clabels='all'
+)
+# Saves: imgs/map_rm_cv_1_zsc_1_nclus_rm_100_sort_rastermap.svg
+
+# Panel e (single-cell examples per cluster)
+plot_example_neurons(
+    n=5, vers='concat', mapping='kmeans',
+    nclus=25, cv=False, sing_clus=False,
+    save_formats=('svg',)
+)
+# Saves: figs/kmeans_{cluster_id}_of25_n5_cv0.svg  (one file per cluster)
+
+# Panel g: UMAP coloured by k-means
+plot_dim_reduction(
+    algo='umap_z', mapping='kmeans',
+    vers='concat', nclus=25, cv=True
+)
+# Saves: imgs/25_kmeans_umap_z_cv1_syn0.png
+```
+
+---
+
+## Figure 3 — Sequence neurons
+
+```python
+# Rastermap cross-validation (train / test split)
+plot_rastermap(
+    vers='concat', feat='concat_z',
+    mapping='rm', nclus=100, nclus_rm=100,
+    cv=True, bounds=True
+)
+# Saves: imgs/map_rm_cv_1_zsc_1_nclus_rm_100_sort_rastermap.svg
+
+# Cluster-mean PETHs for sequence clusters and stimulus/integrator clusters
+plot_cluster_mean_PETHs(
+    vers='concat', nclus_rm=100, cv=True
+)
+# Saves: imgs/{...}_cluster_mean_PETHs.svg
+
+# Brain region composition of sequence vs. other neurons (pie charts / Swanson)
+clus_freqs(
+    foc='Beryl', clustering='rm',
+    nclus=25, nclus_rm=100,
+    vers='concat', cv=True, norm_=True
+)
+# Saves: imgs/Beryl_rm_25_concat_nrm_True_cvTrue.svg + .pdf
+```
+
+---
+
+## Figure 4 — Low functional/anatomical co-correspondence
+
+```python
+# Panels a–b: rastermap coloured by Beryl region
+plot_rastermap(
+    vers='concat', mapping='Beryl',
+    nclus=25, nclus_rm=100, cv=True
+)
+
+# Panel d: UMAP coloured by Beryl region
+plot_dim_reduction(
+    algo='umap_z', mapping='Beryl',
+    vers='concat', nclus=25, cv=True
+)
+# Saves: imgs/25_Beryl_umap_z_cv1_syn0.png
+
+# Panel f: pie charts — regional composition of each functional cluster
+clus_freqs(
+    foc='clustering', clustering='kmeans',
+    nclus=25, nclus_rm=100,
+    vers='concat', cv=True, norm_=True
+)
+# Saves: imgs/clustering_kmeans_25_concat_nrm_True_cvTrue.svg + .pdf
+
+# Panel g: per-region specialization bar charts (25 clusters)
+clus_freqs(
+    foc='Beryl', clustering='kmeans',
+    nclus=25, nclus_rm=100,
+    vers='concat', cv=True, norm_=True
+)
+# Saves: imgs/Beryl_kmeans_25_concat_nrm_True_cvTrue.svg + .pdf
+
+# Panel h: histogram of specialization scores (clustering vs decoding)
+plot_histograms(clustering='kmeans', nclus=25, nclus_rm=100, cv=False)
+# Saves: imgs/overleaf_pdf/flatness_histograms.svg
+
+# Panel i: Swanson flatmap coloured by log(specialization)
+plot_three_swansons(clustering='kmeans', nclus=25, nclus_rm=100, cv=False)
+# Saves: imgs/overleaf_pdf/swanson_three_flatness.svg
+
+# Panel j: specialization vs. anatomical hierarchy scatter
+scat_dec_clus(
+    harris=False, nclus=25, nclus_rm=100,
+    clustering='kmeans', log_scale=True, anno=True
+)
+# Saves: imgs/overleaf_pdf/scat_clu_vs_dec.svg
+```
+
+---
+
+## Figure 5 — Structured, non-random mixed selectivity
+
+```python
+# Full mixed-selectivity figure assembly (panels a–k)
+plot_fig4_assembly(
+    vers='concat', nclus=100, nclus_s=100,
+    savepath='path/to/fig5_mixed_selectivity',
+    metric='PC0'
+)
+# Saves: path/to/fig5_mixed_selectivity.svg + .pdf
+# Panels: coefficient matrix C | corr(C) | synthetic marginals |
+#         synthetic B | corr(B) | PC0 histograms | SE(PC0) per region
+
+# Individual panel functions (if needed separately):
+
+# Coefficient correlation heatmaps (panels a–g)
+plot_coeff_correlation_heatmaps(
+    vers='concat', nclus=100, nclus_s=100,
+    savepath='path/to/coeff_heatmaps'
+)
+
+# PC0 distributions — real vs. synthetic (panels i–k)
+plot_coeff_entropy_flatness_real_vs_synth(
+    vers='concat', nclus=100, nclus_s=100,
+    metric='PC0',
+    savepath_hist='path/to/pc0_hist',
+    savepath_bars='path/to/pc0_bars',
+    savepath_scatter='path/to/pc0_scatter'
+)
+
+# Marginal distribution comparison (panel d/e)
+plot_synthetic_marginals_compare_blocks(
+    vers='concat', nclus=100, nclus_s=100,
+    savepath='path/to/marginals'
+)
+```
+
+---
+
+## Supplementary figures
+
+### Figure S1 — UMAP + cluster-mean PETHs across k resolutions
+
+```python
+plot_umap_si_kmeans_grid(
+    nclus_list=(10, 20, 30, 40, 100),
+    algo='umap_z', mapping='kmeans',
+    vers='concat', cv=True
+)
+# Saves: imgs/umap_si_kmeans_umap_z_nclus_grid_cv1.pdf
+```
+
+### Figure S2 — Specialization metrics comparison
+
+```python
+# Panel a: clustering vs decoding specialization scatter (157 regions)
+scat_dec_clus(
+    harris=False, nclus=25, nclus_rm=100,
+    clustering='kmeans', log_scale=True, anno=True
+)
+
+# Panel b: Pearson r vs nclus (cv=True/False, kmeans/rm)
+spec_corr_dec_nclus(nclus_list=range(5, 50))
+# (generates the Pearson r vs nclus sweep)
+```
+
+### Figure S3 — Split-trial cross-validation of rastermap
+
+```python
+plot_rastermap(
+    vers='concat', feat='concat_z',
+    mapping='rm', nclus=100, nclus_rm=100,
+    cv=True, bounds=True
+)
+# The cv=True flag produces train/test split visualisation
+```
+
+### Figure S4 — Mixed selectivity with 40 k-means clusters
+
+```python
+plot_fig4_assembly(
+    vers='concat', nclus=40, nclus_s=40,
+    savepath='path/to/fig_s4_mixed_40',
+    metric='PC0'
+)
+# or directly:
+plot_coeff_correlation_heatmaps(
+    vers='concat', nclus=40, nclus_s=40,
+    savepath='path/to/coeff_heatmaps_40'
+)
+```
+
+### Figure S6 — Shuffle controls for sequence cells
+
+```python
+# Sorted cluster lines for shuffled data (row- and column-shuffled)
+plot_sorted_cluster_lines(
+    vers='concat', nclus=100, cv=True,
+    savepath='path/to/si_sorted100'
+)
+```
+
+### Figure S7 — Dynamically reconfiguring functional brain networks
+
+```python
+# Louvain community detection on region-pair functional similarity matrices
+# (see the supplementary methods section in the script, lines ~7600+)
+# Call the relevant network-analysis functions with the task phases of interest.
+# Save paths: imgs/overleaf_pdf/
+```
+
+---
+
+## Compressing output PDFs
+
+Large PDFs can be compressed using the ghostscript wrapper used throughout this project:
+
+```bash
+gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dAutoRotatePages=/None \
+   -dPDFSETTINGS=/printer -dNOPAUSE -dQUIET -dBATCH \
+   -sOutputFile=output_.pdf input.pdf
+```
+
+---
+
+## Notes
+
+- **Caching**: most heavy computations (UMAP, k-means, rastermap) are cached in `res/` as `.npy` files. Pass `rerun=True` to force recomputation.
+- **Cross-validation**: `cv=True` uses odd/even trial splits (train on odd, test on even). Most main figures use `cv=True`; the synthetic/mixed-selectivity analysis uses `cv=False`.
+- **Number of clusters**: main text uses `nclus=25` k-means clusters; the coefficient-basis analysis uses `nclus=100`; rastermap uses `nclus_rm=100`.
+- **Data access**: raw neural data is accessed via the IBL ONE API (`one = ONE()`). The supersession stack must be built before any plotting.
