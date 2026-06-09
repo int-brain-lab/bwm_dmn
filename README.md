@@ -1,8 +1,8 @@
-# Spatially Distributed and Regionally Unbound Cellular-Resolution Brain-Wide Processing Loops in Mice
+# Broadcast, structured, and sequence-dominated: brain-wide computation at cellular resolution in mice
 
 Analysis code supporting:
 
-> Schartner, Michael, et al. "Spatially distributed and regionally unbound cellular resolution brain-wide processing loops in mice." *bioRxiv* (2025). https://www.biorxiv.org/content/10.1101/2025.07.30.667641v1
+> Schartner, M., Liu, A., International Brain Laboratory, & Fiete, I. (2025). Broadcast, structured, and sequence-dominated: brain-wide computation at cellular resolution in mice. bioRxiv, 2025-07. [https://www.biorxiv.org/content/10.1101/2025.07.30.667641v2].
 
 Built on the IBL Brain-Wide Map dataset: https://www.nature.com/articles/s41586-025-09235-0  
 Data access: https://docs.internationalbrainlab.org/notebooks_external/data_structure.html
