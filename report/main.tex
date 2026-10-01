@@ -1,0 +1,621 @@
+% BWM paper visual response latency: onset 25ms, earliest peak at 50ms
+% auditory response area peaks: Audp, PRNr, IC are around <12.5ms
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% ELIFE ARTICLE TEMPLATE
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% PREAMBLE 
+\documentclass[10pt,lineno]{elife}
+% Use the onehalfspacing option for 1.5 line spacing
+% Use the doublespacing option for 2.0 line spacing
+% Please note that these options may affect formatting.
+% Additionally, the use of the \newcommand function should be limited.
+%\setcitestyle{numbers,super}
+\usepackage{lipsum} % Required to insert dummy text
+\usepackage[version=4]{mhchem}
+\usepackage{siunitx}
+\DeclareSIUnit\Molar{M}
+
+% Citations formatting (natbib is loaded by elife.cls):
+\setcitestyle{numbers,super,sort&compress}
+% Remove brackets from citations:
+\makeatletter
+\renewcommand\@cite[2]{#1\if@tempswa , #2\fi}
+\makeatother
+\bibliographystyle{unsrtnat}
+%\bibliographystyle{nature}
+
+% Package to make subfigures:
+\usepackage{subcaption}
+\usepackage{hyperref}
+\usepackage{makecell}
+\usepackage{float}
+\DeclareCaptionLabelFormat{adja-page}{\hrulefill\\#1 #2 \emph{(previous page)}}
+\newcommand{\revresp}[1]{\textcolor{blue}{#1}}
+\usepackage{multirow}
+\usepackage{placeins}
+\usepackage{capt-of}  % Allows using \captionof outside floating environments
+\usepackage{afterpage}  % Helps delay the caption placement
+\usepackage[font=scriptsize]{caption}
+\usepackage{listings}
+\usepackage{xcolor} % Optional, for color customization
+\usepackage[normalem]{ulem}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{tabularx}
+
+\lstset{
+    language=Python,          % Specify the language
+    basicstyle=\ttfamily\footnotesize, % Font style
+    keywordstyle=\color{blue}, % Color for keywords
+    stringstyle=\color{black},   % Color for strings
+    commentstyle=\color{gray}, % Color for comments
+    numbers=left,              % Line numbers on the left
+    numberstyle=\tiny\color{gray}, % Line number style
+    breaklines=true,           % Line breaking
+    frame=none               % Frame around the code block
+}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% ARTICLE SETUP
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+\title{Broadcast, structured, and sequence-dominated: brain-wide computation at cellular resolution in mice}
+% alternatives: 
+% 1. Internally generated temporal sequences dominate a broadcast architecture of brain-wide computation in mice
+% 2. A regionally unbound architecture of internal sequences and structured brain-wide computation at cellular resolution in mice
+% orignal submission: Spatially distributed and regionally unbound cellular resolution brain-wide processing loops in mice
+
+\author[1,2,*]{Michael Schartner}
+\author[1,3,*]{Ari Liu}
+\author[1]{International Brain Laboratory}
+\author[1,3]{Ila Fiete}
+
+\affil[1]{The International Brain Laboratory}
+\affil[2]{Champalimaud Foundation, Lisbon, Portugal}
+\affil[3]{Massachusetts Institute of Technology, Cambridge, MA, USA}
+
+\affil[*]{These authors contributed equally to this work.}
+
+
+\corr{michael.schartner@internationalbrainlab.org, arily@mit.edu, fiete@mit.edu}{FMS}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% ARTICLE START
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% Little thing when saving pdf in illustrator to keep them editable with inkscpae:  Export from Illustrator as PDF with 
+%   "Preserve Illustrator Editing Capabilities" turned OFF and compatibility set
+%   to Acrobat 5 (PDF 1.4) — this flattens transparency and removes proprietary
+%   structures, making it much more Inkscape-friendly.
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Until recently, brain activity could be examined either globally, through regional averaging, or locally, at cellular resolution—but not both at once. As a result, regions were characterized as functionally homogeneous units while single neurons were often characterized as heterogeneously and randomly tuned. Here, we overcome this long-standing divide by leveraging the unprecedented density of International Brain Laboratory electrophysiological recordings in mice performing a sensorimotor decision-making task. Computationally integrating these recordings and ordering neurons by functional similarity reveals directly to the eye the full temporal arc of computations unfurling over the phases of a trial and across the brain at cellular and millisecond resolution, providing a dynamical map of the architecture of brain-wide computation. We report that one of the largest shares of brain-wide variance is explained not by task-related sensory responses, integration, or decision related signals, but by neurons encoding internally generated, trial-timed broadcast sequences that carry contextual information and are biased toward hippocampal and entorhinal involvement. We find that individual neurons reliably specialize in interpretable functions, yet neurons with similar functional roles are widely dispersed across regions. Each region contains cells spanning nearly the full repertoire of response types, rendering functional tuning largely unpredictable from cytoarchitectural boundaries or spatial location alone. In particular, even primary visual cortex contains a broad diversity of response types beyond stimulus-locked responses. The dominant discernible organizational distinction is instead between cortical and subcortical processing. Subcortical neurons carry the bulk of internal computations in expert mice, including integration, decision-making, and movement initiation. These patterns support a model of broadcast rather than staged computation, in which signals are widely shared and transformed rather than serially processed. Finally, we find that despite widespread regional mixing, representations at the single neuron level are not randomly mixed. Neurons combine specific features in highly correlated groupings, contradicting the hypothesis of random mixed selectivity at the cellular level. Together, our findings suggest a revised architecture of brain computation: typically interpretable and non-random selectivity at the level of single neurons, coupled to continual brain-wide broadcast rather than staged processing, in which internally structured activity dominates neural dynamics and scaffolds cognition.
+\end{abstract}
+
+\section{Introduction}
+From phrenology to modern cytoarchitectural partitioning, the idea that brain areas implement distinct functions -- the single area–single function hypothesis -- has been a remarkably durable organizing principle. Clear specializations exist across multiple scales: from the sensory periphery, where topographic maps tile visual space \cite{van2021mouse}, whisker identity \cite{petersen2007functional}, and auditory frequency \cite{hackett2011linking}, to higher-order regions selective for faces \cite{kanwisher1997fusiform, tsao2006cortical} or semantic content \cite{rajimehr2024functional}. 
+At the mesoscale, large-scale recordings and perturbations have further demonstrated differential participation of brain areas across tasks \cite{inacio2025brain, roy2022brain, stafford2014large, whitesell2021regional, chen2024brain, khilkevich2024brain, macdowell2025multiplexed, shahsavarani2023cortex}. Together, these findings have motivated a staged view of computation, in which a region performs a specialized computation on its inputs, passes the result to one or a few downstream areas, and so on — a serial pipeline in which both computation and its products are localized in space, Fig. \ref{fig:architecture_task}a (left).
+
+Yet this view rests substantially on regional averaging and targeted single-neuron sampling with regression of neural responses onto specific task variables. Such approaches have characterized brain areas as functionally homogeneous entities. More recently, recordings that sample several neurons per region have revealed a different picture: in higher cortical areas, neurons can exhibit heterogeneous tuning, often responding to conjunctions of sensory, motor, and contextual variables rather than single features. This observation motivated the mixed selectivity hypothesis, which posits that neurons randomly multiplex features to maximize the dimensionality of population representations and thereby support flexible readout for novel tasks \cite{rigotti2013importance, mante2013context, raposo2014category,hayden2025rethinking}. Separately, it has become clear that movement-related signals pervade the brain, explaining more variance in neural activity than sensory-driven or other task-related responses \cite{musall2019single, tseng2022shared, international2025brain}, further challenging the notion of functional segregation. Nevertheless, two critical issues remain unresolved. First, it is unknown how prevalent mixed selectivity is across the brain and whether mixed selectivity is actually random — whether the features a neuron combines are statistically independent — or whether neurons combine features in structured and interpretable ways (Fig.~\ref{fig:architecture_task}b). Second, after accounting for sensory, motor, and decision-related signals, the majority of brain-wide neural variance during a task still remains unexplained (Fig.~\ref{fig:architecture_task}c).
+
+These open questions bear on a fundamental architectural distinction. In the staged model, computation is both local and serial: each region performs a specialized computation on its inputs and passes the result forward, so that the products of a given computation are initially available only to the next stage (Fig. ~\ref{fig:architecture_task}a, left). An alternative model preserves local computation but revises both its granularity and its connectivity. In this view, individual brain regions are not unitary computational modules performing a single function. Rather, each region houses multiple local circuits, each participating in distinct computations — and each potentially more deeply interconnected with partner circuits in distant regions than with neighboring circuits within the same anatomical boundary. These distributed, cross-regional circuit partnerships continuously broadcast their computed outputs to the rest of the brain, making them globally available rather than routing them serially to one or a few  downstream targets (Fig.~\ref{fig:architecture_task}a, right; \cite{hayden2025rethinking, kannan2022dual}). The broadcast view differs from the staged view in the granularity of the computing units (sub-regional circuits rather than whole regions), the topology of their interactions (distributed loops rather than serial chains), and how the products of computation are shared (globally and in parallel rather than point-to-point). The brain's massive recurrent connectivity between most regions as well as recent studies highlighting molecular cell-type and connectomic diversity across neurons in a region \cite{kaplan2025hypothalamic,gamlin2025sst,patino2024cortical,shainer2025tectum,gao2026projectomes,scala2021motor} are consistent with such an architecture, but until recently the lack of tools for dense, cellular-resolution recordings with broad brain coverage has prevented empirical adjudication.
+
+Here we address these questions using ~50,000 Neuropixels-recorded neurons across the mouse brain during a sensorimotor decision-making task in which internal expectations shape perception and guide the progression from stimulus to decision to action \cite{laboratory2021standardized,international2025brain}. We define a rich functional feature vector per neuron by concatenating its trial-averaged responses across task phases and trial types, enabling relatively unbiased characterization of each cell's selectivity. By clustering and sorting this dense brain-wide dataset into an appropriate ordering, it is almost possible to see thoughts writ into neural activity and to trace their progression over time and across the brain. We find that neurons reliably specialize in interpretable functions, yet these functional types are dispersed across the brain rather than localized to specific regions. This dispersion is consistent not with a loss of functional specialization but with a broadcast architecture in which locally computed signals are made globally available. We show that one of the largest shares of neurons belongs to a previously uncharacterized category: internally generated temporal sequences that tile each trial with sparse, contextually modulated activation biased toward hippocampal and entorhinal circuits. Finally, we show that despite regional mixing of functional types, single-neuron representations are not randomly mixed: neurons combine features in structured, correlated groupings, contradicting the random mixed selectivity hypothesis at the cellular level. Together, these findings motivate a reevaluation of many long-held hypotheses about the architecture of computation in the mouse brain. 
+
+\FloatBarrier
+
+\begin{figure}[htbp]
+ \centering
+ \includegraphics[width=\linewidth]{figures/computational_architecture_and_task.pdf}
+ \caption{{\bf Hypotheses, task structure, and task-aligned rich neural feature vectors across ~50K neurons.} 
+ \textbf{a} Schematic of two hypotheses for the architecture of computation in the brain: Left, brain computations are strongly regionalized (spatially modular); or, right, functionally modular computations are performed in distributed multi-regional loops. 
+ %
+ \textbf{b}
+ Schematic of two hypothesis about tuning in the brain: that neurons individually have non-random tuning to specific task features, but at the region level the responses are highly mixed (left) or that individual neurons have highly mixed random tuning to multiple features (mixed selectivity), while possibly combining to yield relatively structured/unmixed region-level function. 
+ %
+ \textbf{c} Up to 9\% and 20\% of the variance of mouse brain activity during the IBL task is reported to be explained by sensory-decision (stimulus response and integration) and task-related movement (initiation and execution) processes, respectively (\cite{international2025brain}). The remaining ~70\% of variance is under-explained.
+ %
+ \textbf{d} Top left and bottom: schematic of the IBL task and the typical timeline of a trial. A mouse keeps still (quiescence period) to trigger a visual stimulus on the left or right. If it reports the correct stimulus side ($L_c$ or $R_c$, respectively) by turning a wheel in the appropriate direction, it receives a reward (feedbk 1); otherwise it receives a timeout with white noise over the duration (feedbk 0). After a short rest period, the trial can begin again. Stimulus and feedbk 1 onset are accompanied by an auditory cue. Top right: Neuropixel probe positions across 139 mice, that perform the task at or above expert criterion level, densely tile the left hemisphere. The total yield passing quality control across mice \cite{international2025brain}, used for most of our analyses, is 54719 neurons. In specific analyses that involve cross-validated controls, this number shrinks to 53021. 
+ % 
+ \textbf{e} Grand-average brain-wide neural responses aligned to key trial events, separated by trial type (8 types: left, right stim, choice, and block sides) within each event window: within a window, we average the responses of all cells across all trials of the same type (e.g. all feedbk 0 trials within the feedback window, or all trials with left stimulus, left choice, during a right block ($L_sL_cR_b$) in the stimulus window). These curves define peri-event time histograms (PETHs) averaged across all cells. See Tab.\ref{tab1} for details. E.g. in the sensory response and decision windows, stimulus-aligned PETHs are denoted $X_{s}X_{c}X_{b},s$ and movement-aligned PETHs $X_{s}X_{c}X_{b},m$, where $X$ designates $L$ or $R$. The stimulus-aligned curves split towards their end in two groups, with the top 4 lines being stimulus side and choice congruent curves while the bottom ones are the 4 incongruent ones, i.e. "mistake" conditions.
+ % 
+ \textbf{f} The grand average {\em functional feature vector} of all neurons, consisting of 21 PETHs (all windows and all trial types in each window) concatenated then z-scored. 
+ % 
+ \textbf{g} Illustration of our analysis pipeline. The per-cell z-scored rich functional feature vectors (middle) are embedded in physical brain space (left, top) or functional space (left bottom), with coloring by clustering on functional similarity or region. We compute the cluster prototypes by averaging feature vectors within a cluster (right, top) to examine functional properties of cells and order cells by similarity (rastermap algorithm \cite{stringer2024rastermap}) to discover temporal patterns (right, bottom). We use the prototypes and rastermap to discover sequences and generate null models for significance testing (far right). 
+\label{fig:architecture_task}}
+\end{figure}
+ 
+\FloatBarrier
+
+\section{Results}
+
+% \textit{Task structure and neural recordings.}
+On each trial, a visual stimulus appeared on the left or right side of a screen, and mice reported its location by turning a wheel to steer the stimulus to the center (Fig.~\ref{fig:architecture_task}d). Correct responses were rewarded with water; incorrect responses produced a white noise burst and a timeout. Each trial comprised several well-defined phases: a variable-duration rest period, a quiescence requirement ($\geq$200~ms of stillness), stimulus onset, a self-paced decision interval ending at movement onset, and feedback (Fig.~\ref{fig:architecture_task}d). Trials were organized into uncued blocks of 20--100 trials (mean 51), within which the probability of the stimulus appearing on one side was fixed at 0.8 versus 0.2. This probability reversed between successive blocks, creating a latent context that well-trained animals learned to exploit as a prior over stimulus location \cite{laboratory2021standardized, findling2023brain}. Trials also varied along three binary dimensions --- stimulus side (left/right), choice side (left/right), and block side (left/right) --- yielding eight trial types that together span the space of sensory, motor, and cognitive variables engaged by the task.
+
+% \textit{Grand-average activity reveals the temporal arc of a trial.}
+Neural activity was recorded using Neuropixels probes (up to two per mouse) across 139 well-trained animals, yielding $\sim$50,000 neurons used in our analyses after quality control, with histologically reconstructed positions densely tiling the left hemisphere (Fig.~\ref{fig:architecture_task}d) \cite{international2025brain}. For complete details on the task and dataset, see \cite{laboratory2021standardized} and \cite{international2025brain}, respectively. Despite the variable durations of individual trials, and variable responses of animals and cells, leveraging the trial event structure and trial type structure allows us to obtain standardized and aligned functional responses. To gain a first overview of brain-wide dynamics, we plot the grand average of the activity of all neurons within each task phase, separated by the trial types (Fig.~\ref{fig:architecture_task}e). Several features are apparent. Activity is low during rest and further suppressed during quiescence, but it distinguishes left from right blocks during this pre-stimulus period --- reflecting the influence of the learned prior. Stimulus onset produces a brief transient ($\sim$20~ms latency) of modest amplitude, followed by a much larger ramping signal lasting 250--300~ms. The ramp magnitude is modulated by trial type, specifically on whether the stimulus side is concordant or discordant with the block side. When aligned to movement onset, these ramps nearly converge across trial types, consistent with an accumulation-to-bound process, though with a possible small difference in the bound for concordant and discordant trials. The ramp plateaus at a sustained level during motor execution. The largest overall responses in the brain occur at feedback onset, for both positive and negative outcomes. 
+
+% \textit{Rich functional feature vectors and the supersession.}
+To move beyond population averages and characterize the functional identity of individual neurons, we constructed a rich feature vector for each cell. This vector concatenates the neuron's average firing rate time course (PETH) under 21 conditions spanning all task phases and trial types; we illustrate this rich feature vector for the grand average response from Fig.~\ref{fig:architecture_task}e (Fig.~\ref{fig:architecture_task}f). The rich feature vector covers: rest and quiescence periods; pre-stimulus block-side responses; stimulus-aligned responses for each of the four correct trial types, for block-change trials, and for mistake trials; movement-aligned responses for the same conditions; left and right movement execution; and positive and negative feedback (see Table~\ref{tab1} for complete definitions). 
+Though it is possible in principle to further subdivide conditions (e.g. by the type of mistake trial: mistakes right after a block change or deep into a block; or mistakes on left versus right blocks, etc.), we balanced choosing as large a set of conditions while keeping as many sessions as possible (parsing conditions more finely leads to the rejection of more sessions because the number of trials per condition drops below our inclusion threshold). The aligned feature vectors for all neurons across animals constitutes a single ``supersession'', whose average across all neurons (Fig.~\ref{fig:architecture_task}f) is equivalent to concatenating the curves in Fig.~\ref{fig:architecture_task}e and then z-scoring. 
+ 
+In what follows, we analyze the structure of the full supersession matrix of the feature vectors of $\sim$50,000 neurons through clustering, sorting, manifold embedding, and associated quantifications (Fig.~\ref{fig:architecture_task}g).
+
+\subsection{Unsupervised discovery of structured and interpretable rich neural response categories}
+
+Do the $\sim$50,000 constructed feature vectors tile a continuous, unstructured response space, or do neurons exhibit discrete functional groupings? To address this, we applied k-means clustering ($N=25$ clusters) to the full supersession matrix ($N_c = 54{,}719$ neurons $\times$ $N_T$ bins, where $N_T=1872$ (with $t_{bin} = 125ms$) is the length of each feature vector), obtaining 25 prototype response vectors --- each the average feature vector of its member neurons (Fig.~\ref{fig:functional_response_structure}a). 
+
+% \textit{Prototypes recover known response categories and reveal new ones.} 
+Prior analyses of IBL and similar decision tasks have typically classified neurons into a small set of hand-defined categories: stimulus-selective, choice-selective, and feedback-selective neurons \cite{international2025brain}. Our unsupervised prototypes recover these, but decompose them more finely and reveal additional structure and features. We assigned prototypes to task events and functional roles by identifying the trial phase(s) and alignments for which each prototype's response was most sharply peaked. For instance, the blue and purple curves (Fig.~\ref{fig:functional_response_structure}b) exhibit elevated firing in both the stimulus onset and pre-movement periods, but their response peaks are more temporally defined (narrowly peaked) and higher in amplitude when aligned to stimulus onset, identifying them as stimulus-related  responses. By contrast, the beige and pink curves (Fig.~\ref{fig:functional_response_structure}b) are also active in both periods but peak far more sharply when movement-aligned, identifying them as movement-associated responses. Different movement-related categories (e.g. movement choice, preparation or initiation versus movement generation) can be distinguished based on the timing of the response peak prior to movement and whether activity decays going into the actual movement period or continues or increases. 
+We observe a transient stimulus-response cluster (\#21) that is active not only at stimulus onset at the beginning of each trial but also at the start of the feedback intervals where an auditory tone is emitted; a ramping cluster consistent with evidence integration (\#9); a movement-initiation cluster (\#12); and two distinct movement-execution clusters (\#5, \#14) (Fig.~\ref{fig:functional_response_structure}b, top), the latter of which exhibits a combined movement-and-feedback response.
+
+Beyond these sensorimotor categories, we found several prototypes that appear to encode internal or cognitive states (Fig.~\ref{fig:functional_response_structure}c). These include: a block-change cluster, in which during-stimulus activity is elevated on trials shortly following a block switch, consistent with a surprise or prediction-error signal; a mistake-encoding cluster for mistake trials that exhibits elevated quiescence-period activity; left- and right-block clusters encoding the latent prior during quiescence; positive and negative feedback clusters (\#15 and \#24, respectively, Fig.~\ref{fig:functional_response_structure}a); and two conjunctive movement-and-feedback clusters (\#8, \#14). (Extended Data Fig. 9 in \cite{findling2023brain} demonstrates that movement confounds are manageable for that analysis).
+
+% \textit{Individual neurons match their assigned prototypes.} 
+A natural concern with clustering is that it can impose discrete boundaries on a continuous distribution with prototypes that are the per-tile averages of a tiling of the continuous space, rather than reflections of intrinsic structure. We evaluated this in several ways. First, sorting neurons by cluster membership and inspecting the full per-neuron supersession raster (Fig.~\ref{fig:functional_response_structure}d) reveals that individual cells within each cluster exhibit response patterns that clearly resemble their assigned prototype --- the prototypes are not mere averages over heterogeneous responses. Second, examining traces from individual neurons within each cluster (Fig.~\ref{fig:functional_response_structure}e) confirms that single cells show distinct peaks and response profiles matching the prototypes, consistent with actual functional specialization.  Thus, though there is a diversity of neural responses within each functional cluster, the clusters nevertheless are meaningful partitions of single neurons, and single neurons exhibit specific structured response patterns with functional meaning relative to the task, in coherent multi-neuron groupings. Third, a nonlinear embedding of the feature vectors (UMAP; Fig.~\ref{fig:anatomy_function}e) reveals groupings in the low-dimensional embedding space which align with k-means cluster assignments (colors), indicating that the discrete k-means clusters reflect geometric structure in the high-dimensional response space rather than arbitrary partitioning. Varying the number of clusters ($N = 10$ to 100) yields finer-grained categories but does not qualitatively alter this picture (Fig.~\ref{fig:umap_clustering_resolution}). 
+
+In sum, neurons across the brain can be clustered into structured, interpretable, and rich functional categories that extend beyond previously defined response types.
+
+\subsection{Cell ordering reveals brain-wide computational dynamics over the arc of decision-making at cellular resolution}
+
+The k-means analysis above assigned each neuron to one of 25 discrete clusters. While this reveals interpretable functional categories, it collapses within-cluster heterogeneity and obscures finer-grained temporal structure --- for instance, continuous variation in response latency among neurons with a shared functional role. To obtain a higher-resolution and temporally ordered view, we organized the $\sim$50,000 neurons according to rastermap \cite{stringer2024rastermap} using 100 functonal clusters, which orders clusters based on their similarity.
+
+The result is a single image of brain-wide computation unfolding at cellular resolution across trial phases, trial types, and time (Fig.~\ref{fig:functional_response_structure}f). The rastermap recapitulates the discrete functional categories found by k-means --- for instance, feedback-preferring neurons form a large coherent block (clusters 76--90, lower right), and movement neurons form another (clusters 34--42). But it also reveals structure that clustering alone cannot capture. Within many functional blocks, responses exhibit continuous and systematic temporal variation across neurons. For example, one population encodes a rapid stimulus-onset transient (dark portion of the whorl near cell index $\sim$2,500), grading smoothly into a second population that extends the stimulus response at longer latencies (upper portion of the whorl, cells 1--2,500). This continuous temporal tiling shows that neurons inhabit a spectrum of roles, with preserved temporal structure or relative latencies across trial types.
+
+Beyond confirming and refining the discrete categories, the rastermap reveals a previously uncharacterized response type: large sets of neurons exhibiting faint diagonal bands spanning the interval from trial onset to movement onset (clusters 5--7, 11--20, 45--54, and 56--59). These diagonal patterns --- suggestive of sequential activation in which successive neurons fire at successive time points --- are strikingly consistent across trial types, appearing in multiple columns of the rastermap. We examine these sequences in detail in the next section.
+
+\begin{figure}
+%\begin{fullwidth}
+\includegraphics[width=\linewidth]{figures/functional_response_structure.pdf}
+\caption{\textbf{Brain-wide activation across trial types and trial intervals reveals functionally interpretable features at the population and single-neuron levels.} 
+\textbf{a} Average response vectors of 25 k-means clusters, note e.g. the stimulus responsive cluster number 21, the positive feedback responsive cluster 15 and the negative feedback responsive cluster 24.
+%
+\textbf{b} Zoomed-in view of the average response vectors of cluster 21, 9, 12, 14, and 5, showing response patterns of a stimulus response cluster, a ramping/integration cluster, a movement initiation cluster, and two movement clusters, respectively.
+%
+\textbf{c} Zoomed-in view of the average response vectors of cluster 16, 22, 2, and 11, encoding response for surprise/block change, mistake, right block, and left block trials, respectively.
+%
+\textbf{d} Single cell response raster plot of all neurons, sorted and colored by k-means clusters as in \textbf{a}.
+% 
+\textbf{e} Example single cell feature vectors from different Beryl regions (cluster numbers as in \textbf{a} on the left, region labels on the right, see Methods and Fig.~\ref{fig:recorded_regions_tree} for anatomical parcellation information) across the whole brain, showing interpretable functional responses similar to the cluster-level averages in \textbf{a}.
+% 
+\textbf{f} Feature vectors of all $\sim50$ k cells sorted by similarity via rastermap\cite{stringer2024rastermap} into 100 clusters, revealing great diversity in activity and clear patterns. Black is high firing rate and white is low. Black horizontal lines indicate cluster boundaries.}
+\label{fig:functional_response_structure}
+%\end{fullwidth}
+\end{figure}
+\FloatBarrier
+
+
+\subsection{Reliable, brain-wide contextual sequences scaffold experience during each trial}
+
+When neurons are sorted by functional similarity using rastermap, a striking feature emerges: large blocks of neurons (clusters 5–7, 11–20, 45–54, 56–59) appear to exhibit sequential activation patterns — diagonal bands in the rastermap — spanning the interval from trial onset to movement onset (Fig.~\ref{fig:functional_response_structure}f). Here we examine and characterize these sequences in detail.
+
+We performed an explicit cross-validation by splitting all trials into two halves. We applied rastermap to one half ("train"; Fig.~\ref{fig:contextual_sequences}a, left), identifying strong diagonal bands. We then applied the neuron ordering learned from the train half to the held-out test half (see Fig.~\ref{fig:rastermap_cross_validation} for full train/test rastermaps). The sequences persist clearly in this fully disjoint and independent trial set (Fig.~\ref{fig:contextual_sequences}a, middle), and survive averaging across trial types (Fig.~\ref{fig:contextual_sequences}a, right). In fact, each non-mistake trial type within the rich feature vector is constructed from entirely different non-overlapping trials: thus, sequential structure across trial types even within a set (within train or within test halves) constitutes an intrinsic cross-validation. Though neurons can always be sorted to create sequence-like patterns within a trial type, cross-trial type sequences cannot result as an artifact of such neural ordering. Given this fact, we can also return to the train set to interpret some of its features. Within the train set, the sorting process identifies three types of sequences (three diagonal bands within each trial type), with the diagonal bands most prominent in trial types involving some form of surprise — discordant trials (stimulus side opposite to block side, i.e. $L_{s}L_{c}R_{b},s$ and $R_{s}R_{c}L_{b},s$) and block-change trials — but persisting across all remaining trial types; mistake conditions have the weakest bands, but the diagonal band in block-change trials appears relatively strong in mistake trials, indicating mistakes are closely related to surprise upon block-change. Despite these differences, averaging across trial types within the test set confirms the existence of a core sequence backbone common to all conditions (Fig.~\ref{fig:contextual_sequences}a, right).
+
+Randomly shuffling time indices (columns) independently within each trial type before applying rastermap abolishes all visible sequential structure (Fig.~\ref{fig:sequence_shuffle_control}a). Shuffling neural indices separately per trial type (maintaining their temporal responses within trial type), then splitting the data into a train and test set and sorting the resulting test set with rastermap can indeed induce sequences within individual trial types (Fig.~\ref{fig:contextual_sequences}b), but — unlike the real data — this ordering does not generalize across trial types (Fig. ~\ref{fig:contextual_sequences}a), confirming that the cross-trial-type consistency of the sequences depends on stable, neuron-specific temporal tuning.
+
+The sequence neurons are distinct from other functional groups identified by rastermap. Stimulus-responsive and integrator neurons occupy separate clusters (clusters 1–4 and 38; Fig.~\ref{fig:contextual_sequences}c), as do movement-initiation neurons (clusters 10, 32, 34–37, 39, 41–42, and 61, as numbered in Fig.~\ref{fig:functional_response_structure}f right y axis; see Methods and Fig.~\ref{fig:rastermap_categories} for definition of all rastermap-defined functional types). All subsequent analyses use only held-out test trials with the training-derived ordering of sequence neurons.
+
+The distinction is confirmed by the temporal autocorrelation structure. For sequence neurons, the autocorrelation matrix within each trial type exhibits a band of constant width along the diagonal (Fig.~\ref{fig:contextual_sequences}d) — the signature of a population tiling time or the represented abstract space uniformly. This is reminiscent of hippocampal place cells and time cells, which tile space or delay intervals with approximately uniform fields and population density \cite{o1998place, macdonald2011hippocampal, Pastalkova2008}. By contrast, stimulus-integrator neurons show a broadening autocorrelation profile along the diagonal (Fig.~\ref{fig:contextual_sequences}e), reflecting temporal dispersion — an initially sharp stimulus-locked response that progressively smears as integration unfolds. Column-shuffled controls lack any temporal structure (Fig.~\ref{fig:sequence_shuffle_control}b).
+
+Two additional distinctions appear in functional neuron group-averaged population activities over time. Stimulus and integrator neurons exhibit a transient onset peak followed by a growing ramp that decays — the expected signature of stimulus detection followed by evidence accumulation. Sequence neurons, by contrast, maintain a nearly constant total firing rate across the trial (Fig.~\ref{fig:contextual_sequences}f). Additionally, the mean firing rate of sequence neurons is substantially lower than that of other functional response categories including groups that seem to encode stimulus, integrator, movement, and feedback neurons (Fig.~\ref{fig:contextual_sequences}g; see Methods and Fig.~\ref{fig:rastermap_categories} for examples of these rastermap-defined functional groups). The flat population rate profile, combined with individual neurons that each fire sparsely at specific trial times, is what one would expect from neurons encoding abstract sequences unrelated to specific stimuli. It implies that the sequence population acts as an abstract temporal basis set: individual neurons tile time while their sum remains approximately constant. These properties are reminiscent of the tiling of time by HVC premotor sequence cells \cite{Hahnloser2002} or of space or time by hippocampal place or time cells, respectively \cite{o1998place, umbach2020time}.  
+
+% contextual representation: 
+% \textit{Contextual modulation of a common backbone.}
+Besides carrying shared information across trial types (Fig.~\ref{fig:contextual_sequences}a, right), the sequences also contain trial-type-specific information. Cross-correlations computed across trial types reveal a consistent diagonal structure of finite width in all trial-type pairs (Fig.~\ref{fig:contextual_sequences}h, top-left), confirming the shared backbone. However, the strength of cross-correlation varies systematically with trial-type similarity. The weakest cross-correlation occurs between the two opposite discordant trials, $\mathrm{R_{s}R_{c}L_b}$ and $\mathrm{L_{s}L_{c}R_b}$, while mistake sequences correlate most strongly with block-change sequences (Fig.~\ref{fig:contextual_sequences}h, top-right). This pattern suggests a hierarchical contextual encoding: the sequences first distinguish surprise from non-surprise conditions, then further differentiate specific trial types within each category.
+
+To characterize the full spatiotemporal structure, we computed two-dimensional cross-correlograms between all pairs of trial types, treating each trial-type's rastermap submatrix (neurons × time bins) as a two-dimensional image as commonly done in the hippocampal field (Fig.~\ref{fig:contextual_sequences}h, bottom; see Methods for details). Across all condition pairs, the correlograms exhibit a consistent slope and a 7-band structure, corresponding to three repeated sequence motifs in the rastermap that align with the three surprise-related conditions we first observed in Fig.~\ref{fig:contextual_sequences}a. Global population-vector Pearson correlations across trial types are significant for all trial-type pairs (Fig.~\ref{fig:contextual_sequences}h, top-right; diagonal elements are zeroed and all off-diagonal elements have $p<0.01$ via permutation test, see Methods for details), and quantify the qualitative contextual differences noted in Fig.~\ref{fig:contextual_sequences}h, top-left. 
+
+By contrast, shuffled controls and stimulus-integrator neurons show relatively little contextual modulation across trial types (Fig.~\ref{fig:contextual_sequences}i,j, Fig.~\ref{fig:sequence_shuffle_control}c,d). Thus, contextual modulation is a specific property of the sequence neurons.
+
+% \textit{Regional representation and brain-wide prevalence.}
+Motivated by the resemblance of the properties of these sequence cells to hippocampal representations, we examined the anatomical distribution of sequence neurons relative to stimulus-integrator neurons. We found a disproportionate contribution from entorhinal cortex (ENT), hippocampal subfields, and neocortical regions (Fig.~\ref{fig:contextual_sequences}k) in the sequence neurons (hippocampal formation 13.7\%, isocortex 22.1\%) relative to the stimulus and integration populations (hippocampal formation 9.1\%, isocortex 15.3\%). 
+
+Most strikingly, the sequence neurons constitute one of the largest functional categories in the brain during this task: 21.8\% of all recorded neurons, compared to 0.8\% for stimulus-responsive, 4.5\% for integrator, 10.3\% for movement-initiation, and 3.7\% for movement-execution neurons (Fig.~\ref{fig:contextual_sequences}l). Although it has recently been appreciated that movement-related signals dominate over sensory-driven responses across the brain (\cite{musall2019single, stringer2019spontaneous}), our data show that internally generated sequential activity is one of the largest identifiable single populations, exceeding all individual classical sensorimotor categories and second only to the combination of all movement-associated categories (including movement-feedback) — at least in expert animals performing a well-learned task (Fig.~\ref{fig:rastermap_categories}).
+
+In sum, during each trial the brain exhibits a widespread propagation of temporally precise, sparse, and reproducible neural sequences. These sequence neurons are distinguished from all functional categories along many different dimensions. They share a common backbone across trial types but carry contextual information that discriminates hierarchically between surprise and non-surprise conditions and further between individual trial types. Their widespread presence across the brain together with their specific hippocampal-entorhinal bias suggests that they might originate in hippocampus and be spread across the brain and especially to the neocortex to supply abstract scaffolds that support the association of world states with internal states that delineate context and time. 
+
+
+\FloatBarrier
+\begin{figure}
+%\begin{fullwidth}
+\includegraphics[width=0.7\linewidth]{figures/contextual_neural_sequences.pdf}
+\caption{\textbf{Internally generated brain-wide contextual neural sequences.} 
+\textbf{a} Sequence neurons identified and ordered by the rastermap algorithm and verified by cross-validation (Fig.~\ref{fig:rastermap_cross_validation} shows the full train/test rastermaps). Left: raster plot based on the train set (odd-numbered trials), showing three groups of strong contextual specific sequence neurons for block change ($\mathrm{change_b, s}$), $\mathrm{L_{s}L_{c}R_b, s}$, and $\mathrm{R_{s}R_{c}L_b, s}$ trials, and the same neurons also show sequential responses across all stimulus-aligned trial conditions. Right: the test set (even-numbered trials) raster plot for stimulus-aligned trial conditions and average over these conditions. The strong contextual responses did not survive cross-validation, but the sequences across all trial conditions are still evident in the test set. 
+%
+\textbf{b} Sequence neurons with independently shuffled row ordering within each trial type, and re-sorted using rastermap with cross-validation. Top: the train set of trials which rastermap is run on after row-shuffling; bottom: test set sorted by the resulted ordering of train set, showing faint sequences within each trial type, but they do not generalize across trial types as in \textbf{a} (column-shuffling prior to rastermap does not result in sequences, see Fig.~\ref{fig:sequence_shuffle_control}a). 
+%
+\textbf{c} Stimulus response and integrator neurons, identified and ordered by rastermap, and cross-validated (only the test set shown here). We show their raster plot for all stimulus-aligned trial conditions as well as the average across these trial types. 
+%
+\textbf{d} Time-time correlation matrices of sequence neuron PETHs within each of the trial types, and of the average PETHs across the different trial types have narrow and constant bands at the diagonals (exact diagonals set to 0 for visualization). 
+% 
+\textbf{e} Time-time correlation matrices of stimulus response and integrator neuron PETHs within each of the trial types, and of the average PETHs across the different trial types, showing variable widths around the diagonals, unlike for sequence cells; diagonal values set to 0 for visualization.
+% 
+\textbf{f} Average z-scored PETHs of the sequence neurons (blue) and stimulus response + integrator neurons (orange), for each individual trial type (left) and averaged over trial types (right).
+% 
+\textbf{g} Average firing rate of functional groups defined by rastermap algorithm (see Methods for definition), across all concatenated trial windows in the full feature vectors.
+%
+\textbf{h} Correlation structure across trial types in the sequence neurons. Top left: time-time correlation matrix of sequence neuron PETHs across all stimulus-aligned trial types concatenated together. Colors indicate the Pearson correlation score and are shown in log-scale. Top right: overall Pearson correlation of sequence neurons across trial conditions, constructed by taking the cell-by-time matrices of each trial condition and calculating pair-wise correlation among them. The diagonal values are set to 0 for visualization. Bottom: two-dimensional cross-correlograms of sequence neurons across trial conditions. Each cross-correlogram is constructed by taking a pair of trial conditions' cell-by-time matrices, and computing the correlation at each time lag and cell lag. Colors indicate correlation strength and are shown in log-scale.
+% 
+\textbf{i} Time-time correlation matrix of row-shuffled sequence neuron PETHs, in the test set of trials as in \textbf{b}, across all stimulus-aligned trial types concatenated together. The same analysis on the train set is qualitatively the same and thus not shown.
+% 
+\textbf{j} Time-time correlation matrix of stimulus response and integrator neuron PETHs across all stimulus-aligned trial types concatenated together. Colors shown in log-scale. 
+% 
+\textbf{k} Regional composition of sequence neurons (left) and stimulus response and integrator neurons (right), colored by Beryl regions. The top 15 regions are annotated with their acronyms, and hippocampal regions are indicated as 'HPF'.
+% 
+\textbf{l} Functional composition of the 50k cells included in analysis, as identified by rastermap algorithm.
+}
+\label{fig:contextual_sequences}
+%\end{fullwidth}
+\end{figure}
+
+
+\FloatBarrier
+ 
+
+\subsection{Low co-correspondence of function with anatomy except cortical-subcortical division}
+
+Next, we consider the localization of these functionally specific clusters to anatomical regions in the brain. Thus, we use our brain-wide recordings to address the question of whether basic functions are primarily assigned to specific brain regions that pass their outputs to one or a few downstream areas for the next stage of sequential processing (Fig.~\ref{fig:architecture_task}a, left), or whether the brain follows a broadcast model of computation where each area broadcasts its signal to many different regions, any or all of which might use that signal for parallel computations of their own (Fig.~\ref{fig:architecture_task}a, right). 
+
+We assessed localization in several ways: first, we colored each row of the rastermap by that neuron's Beryl region (Fig.~\ref{fig:anatomy_function}a, see methods for anatomical parcellation information). The result is a muted mixture of colors, with the only visible separation given by pink-green color blocks indicating a subcortical (thalamus, hindbrain, midbrain)-cortical (isocortex, hippocampus) divide in neural response patterns. Conversely, we can sort and color neurons by Beryl region, but then lose the functional structure of the spike rasters (Fig.~\ref{fig:anatomy_function}b). All the rich functional categories and spatiotemporal response patterns of the brain-wide rastermap are present if we constrain the rastermap to single brain regions with sufficiently many cells (Fig.~\ref{fig:anatomy_function}c), whether the regions are in cerebellum, thalamus, isocortex, hippocampus, or midbrain. Thus, the rastermap confirms and demonstrates in detail that individual Beryl areas contain cells showing essentially the full diversity of temporal, trial-phase and trial-type specific response patterns, consistent with the broadcast view of computation. 
+
+Next, we consider whether the clusters in the UMAP single cell response embedding (Fig.~\ref{fig:anatomy_function}e) align with Beryl region coloring as they did with k-means prototypes. Instead, we found a near-total lack of alignment between functional clusters and regions (Fig.~\ref{fig:anatomy_function}d). 
+Conversely, when we visualize the three-dimensional anatomical position of each recorded cell, colored by its k-means functional cluster, the result is a spatially homogeneous mix (Fig.~\ref{fig:anatomy_function}e), in contrast to the previously observed alignment of k-means and UMAP functional clusters (Fig.~\ref{fig:anatomy_function}e, UMAP).
+
+For each functional response category (i.e. k-means cluster average response), we can construct a map of Beryl region membership (Fig.~\ref{fig:anatomy_function}f). Here, almost each category is represented in almost all brain regions, with seemingly similar area distributions per category, and some notable exceptions (e.g. categories 21, 22, which visibly depart from the other distributions). We next quantified, for each region, its distribution of functional categories, and found a difference in regional distributions of functional cell types between regions. Different regions have different levels of ``specialization'' (Fig.~\ref{fig:anatomy_function}g): some regions contain a peaky distribution of functional categories, so are specialists (e.g. PA, MOB, MEA), while others are generalists with a relatively equal distribution of cells across functional categories (e.g. MRN, PRNr, SCm; see all regions in Fig.~\ref{fig:regional_cluster_composition}). We cross-checked our measure of specialization based on our unsupervised functional categories with an estimate of specialization based on decoding specific variables (results from \cite{international2025brain}) and found a strong correlation (Fig.~\ref{fig:anatomy_function}j) with lower overall specialization through decoding but a similar tail (Fig.~\ref{fig:anatomy_function}h). Overall, subcortical regions including midbrain (pink, e.g. MRN) and hindbrain (orange, e.g. PRNr) tend to exhibit lower specialization (Fig.~\ref{fig:anatomy_function}i), while those with high specialization tend to be cortical (green, e.g. MOB), earth-mover distance 0.041 between the two distributions (also see Fig.\ref{fig:cortical_subcortical_specialization} for an alternative statistical quantification of the cortical/sub-cortical divide). We found no other simple relationship between commonly defined brain axes or partitions and specialization, or when we overlay the specialization scores onto the Swanson map (adapted by \cite{international2025brain} from \cite{swanson2020qualitative}), which showed that specialization does not co-cluster with Cosmos level. To compare these results to the conventional view that lower brain regions are more functionally specialized while higher brain regions are generalists, we directly plot functional specialization scores against a structural hierarchy score obtained for a subset of brain regions via tract-tracing (Fig.~6d in \cite{harris2019hierarchical}). We found that structural hierarchy and specialization are not significantly related, regardless of specialization metric  (Fig.~\ref{fig:specialization_metrics}a,c). Thus, we do not find that there is a relationship between regional hierarchy level and the diversity of functional response types contained in the region. 
+
+Next, inspired by fMRI studies that investigate functional networks in mouse brain \cite{fmri_Tsurugizawa2020, fmri_Zerbi2015, fmri_Grandjean2020, fmri_Gutierrez-Barragan2022, hike2025high, fmri_Vafaii2024, whitesell2021regional, fmri_Sforazzini2014, fmri_Bukhari2017, fmri_Grandjean2017}, we applied multi-region functional graph analysis methodologies to generate maps of cross-brain correlation during different phases of the task. We defined a similarity score $S_{ij}$ of neural activity in Beryl regions $i$ and $j$, computed as the cosine similarity between 2D embeddings of neural response features (Fig.~\ref{fig:functional_networks}a) in a particular task phase and condition. By applying Louvain community detection to the resulting similarity matrices in selected task phases (i.e. subsets of PETHs, see SI for definition), we identified non-orthogonal functional similarity subnetworks to reconfigure between task phases and conditions (Fig.~\ref{fig:functional_networks}b-e, details in SI). 
+When we correlated key fMRI-defined functional networks in the mouse brain (such as the default mode network and the sensory mode network; see SI for details) with the functional similarity subnetworks we identified, we found little overlap between fMRI-defined anatomical networks and our functional maps (Fig.~\ref{fig:functional_networks}g). Despite the reconfiguration of functional subnetworks across task phases, one division of subnetwork compositions remained consistent across tasks phases: a cortical-subcortical functional division in the form of a two-block structure in the subnetwork similarity matrix (Fig.~\ref{fig:functional_networks}f). This result reinforces our above finding of a cortical-subcortical division in functional responses (also see \ref{fig:cortical_subcortical_specialization}). 
+
+In sum, despite finding clear functional response categories from the level of neural populations down to single neurons, we find low to no regional localization. Cells performing all functions are nearly homogeneously distributed across the brain, with at most a cortical-subcortical distinction, consistent with the existence of distinct but intermingled functional subcircuits within an area, sometimes characterized by genetically defined cell differences or different projection targets or inputs \cite{kaplan2025sensory, benavidez2021organization, kannan2022dual}. 
+
+Overall, these findings and the changing functional coalitions are consistent with the compute-broadcast-select view of computation in the brain where different neurons in a region participate in different processing loops involving various brain regions, gating and selecting the broadcast inputs they receive, and helping determine the functional allegiance of the region based on relative subnetwork activation in a given task phase. 
+
+
+\FloatBarrier
+\begin{figure}
+%\begin{fullwidth}
+\includegraphics[width=\linewidth]{figures/anatomy_function_correspondence.pdf}
+\caption{ \textbf{Low functional and anatomical co-correspondence except strong cortical-subcortical division.} 
+\textbf{a} Response vectors sorted by similarity (rastermap) overlaid with anatomical region colors (Beryl) does not correspond beyond a weak green (cortex, hippocampus) and pink (thalamus, hindbrain, midbrain) divide.
+%
+\textbf{b} Response vectors sorted by anatomical region overlaid with anatomical region colors (Beryl) suggests the presence of most response patterns in most regions, however no more visible functional fine structure.
+%
+\textbf{c} Response vectors for 6 example regions (CP, caudoputamen; MRN, midbrain reticular nucleus; ZI, zona incerta; MOp, primary motor area; CA1, hippocampal field CA1; CUL4,5, cerebellar culmen lobules IV–V), sorted by similarity and overlaid by rastermap cluster colors, showing all main response patterns in each region.  
+%
+\textbf{d} 2D embedding (UMAP) of response vectors colored by anatomical region (Beryl) does not show much correspondence beyond a green (cortex) and pink (midbrain/hindbrain) divide, while the 3D positions of the cells in anatomical space match the anatomical region colors by definition (small point cloud).  
+% 
+\textbf{e} 3D positions of the cells in anatomical space (small point cloud), colored by functional cluster (25 k-means) shows no correspondence, while the 2D embedding (UMAP) of response vectors is visibly divided by functional cluster colors. 
+% 
+\textbf{f} Regional composition of each functional cluster group of neurons, pie charts sorted canonically, shows that all functional clusters contain most regions with only few outliers such as cluster 21. Wedges are region counts normalized by each region's total neuron count; the 5 largest wedges are labeled in each (outlined in white), with label size scaling with wedge size. Colors are Allen atlas colors of the Beryl regions, so regions of the same larger division share a color.
+% 
+\textbf{g} Regions differ by specialization. Counts of cells across functional clusters (k-means) for 4 example regions with the least flat distribution (highest specialization) and the 4 most flat ones. See Fig.~\ref{fig:regional_cluster_composition} for all regions. 
+% 
+\textbf{h} Distribution of specialization scores based on k-means cluster counts across all regions, next to the distribution of specialization scores based on decoding of 4 main IBL variables (results from \cite{international2025brain}). Specialization via both methods correlate strongly across regions, see j.
+% 
+\textbf{i} No clear correspondence between specialization scores (left) and anatomical partition (right); Swanson flatmap. 
+% 
+\textbf{j} The k-means specialization score (with 25 k-means clusters) correlates strongly with a decoding-based specialization score (log--log axes; the 8 example regions of g are labeled).
+% 
+}
+\label{fig:anatomy_function}
+%\end{fullwidth}
+\end{figure}
+
+\FloatBarrier
+
+\subsection{Structured, not random, mixed selectivity at the single-neuron level}
+
+A prominent hypothesis holds that neurons in association cortex encode random mixtures of task-relevant variables — a property termed random mixed selectivity and motivated by recordings in prefrontal cortex showing that individual neurons responded to conjunctions of multiple task variables rather than single variables in isolation\cite{rigotti2013importance}. The theoretical appeal is that random, high-dimensional representations maximize the number of possible linear readouts, thereby supporting flexible behavior in novel task contexts\cite{fusi2016neurons, bernardi2020geometry}. Despite the influence of this idea, a direct test of the independence assumption — against an appropriate null model, and across the brain rather than within a single area — has not previously been performed. The random hypothesis would predict that the features a neuron combines are statistically independent, so that knowing a neuron encodes stimulus identity provides no information about whether it also encodes choice, feedback, or prior expectation. 
+
+The combination of interpretable functional categories per neuron (Fig.~\ref{fig:functional_response_structure}a-c) with brain-wide coverage and large neuron counts places us in a position to perform such a test. We constructed a set of 100 prototype response vectors by k-means clustering of the feature vectors and averaging across cluster (Fig.~\ref{fig:prototype_vectors}, and see methods), then projected each neuron's response onto this prototype basis to obtain a 100-dimensional coefficient vector per cell — a compact description of how each neuron combines the identified functional motifs. If mixed selectivity is near-random, these coefficients should be statistically independent across neurons, conditioned on their marginal distributions. 
+
+The data clearly violate this prediction: The ordered coefficient matrix, where rows are neurons (ordered by the canonical rastermap ordering) and columns are coefficients (hierarchically ordered based on the Pearson correlation of the 50k-dimensional columns),  exhibits prominent block structure, with consecutive groups of neurons sharing highly correlated coefficient profiles (Fig.~\ref{fig:mixed_selectivity}a); we can also see this in the structured nature of the (z-scored) coefficient correlation matrix (Fig.~\ref{fig:mixed_selectivity}b) and the observation that specific features consistently co-occur across neurons in neural groupings (Fig.~\ref{fig:mixed_selectivity}c). Fig.~\ref{fig:prototype_vectors} allows to coarsely interpret the co-occurring response categories: coefficients 2-19 strongly co-occur in neurons, mixing primarily choice-related accelerating upward ramps with change-related signals (2,13) and movement-initiation signals (4,11). Coefficients 19-38 strongly co-occur in neurons, mixing primarily movement with quiescence, mistake, and both types of feedback. Neurons mix coefficients 43-47, corresponding to a mixture of block coding with correct feedback. And neurons mix coefficients 50-79, combining narrow activation peaks at different delays (corresponding to fixed-latency localized firing as for sequences) with some linear downward ramping towards movement onset. Finally, coefficients 80-100 form a  weaker grouping, and consist of sensory onset coding together with movement decision signals (peaking shortly before movement, but decaying strongly into movement). 
+
+To ensure that this structure is not inherited from differences in the marginal distributions for each coefficient, we constructed a null model that preserves the marginal statistics (and thus overall prevalence of each functional feature across the population; Fig.~\ref{fig:mixed_selectivity}d, green) of the coefficients, but destroys the joint structure between coefficients. Specifically, we generated ~50,000 synthetic neurons by sampling coefficients independently from the marginals. The resulting synthetic coefficient vectors (Fig.~\ref{fig:mixed_selectivity}e, sorted as panel a) entirely lack the diversity and block structure of the data (Fig.~\ref{fig:mixed_selectivity}a), even though the synthetic population's sampled marginal coefficients nearly exactly match the data's coefficient marginals (Fig.~\ref{fig:mixed_selectivity}d, black). Vertical bands in the coefficient matrix reflect differences in the marginal distributions for different coefficients. The coefficient and neuron-neuron correlation matrices (z-scored) reflect the lack of structure in the null model (Fig.~\ref{fig:mixed_selectivity}f-g).
+
+To verify that the prototype basis of the generative model used in our null model is rich enough to reproduce neural responses, we used it to reconstruct real neural responses from their prototype coefficients (Fig.~\ref{fig:mixed_selectivity}h, left). This confirms that the failure of the null model to match the data (Fig.~\ref{fig:mixed_selectivity}e-g, h, right) is due to the departure of data from the independence assumption, rather than an impoverished basis set.
+
+We quantify these results by the distribution of the first principal component of the neural coefficient vector across neurons and synthetic neurons. There is a large difference in these distributions, with a much larger width of the natural distribution compared to the synthetic one (Fig.~\ref{fig:mixed_selectivity}i; earth-mover distance, EMD=0.14), reflecting the much greater diversity of cellular responses in neurons relative to the randomly generated synthetic neurons. Together, these results argue against random mixed selectivity as a general principle of neural coding, at least in the context of a well-learned task.
+
+Finally, though neurons combine features in diverse but structured ways, the spatial distribution of neural features across brain regions is quantifiably much closer to random. The distribution across Beryl regions of the first principal component of the neural coefficient vectors within each region is similar to the distribution when we construct mock Beryl regions by shuffling neurons between them (Fig.~\ref{fig:mixed_selectivity}j, EMD 0.0275; the mock regions have the same neural partition sizes as the Beryl regions). Thus, the distribution across Beryl regions is much more similar to its null distribution than the distribution of single neuron responses is to its null. The Beryl distribution can also be compared to the same distribution constructed for functionally clustered neural groupings rather than Beryl groupings, reflecting the high similarity of functionally grouped neurons (Fig.~\ref{fig:mixed_selectivity}k, EMD 0.337). All the above results are qualitatively unchanged if we vary the number of prototype features being considered from 100 to 40 (Fig.~\ref{fig:mixed_selectivity_k40}).  
+
+These results reveal a striking dissociation across representational levels in the brain. At the single-neuron level, selectivity is diverse but structured: neurons combine specific features in highly correlated functional groupings and we find little evidence of random mixed selectivity as a general property of representation in neurons. At the regional level, these structured functional neuron types are distributed across the brain in proportions close to what random allocation would produce. The implication is that the brain's computational architecture is organized around stable, non-random functional motifs that are homogeneously dispersed across regions, consistent with the anatomical analyses of the preceding section and with the compute-and-broadcast model.
+
+\begin{figure}
+\includegraphics[width=\linewidth]{figures/structured_mixed_selectivity.pdf}
+\caption{\textbf{Structured, non-random selectivity at the cellular level with random distributions at the regional level.} \textbf{a} Projection coefficients $\alpha$ of $\sim$50{,}000 neurons onto 100 k-means cluster-average response vectors (coefficients sorted hierarchically based on their Pearson correlation matrix; this sorting is used across all relevant panels in this figure; neurons sorted by RM sorting, same as Fig. \ref{fig:functional_response_structure}f). The coefficients reveal strong structure and correlations across neurons. \textbf{b} Correlation matrix of the 100 coefficients across neurons highlights pronounced dependencies, indicating clustering into discrete response types. \textbf{c} Correlation matrix of a randomly sampled subset of 2000 neurons (retaining their ordering from a)).  
+\textbf{d} Empirical coefficient distributions (green) closely match those of synthetic neurons (black) constructed to preserve marginal statistics. \textbf{e} Synthetic neurons' coefficient matrix, generated by independently sampling coefficient distributions, exhibit weak correlations. \textbf{f} Corresponding correlation matrix confirms the absence of higher-order dependencies by construction. \textbf{g} Subset of 2000 synthetic neurons likewise shows minimal structure. \textbf{h} Left, Rastermap-sorted response vectors reconstructed from real coefficients reproduce structured activity patterns; right, synthetic reconstructions sorted by Rastermap lack structure. \textbf{i} Neural response diversity quantified by the distribution of loadings along the first PC (PC0) of the coefficients of real (black) and synthetic (orange) neurons. \textbf{j} Regional response diversity quantified by standard error of coefficients along first PC, within anatomical region groups (Beryl) and random allocations of neurons to groups of the same sizes as the Beryl regions. \textbf{k} Distributions of standard error of coefficients along first PC, for neurons within Beryl regions versus neurons within functional groups (100 k-means clusters): functional diversity is much lower within functional than anatomical groups.}
+\label{fig:mixed_selectivity}
+\end{figure}
+
+\FloatBarrier
+
+
+\section{Discussion}
+
+% Opening: the conceptual advance
+The combination of brain-wide cellular-resolution recordings with a behaviorally rich task structure has allowed us to characterize the functional identity of $\sim$50,000 individual neurons and examine how these identities are organized across the mouse brain. Three findings, taken together, challenge the prevailing staged model of brain computation and point toward a broadcast architecture structured by internally generated sequential activity.
+
+% Functional categories: interpretable, stable, and specialization
+First, unsupervised clustering reveals that individual neurons fall into distinct and interpretable functional categories, each dominated by a specific aspect of the task: stimulus detection, evidence integration, movement initiation, movement execution, feedback processing, or representation of internal states such as block prior and prediction error. Ordering neurons by the similarity of their responses reveals the temporal arc of these computations at cellular resolution --- distinct populations transiently activate to process one aspect of the task, then yield to the next, from stored expectations through perception, decision, and action. Importantly, most individual neurons are dominated by selectivity to a single sub-function within the task rather than exhibiting the broad, heterogeneous tuning often attributed to neurons in association cortex.
+
+% Mixed selectivity: structured, not random
+This observation bears directly on the mixed selectivity hypothesis. Although neurons do combine features, they do so in highly structured, correlated groupings that depart dramatically from the independence predicted by the random mixed selectivity model \cite{rigotti2013importance, fusi2016neurons, bernardi2020geometry}. Our null model --- which preserves the marginal prevalence of each feature but destroys their joint structure --- produces a homogeneous, low-diversity population that is a poor match to the data. Thus, whatever mixing occurs is constrained and specific, not random. One possibility is that the structured co-occurrences we observe reflect the consolidation of task-relevant feature bindings through learning: early in training, representations may be more randomly mixed to support flexible readout, with experience gradually sculpting the correlated groupings we observe in expert animals. This prediction could be tested by applying the same analyses to recordings obtained at earlier stages of training.
+
+% Spatial organization: broadcast, not staged
+Second, despite clear functional specialization at the cellular level, neurons belonging to a given functional category are widely dispersed across brain regions, and each region contains cells spanning nearly the full repertoire of response types. There is thus a bidirectionally low co-correspondence between function and anatomy. The result implies that individual brain regions are not unitary computational modules: each houses multiple local circuits participating in distinct computations, with a given circuit potentially more strongly interconnected with partner sub-circuits in distant regions than with neighboring neurons in the same anatomical region. The computational unit, in this view, is the distributed loop --- in the form of cross-regional sub-circuit partnerships --- rather than the anatomical region \cite{pessoa2022entangled, wagner2020neocortex, hayden2025rethinking}. This view is entirely consistent with the recent understanding of the astonishing diversity of cell types in terms of morphology, connectivity, and gene expression within each region \cite{kaplan2025hypothalamic,gamlin2025sst,patino2024cortical,shainer2025tectum,gao2026projectomes,scala2021motor}. To this emerging picture, our data add direct functional evidence at single-neuron resolution across the brain that the outputs of these loops are present nearly homogeneously in all regions, as expected if broadcast is continuous and global.
+
+These results extend earlier large-scale electrophysiology studies with substantially greater anatomical sampling. Steinmetz et al.\cite{steinmetz2019distributed} sampled neurons across 42 brain regions under the Beryl parcellation during a similar task, concluding that there were separated representations in different regions. By contrast, the present Brain-Wide Map spans 279 Beryl regions. This increase in coverage makes it possible to detect sparsely distributed functional populations that smaller datasets may undersample. For example, some regions previously appeared to contain no choice-related neurons, whereas in the present dataset choice-related responses are detected much more broadly. We therefore interpret these differences not as a contradiction of earlier findings, but as a consequence of increased sampling density and anatomical coverage: more comprehensive brain-wide datasets can reveal qualitatively new organizational structure that is inaccessible at smaller scale.
+
+% Note that disperse responses don't establish distributed generation
+We note that the observation that functional responses are dispersed does not establish that they are generated in a distributed way. It remains possible, and in our opinion likely, that specific computations may originate in specific local circuits and are then broadcast for downstream use \cite{macdowell2025multiplexed}. Distinguishing broadcast of locally generated signals from distributed computation will require perturbation experiments that selectively silence candidate generator circuits while monitoring brain-wide responses.
+
+% Cortical vs. subcortical
+The primary regional distinction we found was between cortical and subcortical processing. Integration, choice, and motor initiation are dominated by subcortical neurons, suggesting that for expert performance on a well-learned task, subcortical circuits may carry much of the computational load. This is consistent with the general principle that extensively practiced behaviors progressively become more subcortically controlled \cite{dhawale2019basal, yin2006role, murray2020remembrance} though we cannot rule out a continued cortical role that is masked by redundancy or by the correlational nature of our analyses. Whether the cortical-subcortical balance shifts during learning --- with cortex playing a larger role during initial acquisition --- is an important question for future work. Simpler processing differences between cortical and subcortical populations, such as blood volume and a type of whisker correlation \cite{landemard2026brainwide} may explain the divide independent of learning.
+
+% Finer regional structure and networks
+Despite the overall homogeneity of functional types across regions, some finer regional structure is present. Regions differ in the degree of functional specialization, with some (e.g., PA, MOB, MEA) exhibiting peaked distributions of functional categories and others (e.g., MRN, PRNr, SCm) containing a nearly uniform mix. However, we found no relationship between these distributional specializations and previously defined anatomical hierarchy scores. Examining co-active regions within each task phase revealed distinct patterns of inter-regional correlation that reconfigure rapidly as different computations unfold. These emergent phase-specific functional similarity networks reinforce the cortical-subcortical distinction seen throughout this work, and form a detailed atlas for future studies of brain-wide coordination. Their relatively weak overlap with fMRI-derived brain networks likely reflects fundamental methodological differences. These include 
+large differences in the measurement modality (neural activity versus blood flow), spatiotemporal resolution (millisecond-scale single-cell spiking versus second-scale population responses), and spatial coverage in terms of number of subcortical regions. The divergence warrants further cross-modal investigation, including across tasks, recording techniques, and species. 
+
+% mixed selectivity and spatial distribution: overtrained
+One caveat of our study is that it is focused on highly trained mice. It is possible that random mixed selectivity exists during initial learning,  when flexible readout of novel feature combinations is at a premium, and that the structured co-occurrences we observe reflect the consolidation of task-relevant feature bindings through experience. This possibility could be tested by examining neural responses at earlier stages of training. Additionally, it is possible that our finding of spatially distributed representations is related to the fact that mice have less-specialized brain structures relative to primates \cite{kanwisher1997fusiform, huth2016natural}. Large-scale recordings in macaques will help to address this question. 
+
+% Sequences: a dominant mode 
+Third, and most striking, one of the largest fractions of brain-wide neural activity during the task consists not of sensory or decision-related signals, but of internally generated temporal sequences. These sequences tile each trial with sparse, precisely timed activation, maintaining near-constant summed population activity --- a motif shared with hippocampal time cells \cite{Pastalkova2008, macdonald2011hippocampal} and HVC premotor neurons in the songbird \cite{Hahnloser2002, Lynch2016}. They share a common backbone across trial conditions but carry graded contextual information, discriminating hierarchically between surprise and non-surprise conditions and further between individual trial types. Their disproportionate hippocampal and entorhinal involvement suggests they may originate in the hippocampal complex \cite{macdonald2011hippocampal, mishchanchuk2024hidden} and be broadcast brain-wide, consistent with the architectural principles outlined above. That internally generated sequential activity dominates over sensory-driven signals and is comparable to movement-related signals, which themselves have only recently been recognized as widespread \cite{musall2019single, stringer2019spontaneous}, reframes the hierarchy of brain-wide neural dynamics: the cognitive or internal states of the brain account for one of the largest shares of neural variance in expert animals performing a well-learned task.
+
+% SWR comparison
+The brain-wide sequences we report invite comparison with sharp-wave ripple (SWR)-associated replay, the best-characterized form of neural sequences in the mammalian brain. Both phenomena involve hippocampal-entorhinal circuits and both propagate activity to distributed brain regions \cite{Logothetis2012, Nitzan2022, Joo2018}. However, the two differ in several fundamental respects. SWR sequences occur during quiescence, slow-wave sleep, and immobility --- offline states in which the hippocampus is thought to consolidate or plan by reactivating compressed representations of past or future trajectories \cite{Foster2006, Diba2007, Pfeiffer2013}. The sequences we observe unfold during active task engagement, spanning the full interval from trial onset to movement at the timescale of the unfolding cognitive process itself. SWR content typically recapitulates or recombines spatial trajectories from prior experience; our sequences tile trial time de novo on each trial, with a fixed backbone modulated by current context. SWRs are discrete, intermittent events at variable times; our sequences are time-locked to trial onset and present on every trial. 
+
+These distinctions suggest a complementary function. While SWR sequences operate offline to consolidate, evaluate, or plan, the trial-locked sequences we observe may provide an online temporal scaffold --- an internally generated coordinate system that indexes time and context during ongoing experience. This interpretation is consistent with data showing that entorhinal and hippocampal representations tile traversals through abstract spaces \cite{Pastalkova2008, aronov2017mapping, behrens2018cognitive, killian2012map}, and with proposals that hippocampal circuits generate temporal frameworks to organize experience \cite{Eichenbaum2014, Tsao2018, chandra2025episodic}. Our findings extend these proposals by showing that the resulting scaffold is broadcast brain-wide, potentially providing a common temporal reference frame for distributed computations. Whether online sequences and offline SWR replay draw on overlapping or distinct circuit mechanisms --- and whether the same neurons participate in both --- remains open for future investigation.
+
+% Limitations
+Several limitations should be noted. Our analyses are based on a single task in expert animals; the balance between functional categories, the prevalence of sequential activity, and the degree of regional homogeneity may all differ during learning, in naive animals, or in tasks engaging different cognitive demands. Recordings are restricted to the left hemisphere, so we cannot assess inter-hemispheric organization. Our conclusions are correlational: establishing causal roles for the identified functional categories, and distinguishing local generation from broadcast reception, will require targeted perturbation experiments. Finally, though the supersession approach provides unprecedented brain-wide coverage at cellular resolution, it relies on alignment across animals performing an identical task, and may miss idiosyncratic or animal-specific response patterns.
+
+% Closing
+Together, these findings suggest a revised architecture of brain computation: non-random, interpretable selectivity at the level of single neurons; sub-regional circuits organized into distributed, cross-regional loops that continuously broadcast their outputs brain-wide; and, dominating all other modes of neural activity, internally generated temporal sequences that may scaffold the brain's representation of time and context during ongoing experience.
+
+
+\section{Methods and Materials}
+
+\subsection{Data and task}
+We analyzed the brain wide map dataset of the international brain laboratory (IBL), consisting of recordings from 139 mice in 12 labs performing a decision-making task with sensory, motor, and cognitive components, obtained with 699 Neuropixels probe insertions covering 279 brain areas (Fig.~\ref{fig:recorded_regions_tree}) in the left forebrain and midbrain and the right hindbrain and cerebellum, including dense sampling across multiple primary visual cortical areas (e.g., VISp and higher-order visual areas; see Tab.\ref{tab:visual_regions} and \cite{IBLRegionInfo} for the full table). The dataset is publicly available (download \href{https://int-brain-lab.github.io/iblenv/notebooks_external/data_release_brain-widemap.html}{instructions}; data browsing online tool at \url{https://viz.internationalbrainlab.org}) with full details here\cite{international2025brain}. Find also information about histologically obtained anatomical coordinates there.
+
+The International Brain Laboratory (IBL) decision-making task\cite{laboratory2021standardized} is such that on each trial, a visual stimulus appeared on the left or right on a screen, and the mouse had to move it to the center by turning a wheel with its front paws within 60 seconds. The prior probability for the stimulus to appear on the left/right side was constant over a block of trials, at  20/80\% (right block) or 80/20\% (left block). Blocks lasted for between 20 and 100 trials, drawn from a truncated geometric distribution (mean 51 trials). Block changes were not cued. Stimulus contrast was sampled uniformly from five possible values (100, 25, 12.5, 6.25, and 0\%). The 0\% contrast trials, when no stimulus was presented, were assigned to a left or right side following the probability distribution of the block, allowing mice to perform above chance by incorporating this prior in their choices.  Following a wheel turn, mice received positive feedback in the form of a water reward, or negative feedback in the form of a white noise pulse and a \SI{2}{\second} time-out. The next trial began after a delay, followed by a quiescence period during which the mice had to hold the wheel still. Movement onset is defined as the earliest statistically significant deflection of the steering wheel after the go cue, exceeding an empirical fixed threshold in any direction\cite{laboratory2021standardized}.
+
+Anatomical locations were assigned using the Allen Mouse Common Coordinate
+Framework (CCFv3), a three-dimensional reference atlas and ontology of the
+adult mouse brain \citep{Wang2020AllenCCF}. We performed most regional analyses
+using the IBL Beryl mapping, an intermediate-resolution remapping of Allen CCF
+regions into 308 anatomical groups, introduced for IBL brain-wide electrophysiology
+analyses to reduce fragmentation of the full Allen ontology while preserving
+regional specificity. Beryl regions are mainly defined at the level of major
+cortical areas, nuclei, and ganglia, omitting finer laminar and nuclear
+subdivisions. For coarser anatomical classification, we used the IBL Cosmos
+mapping, which groups Allen regions into broad anatomical divisions and was used
+here to define cortical and subcortical classes. For flatmap visualization, we
+used the Swanson mapping, which relates Allen/IBL regions to the Swanson
+anatomical hierarchy and flatmap representation \citep{Swanson2004BrainMaps,
+Swanson2018BrainMaps}.
+
+\subsection{Peri-event time histograms (PETHs)}
+We binned spiking activity of neurons during trials declared as "good" as in\cite{international2025brain} with
+time bins of length 12.5~ms, and stride 2~ms. See data loading functions \texttt{load\_good\_units} for neural data and \texttt{load\_trials\_and\_mask} for trial data in \href{https://github.com/int-brain-lab/paper-brain-wide-map/blob/main/brain-widemap/bwm_loading.py}{\texttt{bwm\_loading.py}}. We decided to choose a set of 21 PETH types (Tab.\ref{tab1}) such that a balance is struck between maximizing trial-specific information while keeping as many sessions as possible. I.e. too specific PETH criteria are satisfied by too few sessions. Our choice, with the additional requirement of at least 10 trials for all PETH types, resulted in 569 unique insertions being included in the analysis and grouped together, each neuron being described by a functional feature vector of all 21 PETHs concatenated together, then z-scored to homogenize differences in baseline activity. We used 54719 neurons in the single cell analyses and 160 regions, when restricting to regions with at least 50 neurons, in the regional analyses, and excluding cells that have zero firing rate across all PETHs. 
+
+\FloatBarrier
+\begin{table}[h!]
+\centering
+\caption{\textbf{PETH definitions} Each PETH is defined by an alignment event, the trials to average, and the window. The two times in the window are relative to the alignment event, with positive values if after the event and negative values if before the event. "Block change" indicates trials within 3 trials of a block switch. "Deep block" indicates averaged trials must be at least 3 trials after a block change.}
+\label{tab1}
+\begin{tabular}{|l|l|l|l|}
+\hline
+\textbf{Name} & \textbf{Alignment Event} & \textbf{Trial Types to Average} & \textbf{Window (s)} \\ \hline
+\textup{rest} & stimOn\_times & All trials & -1.15 to -1 \\ \hline
+$\mathrm{L_b}$ & stimOn\_times & ProbabilityLeft = 0.8 (block left) & -0.4 to -0.1 \\ \hline
+$\mathrm{R_b}$ & stimOn\_times & ProbabilityLeft = 0.2 (block right) & -0.4 to -0.1 \\ \hline
+\textup{quies} & stimOn\_times & All trials & -0.4 to -0.1 \\ \hline
+$\mathrm{change_b,s}$ & stimOn\_times & All trials within 3 trials of a block change & 0 to 0.15 \\ \hline
+$\mathrm{L_{s}L_{c}L_{b},s}$ & stimOn\_times & Stim left, choice left, block left, deep block & 0 to 0.15 \\ \hline
+$\mathrm{L_{s}L_{c}R_{b},s}$ & stimOn\_times & Stim left, choice left, block right, deep block & 0 to 0.15 \\ \hline
+$\mathrm{R_{s}R_{c}R_{b},s}$ & stimOn\_times & Stim right, choice right, block right, deep block & 0 to 0.15 \\ \hline
+$\mathrm{R_{s}R_{c}L_{b},s}$ & stimOn\_times & Stim right, choice right, block left, deep block & 0 to 0.15 \\ \hline
+$\mathrm{mistake,s}$ & stimOn\_times & All 4 mistake types & 0 to 0.15 \\ \hline
+\textup{m} & firstMovement\_times & All trials & -0.15 to 0 \\ \hline
+$\mathrm{change_b,m}$ & firstMovement\_times & All trials within 3 trials of a block change & -0.15 to 0 \\ \hline
+$\mathrm{L_{s}L_{c}L_{b},m}$ & firstMovement\_times & Stim left, choice left, block left & -0.15 to 0 \\ \hline
+$\mathrm{L_{s}L_{c}R_{b},m}$ & firstMovement\_times & Stim left, choice left, block right & -0.15 to 0 \\ \hline
+$\mathrm{R_{s}R_{c}R_{b},m}$ & firstMovement\_times & Stim right, choice right, block right & -0.15 to 0 \\ \hline
+$\mathrm{R_{s}R_{c}L_{b},m}$ & firstMovement\_times & Stim right, choice right, block left & -0.15 to 0 \\ \hline
+$\mathrm{mistake,m}$ & firstMovement\_times & All 4 mistake types & -0.15 to 0 \\ \hline
+$\mathrm{L_{move}}$ & firstMovement\_times & Choice left & 0 to 0.15 \\ \hline
+$\mathrm{R_{move}}$ & firstMovement\_times & Choice right & 0 to 0.15 \\ \hline
+\textup{feedbk1} & feedback\_times & Positive feedback & 0 to 0.3 \\ \hline
+\textup{feedbk0} & feedback\_times & Negative feedback & 0 to 0.3 \\ \hline
+\end{tabular}
+\end{table}
+\FloatBarrier
+
+\subsection{Umap and rastermap embeddings}
+
+We embedded the 50 k cells' feature vectors (concatenated PETHs, 1872 time bins in total) in 2 dimensions using \verb|umap.UMAP| \verb|(n_neighbors=15, n_components=2)|\cite{mcinnes2018umap} implemented in python.
+
+The Rastermap algorithm\cite{stringer2024rastermap} was used in python to sort the 50 k feature vectors by similarity, using these parameters:
+\verb|Rastermap(n_PCs=200, n_clusters=100, locality=0.75, grid_upsample=0, time_lag_window=5, bin_size=1)|. We visualized the sorted vectors using  
+\verb|matplotlib.imshow(data, vmin=0, vmax=1.5, cmap="gray_r", aspect="auto")|. Find the full implementation here \cite{bwm-dmn}.
+
+\subsection{Cross-validation on rastermap}
+To assess the robustness of neural population structure, we implemented an odd/even trial split cross-validation procedure (Fig.~\ref{fig:rastermap_cross_validation}). Within each trial type and time window, odd-numbered trials were designated as the train set and even-numbered trials as the test set. Trial data within each set were trial-averaged and concatenated following the same procedure described above. The rastermap algorithm (\cite{stringer2024rastermap}) was applied to the train set feature vectors to obtain 100 clusters and a sorting of all ~50,000 cells, placing similar cells next to each other. The resulting cell ordering was then used to arrange and visualize the test set feature vectors (Fig.~\ref{fig:functional_response_structure}f), providing an independent assessment of the spatial and temporal structure identified during training.
+
+\subsection{Definition of sequence neurons and other functional types}
+Functional neuron groups were defined based on their rastermap cluster assignments (Fig.~\ref{fig:rastermap_categories}). We observe a population of 'sequence neurons' that exhibit consistent but faint sequential activity across all stimulus-onset–aligned PETH trial types in the independent test set raster plot (including  $\mathrm{change_{b},s}$, $\mathrm{L_{s}L_{c}L_{b},s}$, $\mathrm{L_{s}L_{c}R_{b},s}$, $\mathrm{R_{s}R_{c}R_{b},s}$, $\mathrm{R_{s}R_{c}L_{b},s}$, $\mathrm{mistake, s}$), and they roughly correspond to the cells exhibiting prominent diagonal stripe patterns observed in the train set (Fig.~\ref{fig:rastermap_cross_validation}). Therefore, we used these ‘diagonal stripe’ cells in the train set raster to identify the clusters associated with the faint sequences for analysis (clusters 5-7, 11–20, 45–54, 56–59, in Fig.~\ref{fig:rastermap_categories}). Stimulus and integrator neurons were identified as cells belonging to cluster 4, and clusters 1-3 and 38, respectively. Movement initiation neurons are in clusters 10, 32, 34-37, 39, 41-42, and 61; movement neurons are in clusters 72-75. Feedback neurons are in clusters 64-66, 78-82, 89, 94-95, and 97. There is an additional group of neurons that activates for both feedback and movement, identified in clusters 0, 62-63, 67-68, 70-71, 76-77, 83-88, 90, and 96.
+
+\subsection{Time–time correlation analysis}
+We performed time–time correlation analyses on sequence and stimulus+integrator neuron groups, exclusively on the test set. For within-condition analyses, we extracted the neurons $\times$ time-bins data segment for each stimulus-onset–aligned trial type and computed pairwise Pearson correlations between all time-bin columns (\texttt{numpy.corrcoef} with \texttt{rowvar=False}), yielding a bins $\times$ bins matrix that captures the temporal structure of population co-fluctuations. Time bins exhibiting zero variance or non-finite values were masked prior to computation. As a shuffle control, this procedure was repeated after randomly permuting all columns of the PETH matrix independently within each stimulus-onset-aligned trial type and re-applying rastermap sorting algorithm with cross-validation (i.e. applying the algorithm on the train set of trials and using the resulting ordering on the test set of trials). A condition-averaged autocorrelation matrix was additionally computed by averaging PETH segments across conditions before calculating bin-by-bin correlations. All resulting matrices were displayed as heatmaps with the diagonal zeroed.
+
+To characterize the full cross-condition temporal correlation structure, we performed a concatenated bin-by-bin correlation analysis. The PETH matrices across all stimulus-onset–aligned trial types were concatenated along the time axis (neurons $\times$ total bins), and Pearson correlation coefficients were computed for every pair of time bins in this concatenated matrix (\texttt{numpy.corrcoef} with \texttt{rowvar=False}). The resulting (total bins) $\times$ (total bins) matrix captures both within-condition temporal autocorrelation (on-diagonal blocks) and between-condition temporal cross-correlation (off-diagonal blocks). Time bins with zero variance or non-finite values were masked. A shuffle control was performed by independently permuting the rows within each condition segment independently prior to concatenation, and re-applying rastermap sorting with cross-validation. The resulting matrices were displayed as heatmaps (diagonal zeroed) with condition boundaries indicated by thin black lines and condition labels at block centers. To enhance visibility of weak but structured off-diagonal correlations, a symmetric logarithmic color scale was applied (SymLogNorm, linear threshold = 0.05, base 10), compressing near-zero dynamic range while preserving the sign and relative magnitude of stronger correlations.
+
+\subsection{Overall cross-condition correlation}
+To quantify global similarity between population activity patterns across conditions, we computed pairwise Pearson correlations between all condition pairs by flattening each condition's PETH segment (neurons $\times$ bins) into a single vector and correlating these vectors across all pairs. Statistical significance was assessed via permutation test (1,000 iterations): for each condition pair, the neuron rows of one condition's segment were randomly permuted to generate a null distribution of correlation values, and two-sided p-values were computed as the fraction of null correlations with absolute value at least as large as the observed value, $p=(1 + \mathrm{count}) / (1,000 + 1)$. The resulting cross-condition correlation matrix is displayed as a heatmap with the diagonal zeroed; all off-diagonal entries reach statistical significance at p < 0.01. This analysis was performed on the test set only.
+
+\subsection{Two-dimensional cross-correlogram across trial types}
+To jointly characterize the spatial (neuron-axis) and temporal (time-bin-axis) similarity of population activity patterns across conditions, we computed two-dimensional cross-correlograms between all pairs of stimulus-onset–aligned PETH segments. Each PETH matrix (neurons $\times$ time bins) was treated as a two-dimensional image, mean-subtracted, and smoothed with a 2D Gaussian filter (sigma = 1 along the neuron axis, sigma = 2 along the time-bin axis). Cross-correlations between all condition pairs were computed via FFT-based convolution (\texttt{scipy.signal.fftconvolve, mode='full'}), yielding full cross-correlograms spanning all neuron and time-bin lags. Each cross-correlogram was normalized by its zero-lag (center) value, such that autocorrelations peak at 1.0 and cross-condition values are expressed relative to this self-similarity. The resulting trial-type $\times$ trial-type grid of 2D cross-correlograms was displayed as a matrix of heatmaps with a symmetric logarithmic color scale to improve visibility of weaker off-diagonal structure. This analysis was performed on the test set only.
+
+\subsection*{Mixed selectivity analysis}
+
+  Each of the $N = 54{,}719$ neurons is described by a feature vector
+  $\mathbf{x}_i \in \mathbb{R}^T$ ($T = 1{,}872$ time bins) obtained by
+  concatenating trial-averaged PETHs across all 21 conditions and
+  z-scoring. Stacking these vectors yields the feature matrix
+  $\mathbf{X} \in \mathbb{R}^{N \times T}$.
+
+  Before projection, rows of $\mathbf{X}$ are permuted by the rastermap
+  sort index $\boldsymbol{\sigma}$, i.e.\ $\mathbf{X} \leftarrow
+  \mathbf{X}[\boldsymbol{\sigma},:]$, where $\boldsymbol{\sigma}$ is
+  obtained by running the Rastermap algorithm~\cite{stringer2024rastermap} on the
+  full feature matrix with parameters
+  \texttt{n\_PCs=200, n\_clusters=100, locality=0.75}.
+  The resulting row order places neurons with similar temporal response
+  profiles in adjacent rows.
+
+  We applied $k$-means clustering ($k = M = 100$) to $\mathbf{X}$, obtaining cluster assignments $\ell_i \in \{0,\ldots,M-1\}$. Each prototype vector is the
+  cluster centroid
+  \begin{equation}
+      \mathbf{v}_\alpha = \frac{1}{|\mathcal{C}_\alpha|}
+      \sum_{i \in \mathcal{C}_\alpha} \mathbf{x}_i
+      \in \mathbb{R}^T, \quad \alpha = 0,\ldots,M-1,
+  \end{equation}
+  where $\mathcal{C}_\alpha = \{i : \ell_i = \alpha\}$.
+  The prototypes are collected row-wise into the basis matrix
+  $\mathbf{V} \in \mathbb{R}^{M \times T}$.
+  Each neuron's feature vector is projected onto the prototype basis
+  via an inner product:
+  \begin{equation}
+      \mathbf{C} = \mathbf{X}\,\mathbf{V}^{\!\top}
+      \in \mathbb{R}^{N \times M},
+      \qquad C_{i\alpha} = \mathbf{x}_i \cdot \mathbf{v}_\alpha.
+  \end{equation}
+  Because $\mathbf{V}$ is not orthonormal, this is an oblique (non-orthogonal)
+  projection: the entry $C_{i\alpha}$ measures the raw inner product
+  between neuron $i$'s response and prototype $\alpha$, not the
+  coordinate in an orthonormal basis.
+
+  Columns of $\mathbf{C}$ (basis vectors $\alpha$) are reordered for
+  display by hierarchical clustering of their pairwise Pearson
+  \begin{equation}
+      R_{\alpha\beta} = \operatorname{corr}(\mathbf{c}_\alpha,\,\mathbf{c}_\beta),
+  \end{equation}
+  where $\mathbf{c}_\alpha \in \mathbb{R}^N$ is the $\alpha$-th column of
+  $\mathbf{C}$. The distance matrix $D_{\alpha\beta} =
+  \max(0,\, 1 - R_{\alpha\beta})$ is passed to average-linkage
+  agglomerative clustering; the leaf order
+  $\boldsymbol{\pi} = \operatorname{leaves\_list}(Z)$ defines the column
+  permutation applied to $\mathbf{C}$ for all visualisations.
+
+  To test the random mixed selectivity hypothesis, we constructed a
+  synthetic coefficient matrix $\mathbf{B} \in \mathbb{R}^{N \times M}$
+  that preserves the marginal distribution of each coefficient
+  independently while destroying all inter-coefficient dependencies.
+  For each $\alpha$, the empirical distribution of
+  $\{C_{i\alpha}\}_{i=1}^{N}$ was estimated with a histogram of 200 equal-width
+  bins over $[\min_i C_{i\alpha},\, \max_i C_{i\alpha}]$, giving
+  normalised probabilities $\{p_{\alpha,b}\}$. Synthetic coefficients
+  were then drawn independently:
+  \begin{equation}
+      B_{i\alpha} \;\overset{\text{i.i.d.}}{\sim}\;
+      \sum_{b} p_{\alpha,b}\,\delta(\cdot - \mu_{\alpha,b}),
+  \end{equation}
+  where $\mu_{\alpha,b}$ denotes the centre of bin $b$. By construction,
+  the columns of $\mathbf{B}$ match the marginal histograms of $\mathbf{C}$
+  (Fig.~5d) while their joint distribution is fully independent across
+  $\alpha$. Synthetic feature vectors are reconstructed as
+  \begin{equation}
+      \mathbf{X}^{\mathrm{synth}} = \mathbf{B}\,\mathbf{V}
+      \in \mathbb{R}^{N \times T}.
+  \end{equation}
+
+  The real and synthetic populations were compared via (i)~visual
+  inspection of $\mathbf{C}$ and $\mathbf{B}$ and their neuron$\times$neuron
+  Pearson correlation matrices (evaluated on 2{,}000 randomly sampled
+  neurons); (ii)~the distribution of scores along the first principal
+  component of $\mathbf{C}$ (PC0), quantified by earth-mover distance
+  (EMD = 0.14 between real and synthetic); and (iii)~the standard error
+  of PC0 scores within anatomical groups (Beryl regions, size-matched
+  random mock regions, and $k$-means functional clusters), with EMD used
+  to compare group-variance distributions.
+  All analyses used \texttt{cv=False}; results were qualitatively
+  unchanged for $M = 40$.
+
+
+\section{Consortia}
+\textbf{The International Brain Laboratory}
+
+Larry Abbott, Luigi Acerbi, Valeria Aguillon-Rodriguez, Mandana Ahmadi, Jaweria Amjad, Dora Angelaki, Jaime Arlandis, Zoe C. Ashwood, Kush Banga, Hailey Barrell, Hannah M. Bayer, Brandon Benson, Julius Benson, Jai Bhagat, Dan Birman, Niccolò Bonacchi, Kcenia Bougrova, Julien Boussard, Sebastian A. Bruijns, E. Kelly Buchanan, Robert Campbell, Matteo Carandini, Joana A. Catarino, Fanny Cazettes, Gaelle A. Chapuis, Anne K. Churchland, Davide Crombie, Yang Dan, Felicia Davatolhagh, Peter Dayan, Sophie Denève, Eric E. J. DeWitt, Tatiana Engel, Michele Fabbri, Mayo Faulkner, Robert Fetcho, Ila Fiete, Charles Findling, Laura Freitas-Silva, Surya Ganguli, Berk Gercek, Naureen Ghani, Ivan Gordeliy, Laura M. Haetzel, Kenneth D. Harris, Michael Hausser, Naoki Hiratani, Sonja Hofer, Fei Hu, Felix Hubert, Julia M. Huntenburg, Cole Hurwitz, Anup Khanal, Christopher S. Krasniak, Sanjukta Krishnagopal, Michael Krumin, Debottam Kundu, Agnès Landemard, Christopher Langdon, Christopher Langfield, Inês C. Laranjeira, Peter Latham, Petrina Lau, Hyun Dong Lee, Ari Liu, Zachary F. Mainen, Amalia Makri-Cottington, Hernando Martinez-Vergara, Brenna McMannon, Isaiah McRoberts, Guido T. Meijer, Maxwell Melin, Leenoy Meshulam, Kim Miller, Nathaniel J. Miska, Catalin Mitelut, Zeinab Mohammadi, Thomas Mrsic-Flogel, Masayoshi Murakami, Jean-Paul Noel, Kai Nylund, Farideh Oloomi, Alejandro Pan Vazquez, Liam Paninski, Sabrina Perrenoud, Alberto Pezzotta, Samuel Picard, Jonathan W. Pillow, Alexandre Pouget, Carolina Quadrado, Pranav Rai, Georg Raiser, Florian Rau, Cyrille Rossant, Noam Roth, Nicholas A. Roy, Kamron Saniee, Rylan Schaeffer, Michael M. Schartner, Yanliang Shi, Karolina Z. Socha, Cristian Soitu, Nicholas A. Steinmetz, Karel Svoboda, Marsa Taheri, Charline Tessereau, Matthew Tucker, Anne E. Urai, Erdem Varol, Shuqi Wang, Miles J. Wells, Steven J. West, Matthew R. Whiteway, Charles Windolf, Olivier Winter, Ilana Witten, Lauren E. Wool, Zekai Xu, Kenneth Yang, Yaxuan Yang, Han Yu, Anthony M. Zador and Yizi Zhang.
+
+\section{Consortium member affiliations}
+
+\begin{itemize}
+  \item \textbf{Center for Computational Neuroscience, University of Washington, Seattle, WA, USA}\\
+  Leenoy Meshulam
+  \item \textbf{Center for Neural Science, New York University, New York, NY, USA}\\
+  Dora Angelaki, Julius Benson, Isaiah McRoberts, Jean-Paul Noel
+  \item \textbf{Champalimaud Center for the Unknown, Lisboa, Portugal}\\
+  Jaime Arlandis, Niccolò Bonacchi, Kcenia Bougrova, Joana A Catarino, Fanny Cazettes, Davide Crombie, Eric EJ DeWitt, Laura Freitas-Silva, Inês C Laranjeira, Zachary F Mainen, Guido T Meijer, Pranav Rai, Georg Raiser, Florian Rau, Michael M Schartner, Olivier Winter
+  \item \textbf{Cognitive Psychology Unit, Institute of Psychology and Leiden Institute for Brain and Cognition, Leiden University, Leiden, Netherlands}\\
+  Anne E Urai
+  \item \textbf{Cold Spring Harbor Laboratory, Cold Spring Harbor, NY, USA}\\
+  Valeria Aguillon-Rodriguez, Cristian Soitu, Anthony M Zador
+  \item \textbf{Cold Spring Harbor Laboratory, Cold Spring Harbor, NY, USA, Watson School of Biological Science, Cold Spring Harbor, NY, USA}\\
+  Christopher S Krasniak
+  \item \textbf{Department of  Molecular and Cell Biology, University of California, Berkeley, CA, USA}\\
+  Yang Dan, Fei Hu
+  \item \textbf{Department of Applied Physics, Stanford University, Stanford, CA, USA}\\
+  Brandon Benson, Surya Ganguli
+  \item \textbf{Department of Basic Neuroscience, University of Geneva, Geneva, Switzerland}\\
+  Luigi Acerbi, Gaelle A Chapuis, Charles Findling, Berk Gercek, Felix Huber, Alexandre Pouget
+  \item \textbf{Department of Biological Structure, University of Washington, Seattle, WA, USA}\\
+  Hailey Barrell, Dan Birman, Kim Miller, Kai Nylund, Noam Roth, Nicholas A Steinmetz, Matthew Tucker, Kenneth Yang
+  \item \textbf{Department of Brain and Cognitive Sciences, Massachusetts Institute of Technology, Cambridge, MA, USA}\\
+  Ila Fiete, Ari Liu, Rylan Schaeffer
+  \item \textbf{Department of Neurobiology, University of California, Los Angeles, CA, USA}\\
+  Anne K Churchland, Felicia Davatolhagh, Anup Khanal, Maxwell Melin
+  \item \textbf{Department of Physiology, University of Yamanashi, Kofu, Yamanashi, Japan}\\
+  Masayoshi Murakami
+  \item \textbf{Département D’études Cognitives, École Normale Supérieure, Paris, France}\\
+  Sophie Denève, Ivan Gordeliy
+  \item \textbf{Gatsby Computational Neuroscience Unit, University College London, London, UK}\\
+  Mandana Ahmadi, Jaweria Amjad, Naoki Hiratani, Sanjukta Krishnagopal, Peter Latham, Alberto Pezzotta, Zekai Xu
+  \item \textbf{Institute of Neurology, University College London, London, UK}\\
+  Kush Banga, Jai Bhagat, Mayo Faulkner, Kenneth D Harris, Michael Krumin, Samuel Picard, Carolina Quadrado, Cyrille Rossant, Miles J Wells, Lauren E Wool
+  \item \textbf{Institute of Opthalmology, University College London, London, United Kingdom}\\
+  Matteo Carandini, Agnès Landemard, Karolina Z Socha
+  \item \textbf{Max Planck Institute for Biological Cybernetics, Tübingen, Germany}\\
+  Sebastian A Bruijns, Peter Dayan, Julia M Huntenburg, Debottam Kundu, Farideh Oloomi, Charline Tessereau
+  \item \textbf{Princeton Neuroscience Institute, Princeton University, Princeton, NJ, USA}\\
+  Zoe C Ashwood, Tatiana Engel, Robert Fetcho, Laura M Haetzel, Christopher Langdon, Brenna McMannon, Zeinab Mohammadi, Alejandro Pan Vazquez, Jonathan W Pillow, Nicholas A Roy, Yanliang Shi, Ilana Witten
+  \item \textbf{Sainsbury-Wellcome Centre, University College London, London, UK}\\
+  Robert Campbell, Naureen Ghani, Sonja Hofer, Hernando Martinez-Vergara, Nathaniel J Miska, Thomas Mrsic-Flogel, Steven J West, Yaxuan Yang
+  \item \textbf{The Allen Institute for Neural Dynamics, Seattle, Washington, USA}\\
+  Karel Svoboda
+  \item \textbf{University of California, Los Angeles}\\
+  Marsa Taheri
+  \item \textbf{Wolfson Institute of Biomedical Research, University College London, London, United Kingdom}\\
+  Michael Hausser, Petrina Lau, Amalia Makri-Cottington, Sabrina Perrenoud
+  \item \textbf{Zuckerman Institute, Columbia University, New York, NY, USA}\\
+  Larry Abbott, Hannah M Bayer, Julien Boussard, E Kelly Buchanan, Michele Fabbri, Cole Hurwitz, Christopher Langfield, Hyun Dong Lee, Catalin Mitelut, Liam Paninski, Kamron Saniee, Erdem Varol, Shuqi Wang, Matthew R Whiteway, Charles Windolf, Han Yu, Yizi Zhang
+\end{itemize}
+
+\section{Acknowledgments}
+This work was supported by grants from the Wellcome Trust (\href{https://ror.org/029chgv08}{216324}), the Simons Foundation, The National Institutes of Health (\href{https://ror.org/01cwqze88}{NIH U19NS12371601}) and the National Science Foundation (\href{https://ror.org/021nxhr62NSF}{1707398}). We are most grateful for important discussions with Nick Steinmetz. 
+
+\bibliography{references, paperpile}
+\FloatBarrier
+\section{Supplementary Material}
+\input{supp_figs}
+
+\end{document}

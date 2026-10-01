@@ -1,0 +1,10 @@
+__pycache__/
+# per-figure caches and generated outputs (rebuilt by the figure scripts)
+fig*/cache/
+fig*/**/*.png
+fig*/**/*.svg
+fig*/**/*.pdf
+fig*/**/*_values.txt
+fig2/panel_e_selection.csv
+fig2/raster_rows.npz
+report/main.pdf

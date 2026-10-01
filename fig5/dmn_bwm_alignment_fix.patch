@@ -1,0 +1,101 @@
+--- a/dmn_bwm.py
++++ b/dmn_bwm.py
+@@ -1061,6 +1061,9 @@
+ 
+                     r["kmeans_basis_labels"] = np.asarray(cached.get("kmeans_basis_labels"))
+                     r["kmeans_basis_counts"] = np.asarray(cached.get("kmeans_basis_counts"))
++                    # Caches written before "C_rows" was stored were built with
++                    # the stack's isort, which r['isort'] still holds here.
++                    r["C_rows"] = np.asarray(cached.get("C_rows", r["isort"]), dtype=int)
+                     print(f"[synthetic] using cached synthetic data ({synth_path.name})")
+                     return
+             except Exception as e:
+@@ -1088,7 +1091,10 @@
+                 V[a, :] = np.mean(X[idx, :], axis=0)
+ 
+         V_pinv = np.linalg.pinv(V)
+-        X = X[r['isort']]
++        # Rows of C, B and the synthetic features follow this neuron order;
++        # use synthetic_row_labels(r) for per-row region/cluster labels.
++        C_rows = np.asarray(r['isort'], dtype=int).copy()
++        X = X[C_rows]
+         C = X @ V.T  # (N,M)
+ 
+         if syn_control:
+@@ -1130,6 +1136,7 @@
+         r["marginals"] = marginals
+         r["kmeans_basis_labels"] = labs
+         r["kmeans_basis_counts"] = counts
++        r["C_rows"] = C_rows
+ 
+         payload = {
+             "synthetic": True,
+@@ -1146,6 +1153,7 @@
+             "C": C,
+             "kmeans_basis_labels": labs,
+             "kmeans_basis_counts": counts,
++            "C_rows": C_rows,
+         }
+         if not syn_control:
+             payload["B"] = B
+@@ -6770,6 +6778,19 @@
+     plt.show()
+ 
+ 
++def synthetic_row_labels(r):
++    """Beryl region and real-data k-means cluster for each row of r['C'] / r['B'].
++
++    In regional_group(synthetic=True), C = X[r['C_rows']] @ V.T, so row i of C is
++    stack neuron C_rows[i]. r['Beryl'] is in stack order and r['acs'] clusters the
++    *synthetic* responses, so neither lines up with C's rows. This returns row i's
++    own region and its cluster in the real-data k-means basis (the functional
++    groups).
++    """
++    rows = np.asarray(r["C_rows"], dtype=int)
++    return np.asarray(r["Beryl"])[rows], np.asarray(r["kmeans_basis_labels"])[rows]
++
++
+ def plot_synthetic_marginals_compare_blocks(
+     vers: str = "concat",
+     nclus: int = 20,
+@@ -7365,10 +7386,9 @@
+     metric_synth = metric_synth[good]
+     C = C[good]
+     B = B[good]
+-    if 'Beryl' in r and len(np.asarray(r['Beryl'])) == len(good):
+-        r['Beryl'] = np.asarray(r['Beryl'])[good]
+-    if 'acs' in r and len(np.asarray(r['acs'])) == len(good):
+-        r['acs'] = np.asarray(r['acs'])[good]
++    # Region and real-data k-means cluster of each (kept) row of C.
++    beryl, acs = synthetic_row_labels(r)
++    beryl, acs = beryl[good], acs[good]
+ 
+     # --- pick extremes + 3 middle rows (closest to median) ---
+     k = 5
+@@ -7548,12 +7568,6 @@
+     # ---------------- Figure 3 (REAL only): group summary (median vs variance) ----------------
+     from matplotlib.ticker import MaxNLocator
+ 
+-    if "Beryl" not in r or "acs" not in r:
+-        raise KeyError("Expected r['Beryl'] (region per neuron) and r['acs'] (kmeans label per neuron).")
+-
+-    beryl = np.asarray(r["Beryl"])
+-    acs = np.asarray(r["acs"])
+-
+     # Beryl colors per neuron (as requested; not directly used in the per-group scatter)
+     cols_b = np.array([pal[reg] for reg in beryl])
+ 
+@@ -8042,10 +8056,9 @@
+     good = np.isfinite(mr) & np.isfinite(ms)
+     mr, ms = mr[good], ms[good]
+ 
+-    beryl = np.asarray(r.get("Beryl", []))
+-    acs   = np.asarray(r.get("acs",   []))
+-    if len(beryl) == len(good): beryl = beryl[good]
+-    if len(acs)   == len(good): acs   = acs[good]
++    # Region and real-data k-means cluster of each row of C (see synthetic_row_labels).
++    beryl, acs = synthetic_row_labels(r)
++    beryl, acs = beryl[good], acs[good]
+ 
+     def _grp(labels, exclude=None, nmin=1):
+         labels  = np.asarray(labels)

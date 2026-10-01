@@ -1,7 +1,7 @@
 #import os
 #os.environ["SPECTRAL_CONNECTIVITY_ENABLE_GPU"] = "true"
 
-
+import math
 import numpy as np
 import random
 from collections import Counter
@@ -1462,7 +1462,7 @@ def plot_strip_pairs(metric='granger', sessmin = 3,
     '''
     for spectral Granger, metric in ['granger', coherence']
     '''
-    d0 = get_res(metric=metric, sig_only=True, combine_=False)
+    d0 = get_res(metric=metric, sig_only=sig_only, combine_=False)
 
                         
     regs = list(Counter(np.array([s.split(' --> ') for s in
@@ -1496,7 +1496,7 @@ def plot_strip_pairs(metric='granger', sessmin = 3,
         exs = list(dm_sorted.keys())
         nrows = 5
         fs = 5
-        per_row = len(exs)//nrows
+        per_row = math.ceil(len(exs)/nrows)
            
         d_exs = {x:d[x] for x in exs}
     
@@ -1964,8 +1964,8 @@ def get_ari():
 
 
 def plot_graph(metric='granger', restrict='', ax=None, win='whole_session',
-               direction='both', sa = 1.5, sessmin=2, 
-               ari=False, sig_only=False, ews = 50):
+               direction='both', sa = 1.5, sessmin=2, acronym_ring=True,
+               ari=False, sig_only=False, ews = 50, rrad=0.6):
 
     '''
     circular graph
@@ -2097,24 +2097,25 @@ def plot_graph(metric='granger', restrict='', ax=None, win='whole_session',
         nx.draw_networkx_edges(G, pos, edgelist=[(edge[0],edge[1])], 
         arrowsize=w*10, width=w, 
         edge_color=G[edge[0]][edge[1]]['color'],
-        connectionstyle='arc3,rad=0.6', ax=ax)
-        
-    for node, (x, y) in pos.items():
-        angle = np.arctan2(y, x)
-        angle = np.degrees(angle)
-        # Radial shift factor (adjust as needed)
-        r_shift = 1.3 #1.12
-            
-        # Calculate new positions
-        x_new = r_shift * np.cos(np.radians(angle))
-        y_new = r_shift * np.sin(np.radians(angle))
+        connectionstyle=f'arc3,rad={rrad}', ax=ax)
 
-        q = (' ---- ' if cosregs[node] == restrict 
-             and restrict != '' else '')              
-        ax.text(x_new, y_new, node + q if x < 0 else q + node,
-                fontsize=fontsize, ha='center', 
-                va='center', rotation=angle if x > 0 else angle + 180,
-                color=pa[node])
+    if acronym_ring:    
+        for node, (x, y) in pos.items():
+            angle = np.arctan2(y, x)
+            angle = np.degrees(angle)
+            # Radial shift factor (adjust as needed)
+            r_shift = 1.3 #1.12
+                
+            # Calculate new positions
+            x_new = r_shift * np.cos(np.radians(angle))
+            y_new = r_shift * np.sin(np.radians(angle))
+
+            q = (' ---- ' if cosregs[node] == restrict 
+                and restrict != '' else '')              
+            ax.text(x_new, y_new, node + q if x < 0 else q + node,
+                    fontsize=fontsize, ha='center', 
+                    va='center', rotation=angle if x > 0 else angle + 180,
+                    color=pa[node])
     
         
     ax.set_aspect('equal')
@@ -2131,7 +2132,8 @@ def plot_graph(metric='granger', restrict='', ax=None, win='whole_session',
 #                        'granger_single_graph.svg'))
 
 
-def plot_multi_graph(sessmin=2, win='whole_session', sig_only=False, sa=2):
+def plot_multi_graph(sessmin=2, win='whole_session', sig_only=False, sa=2, rrad=0.2,
+                     acronym_ring=False):
 
     cregs = ['CB', 'TH', 'HPF', 'Isocortex', 
              'OLF', 'CTXsp', 'CNU', 'HY', 'HB', 'MB']
@@ -2144,7 +2146,8 @@ def plot_multi_graph(sessmin=2, win='whole_session', sig_only=False, sa=2):
     for creg in cregs: 
         for direction in directions:
             plot_graph(metric='granger', restrict=creg, sessmin = sessmin, 
-                       ax=axs[k], sa = sa, direction=direction, win=win, sig_only=sig_only)     
+                       ax=axs[k], sa = sa, direction=direction, win=win, 
+                       sig_only=sig_only, rrad=rrad, acronym_ring=acronym_ring)     
             axs[k].set_title(f'{creg} {direction}')
             k += 1
   

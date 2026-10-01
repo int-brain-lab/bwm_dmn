@@ -1,4 +1,5 @@
 from one.api import ONE
+from pathlib import Path
 from brainbox.singlecell import bin_spikes2D
 from brainwidemap import (bwm_query, load_good_units, 
                           load_trials_and_mask, bwm_units)
@@ -7,10 +8,13 @@ from iblatlas.regions import BrainRegions
 import iblatlas
 from iblatlas.plots import plot_swanson_vector 
 from brainbox.io.one import SessionLoader
-import ephys_atlas.data
 from sklearn.manifold import SpectralEmbedding
 import sys
-sys.path.append('Dropbox/scripts/IBL/')
+SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.append(str(SCRIPT_DIR))
+# This is a local manuscript copy; keep access to the original module's sibling helpers.
+ORIGINAL_SCRIPT_DIR = Path.home() / 'Dropbox' / 'scripts' / 'IBL'
+sys.path.append(str(ORIGINAL_SCRIPT_DIR))
 from granger import get_volume, get_centroids, get_res, get_structural, get_ari
 from state_space_bwm import get_cmap_bwm, pre_post
 from random import shuffle
@@ -34,22 +38,15 @@ from scipy.cluster import hierarchy
 from scipy.spatial.distance import squareform, cdist, pdist
 from skbio.stats.distance import DistanceMatrix, permanova
 
-from sklearn.metrics import confusion_matrix
 from sklearn.preprocessing import StandardScaler
 from sklearn.neighbors import NearestNeighbors
 from sklearn.metrics import pairwise_distances
-from sklearn.linear_model import LogisticRegression
-from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-from sklearn.model_selection import StratifiedKFold
-from joblib import Parallel, delayed
-from sklearn.utils import parallel_backend
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 import time, os, re 
 from PIL import Image, ImageDraw, ImageFont
 
 import gc
-from pathlib import Path
 import random
 from copy import deepcopy
 import time, sys, math, string, os
@@ -58,9 +55,7 @@ import umap.umap_ as umap
 from rastermap import Rastermap
 from scipy.stats import wasserstein_distance
 from itertools import combinations, chain
-from datetime import datetime
 import scipy.ndimage as ndi
-import hdbscan
 import subprocess
 from PIL import Image
 from uuid import UUID
@@ -138,13 +133,23 @@ sts = 0.002  # stride size in [sec] for overlapping bins
 # bins per second in the strided representation (T_BIN=12.5ms, stride sts=2ms → 6 shifts → 480 bins/s)
 c_sec =  1.0 / (T_BIN / int(T_BIN // sts))
 
-one = ONE()
+DMN_BASE = Path.home() / 'dmn'
+ONE_CACHE_DIR = Path.home() / 'Downloads' / 'ONE'
+for directory in (
+    DMN_BASE,
+    ONE_CACHE_DIR,
+    DMN_BASE / 'figs',
+    DMN_BASE / 'figs' / 'overleaf_pdf',
+):
+    directory.mkdir(parents=True, exist_ok=True)
+
+one = ONE(cache_dir=ONE_CACHE_DIR)
 
 br = BrainRegions()
 
 
 # save results here
-pth_dmn = Path(one.cache_dir, 'dmn', 'res')
+pth_dmn = DMN_BASE
 pth_dmn.mkdir(parents=True, exist_ok=True)
 
 sigl = 0.05  # significance level (for stacking, plotting, fdr)
@@ -703,27 +708,6 @@ def concat_PETHs(pid, get_tts: bool = False, vers: str = 'concat',
     return D
 
 
-def load_atlas_data():
-              
-    LOCAL_DATA_PATH = Path(one.cache_dir, 'ephys_atlas_data')
-    
-    D = {}
-    (D['df_raw_features'], 
-     D['df_clusters'], 
-     D['df_channels'], 
-     D['df_probes']) = ephys_atlas.data.download_tables(
-                        label='2024_W50', 
-                        local_path=LOCAL_DATA_PATH, 
-                        one=one)                    
-                    
-    merged_df0 = D['df_raw_features'].merge(D['df_channels'], 
-                                     on=['pid','channel'])               
-    merged_df0.reset_index(inplace=True)            
-    merged_df = merged_df0.merge(
-                D['df_clusters'], 
-                on=['pid', 'axial_um', 'lateral_um'])                     
-                    
-    return merged_df       
 
 
 def get_allen_info(rerun=False):
@@ -731,7 +715,7 @@ def get_allen_info(rerun=False):
     Function to load Allen atlas info, like region colors
     '''
     
-    pth_dmna = Path(one.cache_dir, 'dmn', 'alleninfo.npy')
+    pth_dmna = DMN_BASE / 'alleninfo.npy'
     
     if (not pth_dmna.is_file() or rerun):
         p = (Path(iblatlas.__file__).parent /
@@ -844,7 +828,6 @@ def get_hierarchy(reg):
 def regional_group(
     mapping,
     vers: str = "concat",
-    ephys: bool = False,
     grid_upsample: int = 0,
     nclus: int = 25,
     nclus_rm: int = 100,
@@ -871,7 +854,7 @@ def regional_group(
     - if synthetic and zsc=True  : r['concat_zs'] is generated and used for mapping
     - if synthetic and zsc=False : r['concat_s']  is generated and used for mapping
     """
-    pth_res = Path(one.cache_dir, "dmn", "res")
+    pth_res = DMN_BASE
 
     if synthetic:
         cv = False
@@ -888,13 +871,11 @@ def regional_group(
         if kind == "stack":
             base = f"{vers}"
             base += f"_cv{cv}"
-            base += f"_ephys{ephys}"
             return pth_res / (base + ".npy")
 
         if kind == "rm":
             base = f"{kind}_{vers}"
             base += f"_cv{cv}"
-            base += f"_ephys{ephys}"
             base += f"_nclusrm{nclus_rm}"
             base += ztag
             base += synth_tag
@@ -903,7 +884,6 @@ def regional_group(
         if kind == "kmeans":
             base = f"{kind}_{vers}"
             base += f"_cv{cv}"
-            base += f"_ephys{ephys}"
             base += f"_n{nclus}"
             base += f"_nclusrm{nclus_rm}"
             base += ztag
@@ -914,7 +894,6 @@ def regional_group(
             # NEW: include ztag so zsc=False synthetic cache doesn't collide with zsc=True synthetic cache
             base = f"{kind}_{vers}"
             base += f"_cv{cv}"
-            base += f"_ephys{ephys}"
             base += ztag
             base += f"_nsb{nclus_s}"
             base += f"_synctrl{int(bool(syn_control))}"
@@ -929,12 +908,12 @@ def regional_group(
     if not stack_path.is_file():
         raise FileNotFoundError(
             f"Stack file not found: {stack_path}\n"
-            "Expected stack caches to depend only on vers/cv/ephys (not rm hyperparams)."
+            "Expected stack caches to depend only on vers/cv (not rm hyperparameters)."
         )
 
     r = np.load(stack_path, allow_pickle=True).flat[0]
     print(
-        f"mapping {mapping}, vers {vers}, ephys {ephys}, "
+        f"mapping {mapping}, vers {vers}, "
         f"nclus {nclus}, nclus_rm {nclus_rm}, nclus_s {nclus_s}, "
         f"rerun {rerun}, cv {cv}, synthetic {synthetic}, syn_control {syn_control}, zsc {zsc}, "
         f"{len(r['ids'])} neurons loaded."
@@ -1082,6 +1061,9 @@ def regional_group(
 
                     r["kmeans_basis_labels"] = np.asarray(cached.get("kmeans_basis_labels"))
                     r["kmeans_basis_counts"] = np.asarray(cached.get("kmeans_basis_counts"))
+                    # Caches written before "C_rows" was stored were built with
+                    # the stack's isort, which r['isort'] still holds here.
+                    r["C_rows"] = np.asarray(cached.get("C_rows", r["isort"]), dtype=int)
                     print(f"[synthetic] using cached synthetic data ({synth_path.name})")
                     return
             except Exception as e:
@@ -1109,7 +1091,10 @@ def regional_group(
                 V[a, :] = np.mean(X[idx, :], axis=0)
 
         V_pinv = np.linalg.pinv(V)
-        X = X[r['isort']]
+        # Rows of C, B and the synthetic features follow this neuron order;
+        # use synthetic_row_labels(r) for per-row region/cluster labels.
+        C_rows = np.asarray(r['isort'], dtype=int).copy()
+        X = X[C_rows]
         C = X @ V.T  # (N,M)
 
         if syn_control:
@@ -1151,6 +1136,7 @@ def regional_group(
         r["marginals"] = marginals
         r["kmeans_basis_labels"] = labs
         r["kmeans_basis_counts"] = counts
+        r["C_rows"] = C_rows
 
         payload = {
             "synthetic": True,
@@ -1167,6 +1153,7 @@ def regional_group(
             "C": C,
             "kmeans_basis_labels": labs,
             "kmeans_basis_counts": counts,
+            "C_rows": C_rows,
         }
         if not syn_control:
             payload["B"] = B
@@ -1277,6 +1264,8 @@ def regional_group(
         cmap = mpl.colormaps["tab20"]
         u_to_idx = {u: (i % 20) for i, u in enumerate(unique_sorted)}
         color_map = {u: cmap(u_to_idx[u]) for u in unique_sorted}
+        if len(unique_sorted) >= 2:
+            color_map[unique_sorted[1]] = mcolors.to_rgba('pink')
         cols = np.array([color_map[c] for c in clusters])
 
         r["els"] = [Line2D([0], [0], color=color_map[reg], lw=4, label=f"{reg + 1}") for reg in unique_sorted]
@@ -1361,8 +1350,7 @@ def regional_group(
 def get_umap_dist(rerun=False, algo='umap_z', 
                   mapping='Beryl', vers='concat'):
 
-    pth_ = Path(one.cache_dir, 'dmn', 
-                f'{algo}_{mapping}_{vers}_smooth.npy')
+    pth_ = DMN_BASE / f'{algo}_{mapping}_{vers}_smooth.npy'
     if (not pth_.is_file() or rerun):
         res, regs = smooth_dist(algo=algo, mapping=mapping, vers=vers)    
         d = {'res': res, 'regs' : regs}
@@ -1373,177 +1361,8 @@ def get_umap_dist(rerun=False, algo='umap_z',
     return d     
 
 
-def NN(x, y, decoder='LDA', CC=1.0, confusion=False,
-       return_weights=False, shuf=False, verb=True):
-    '''
-    Decode region label y from activity x with parallelized cross-validation.
-    '''
-    
-    nclasses = len(Counter(y))
-    startTime = datetime.now()
-    
-    if shuf:
-        np.random.shuffle(y)
-
-    if len(x.shape) == 1:
-        x = x.reshape(-1, 1)
-
-    acs = []
-
-    # predicted labels for train/test
-    yp_train = []  
-    yp_test = []
-    
-    # true labels for train/test
-    yt_train = []  
-    yt_test = []  
-    
-    folds = 5
-    kf = StratifiedKFold(n_splits=folds, shuffle=True)
-
-    if verb:
-        print('input dimension:', np.shape(x))    
-        print(f'# classes = {nclasses}')
-        print('x.shape:', x.shape, 'y.shape:', y.shape)
-        print(f'{folds}-fold cross validation')
-        if shuf: 
-            print('labels are SHUFFLED')
-
-    def process_fold(train_index, test_index):
-        """
-        Process a single fold of cross-validation.
-        """
-        sc = StandardScaler()
-        train_X = sc.fit_transform(x[train_index])
-        test_X = sc.fit_transform(x[test_index])
-
-        train_X = x[train_index]
-        test_X = x[test_index]
-
-        train_y = y[train_index]
-        test_y = y[test_index]
-
-        if decoder == 'LR':
-            clf = LogisticRegression(C=CC, random_state=0, n_jobs=-1,
-                max_iter=1000)
-        elif decoder == 'LDA':
-            clf = LinearDiscriminantAnalysis()
-        else:
-            raise ValueError('Unsupported model type. Use "LR" or "LDA".')
-
-        clf.fit(train_X, train_y)
-        y_pred_test = clf.predict(test_X)
-        y_pred_train = clf.predict(train_X)
-
-        res_test = np.mean(test_y == y_pred_test)
-        res_train = np.mean(train_y == y_pred_train)
-
-        return (res_train, res_test, y_pred_train, y_pred_test, train_y, test_y)
-
-    with parallel_backend('loky'):
-        results = Parallel(n_jobs=-1)(
-            delayed(process_fold)(train_index, test_index)
-            for train_index, test_index in kf.split(x, y)
-        )
-
-    # Collect results from parallel processing
-    for res_train, res_test, y_pred_train, y_pred_test, train_y, test_y in results:
-        acs.append([res_train, res_test])
-        yp_train.append(y_pred_train)
-        yp_test.append(y_pred_test)
-        yt_train.append(train_y)
-        yt_test.append(test_y)
-
-    r_train = round(np.mean(np.array(acs)[:, 0]), 3)
-    r_test = round(np.mean(np.array(acs)[:, 1]), 3)
-    
-    if verb:
-        print('')
-        print('Mean train accuracy:', r_train)
-        print('Mean test accuracy:', r_test)
-        print('')
-        print('time to compute:', datetime.now() - startTime)
-        print('')
-        
-    if return_weights:
-        if decoder == 'LR':
-            clf = LogisticRegression(C=CC, random_state=0, n_jobs=-1,
-                max_iter=1000)
-        else:
-            clf = LinearDiscriminantAnalysis()
-
-        clf.fit(x, y)
-        return clf.coef_
-
-    if confusion:
-        yt_train = np.concatenate(yt_train)
-        yp_train = np.concatenate(yp_train)
-        yt_test = np.concatenate(yt_test)
-        yp_test = np.concatenate(yp_test)
-        
-        cm_train = confusion_matrix(yt_train, yp_train, normalize='pred')
-        cm_test = confusion_matrix(yt_test, yp_test, normalize='pred')
-                   
-        return cm_train, cm_test, r_train, r_test                              
-
-    return np.array(acs)
 
 
-def decode(src='concat_z', mapping='Beryl', minreg=20, decoder='LR', 
-           algo='umap_z', n_runs = 1, confusion=False, apply_pca=True):
-    
-    '''
-    src in ['concat_z', 'ephysTF']
-    ''' 
-           
-    print(src, mapping, f', minreg: {minreg},', decoder)
-                               
-    r = regional_group(mapping)
-     
-    # get average points and color per region
-    regs = Counter(r['acs'])
-    
-    x = r[src]
-    y = r['acs']
-
-    # restrict to regions with minreg cells
-    regs2 = [reg for reg in regs if regs[reg]>minreg]
-    mask = [True if ac in regs2 else False for ac in r['acs']]
-
-    x = x[mask]    
-    y = y[mask]
-    
-    # remove void and root
-    mask = [False if ac in ['void', 'root', 'Other'] else True for ac in y]
-    x = x[mask]    
-    y = y[mask]  
-    regs = Counter(y)
-
-    print('x shape', x.shape, 'n classes', len(regs))
-
-    if apply_pca and x.shape[1] >= 100:
-        n_components=100
-        pca = PCA(n_components=n_components)
-        print(f'applying pca, reducing {x.shape[1]} to {n_components}')
-        x = pca.fit_transform(x)   
-
-    if confusion:
-        cm_train, cm_test, r_train, r_test = NN(x, y, 
-            decoder=decoder, confusion=True)
-        return cm_train, cm_test, regs, r_train, r_test    
-
-    
-    res = []
-    res_shuf = []  
-    for i in range(n_runs):
-        y_ = deepcopy(y)
-        
-        res.append(NN(x, y_, decoder=decoder, shuf=False, 
-                      verb=False if n_runs > 1 else True))
-        res_shuf.append(NN(x, y_, decoder=decoder, shuf=True, 
-                      verb=False if n_runs > 1 else True))        
-            
-    return res, res_shuf
 
 
 def lz76_complexity(s: str) -> int:
@@ -1691,7 +1510,7 @@ def get_all_PETHs_parallel(
     bad_set = set(bad_eids or [])
     eids_plus = [(eid, probe, pid) for (eid, probe, pid) in eids_plus if eid not in bad_set]
 
-    out_dir = Path(one.cache_dir, 'dmn', vers)
+    out_dir = DMN_BASE / vers
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Shared counters (thread-safe)
@@ -1770,82 +1589,11 @@ def get_all_PETHs_parallel(
     }
 
 
-def _attach_ephys_features(r):
-    """
-    Attach atlas-based ephys features to dict r, applying consistent
-    cleaning; returns (dfm, r). Only used in non-CV mode.
-    """
-    print('attaching ephys features...')
-    n_cells = len(r['uuids'])
-    df = pd.DataFrame({
-        'uuids':    r['uuids'],
-        'pid':      r['pid'],
-        'channels': r['channels'],
-        'axial_um': r['axial_um'],
-        'lateral_um': r['lateral_um'],
-        # keep for debugging / alignment checks
-        'concat_z_len': [row.shape[0] if hasattr(row, 'shape') else np.nan for row in r['concat_z']]
-                          if isinstance(r['concat_z'], np.ndarray) else [np.nan]*n_cells
-    })
-
-    atlas_df = load_atlas_data().copy()
-    # enforce many-to-one merge (each (pid,axial_um,lateral_um) maps to <=1 row)
-    atlas_df = atlas_df.drop_duplicates(subset=['pid', 'axial_um', 'lateral_um'])
-    dfm = df.merge(atlas_df, on=['pid', 'axial_um', 'lateral_um'],
-                   how='left', validate='many_to_one')
-    assert len(dfm) == len(df), "Merge changed row count; check atlas_df keys/duplicates."
-
-    fts = ['alpha_mean', 'alpha_std', 'depolarisation_slope',
-           'peak_time_secs', 'peak_val',
-           'polarity', 'psd_alpha', 'psd_alpha_csd',
-           'psd_beta', 'psd_beta_csd', 'psd_delta',
-           'psd_delta_csd', 'psd_gamma',
-           'psd_gamma_csd', 'psd_lfp', 'psd_lfp_csd',
-           'psd_theta', 'psd_theta_csd',
-           'recovery_slope', 'recovery_time_secs',
-           'repolarisation_slope',
-           'rms_ap', 'rms_lf', 'rms_lf_csd', 'spike_count_x',
-           'spike_count_y', 'tip_time_secs', 'tip_val',
-           'trough_time_secs', 'trough_val']
-
-    # build fixed-length vectors per row (concatenate available scalars)
-    def _row_to_vec(row):
-        vals = []
-        any_ok = False
-        for k in fts:
-            v = row.get(k, np.nan)
-            if pd.notna(v):
-                any_ok = True
-                vals.append(np.atleast_1d(v))
-        return np.concatenate(vals) if any_ok else np.array([])
-
-    print('building ephys feature vectors...')
-    dfm['ephysTF'] = dfm.apply(_row_to_vec, axis=1)
-
-    r['ephysTF'] = dfm['ephysTF'].to_numpy()
-    r['fts'] = fts
-
-    # remove cells with nan/inf/allzero/empty ephysTF
-    good_nan  = np.array([not np.isnan(vec).any() for vec in r['ephysTF']], dtype=bool)
-    good_inf  = np.array([not np.isinf(vec).any() for vec in r['ephysTF']], dtype=bool)
-    good_len  = np.array([vec.size > 0 for vec in r['ephysTF']], dtype=bool)
-    good_any  = np.array([np.any(vec) if vec.size else False for vec in r['ephysTF']], dtype=bool)
-    goodcells = good_nan & good_inf & good_len & good_any
-
-    print(f"[ephys] {goodcells.sum()} / {len(goodcells)} neurons keepable by ephys filters")
-
-    l0 = len(r['uuids'])
-    for key in list(r.keys()):
-        arr = r[key]
-        if isinstance(arr, np.ndarray) and len(arr) == l0:
-            r[key] = arr[goodcells]
-    return dfm, r
 
 
 def stack_concat(
     vers: str = "concat",
     get_tls: bool = False,
-    ephys: bool = False,
     concat_only: bool = False,
     cv: bool = False,
     min_trials: int = 10,
@@ -1859,9 +1607,9 @@ def stack_concat(
     start_time = time.time()
 
     # ---- paths ----
-    pth = Path(one.cache_dir, "dmn", vers)
+    pth = DMN_BASE / vers
     pth.mkdir(parents=True, exist_ok=True)
-    pth_res = Path(one.cache_dir, "dmn", "res")
+    pth_res = DMN_BASE
     pth_res.mkdir(parents=True, exist_ok=True)
 
     # ---- discover per-insertion files "<eid>_<probe>.npy" ----
@@ -2057,20 +1805,6 @@ def stack_concat(
             lz_vals[i] = lzs_pci(data[i], rng)
         r["lz"] = lz_vals
 
-        if ephys and len(r["uuids"]):
-            print("loading and concatenating ephys features ...")
-            _, r = _attach_ephys_features(r)
-            print(f"{r['concat_z'].shape[0]} neurons retained after ephys cleaning")
-            print("z-scoring ephys features")
-            r["ephysTF"] = zscore(np.stack(r["ephysTF"], axis=0), axis=1)
-            print("embedding Rastermap on ephys")
-            model_e = Rastermap(
-                n_PCs=200, n_clusters=100, locality=0.75, time_lag_window=5, bin_size=1
-            ).fit(r["ephysTF"])
-            r["isort_e"] = model_e.isort
-            print("UMAP on ephys...")
-            r["umap_e"] = umap.UMAP(n_components=2, random_state=0).fit_transform(r["ephysTF"])
-
         print(f"embedding Rastermap on {vers}...")
         try:
             model = Rastermap(
@@ -2087,7 +1821,7 @@ def stack_concat(
         pca = PCA(n_components=2)
         r["pca_z"] = pca.fit_transform(r["concat_z"])
 
-        out = pth_res / f"{vers}_cvFalse_ephys{ephys}.npy"
+        out = pth_res / f"{vers}_cvFalse.npy"
         np.save(out, r, allow_pickle=True)
         print(f"saved combined data to {out}")
         print(f"Function 'stack_concat' executed in: {time.time() - start_time:.4f} s")
@@ -2191,7 +1925,7 @@ def stack_concat(
         r["concat_z"]
     )
 
-    out = pth_res / f"{vers}_cvTrue_ephysFalse.npy"
+    out = pth_res / f"{vers}_cvTrue.npy"
     np.save(out, r, allow_pickle=True)
     print(f"saved combined data to {out}")
     print(f"Function 'stack_concat' executed in: {time.time() - start_time:.4f} s")
@@ -2209,7 +1943,6 @@ def stack_concat(
 def plot_dim_reduction(
     algo: str = "umap_z",
     mapping: str = "kmeans",
-    ephys: bool = False,
     feat: str = "concat_z",
     means: bool = False,
     exa: bool = False,
@@ -2260,7 +1993,6 @@ def plot_dim_reduction(
     r = regional_group(
         mapping=mapping,
         vers=vers,
-        ephys=ephys,
         nclus=nclus,
         nclus_rm=nclus_rm,
         nclus_s=nclus_s,
@@ -2411,8 +2143,7 @@ def plot_dim_reduction(
         except Exception:
             pass
 
-        out = Path(one.cache_dir, "dmn", "imgs",
-                   f"{nclus}_{mapping}_{algo}_cv{int(cv)}_syn{int(synthetic)}{umap_tag}.png")
+        out = DMN_BASE / "figs" / f"{nclus}_{mapping}_{algo}_cv{int(cv)}_syn{int(synthetic)}{umap_tag}.png"
         fig.savefig(out, dpi=save_dpi)
         if save_only:
             plt.close(fig)
@@ -2483,8 +2214,7 @@ def plot_dim_reduction(
         except Exception:
             pass
 
-        out2 = Path(one.cache_dir, 'dmn', 'imgs',
-                    f'{nclus}_{mapping}_lines_{algo}_cv{cv}{umap_tag}.png')
+        out2 = DMN_BASE / 'figs' / f'{nclus}_{mapping}_lines_{algo}_cv{cv}{umap_tag}.png'
         ff.savefig(out2, dpi=save_dpi)
         if save_only:
             plt.close(ff)
@@ -2577,7 +2307,7 @@ def plot_umap_si_kmeans_grid(
     if len(nclus_list) != 6:
         raise ValueError("nclus_list must contain exactly 6 entries for a 2x3 layout.")
 
-    img_dir = Path(one.cache_dir, "dmn", "imgs")
+    img_dir = DMN_BASE / "figs"
     img_dir.mkdir(parents=True, exist_ok=True)
 
     panel_imgs = []
@@ -3009,7 +2739,7 @@ def smooth_dist(dim=2, algo='umap_z', mapping='Beryl',
     fig0.tight_layout()
 
     # save
-    fig_basepath = Path(one.cache_dir, 'dmn', 'figs'); fig_basepath.mkdir(parents=True, exist_ok=True)
+    fig_basepath = DMN_BASE / 'figs'; fig_basepath.mkdir(parents=True, exist_ok=True)
     base_name = f"{algo}_{mapping}_{dim}D_globalnorm{global_norm}"
     if 'fig' in locals():
         fig.savefig(fig_basepath / f"{base_name}_all_panels.svg", format='svg', dpi=300, bbox_inches='tight')
@@ -3020,7 +2750,7 @@ def smooth_dist(dim=2, algo='umap_z', mapping='Beryl',
 
 
 def _build_event_stats(rerun=False):
-    pth_dmnm = Path(Path(one.cache_dir, 'dmn'), 'mean_event_diffs.npy')
+    pth_dmnm = DMN_BASE / 'mean_event_diffs.npy'
     if (not pth_dmnm.is_file()) or rerun:
 
         pids = np.unique(np.asarray(r['pid']))
@@ -3177,7 +2907,7 @@ def plot_ave_PETHs(feat='concat_z', vers='concat',
     ax.set_ylabel('trial-averaged z')
     fig1.canvas.manager.set_window_title('PETHs averaged across all BWM cells')
     fig1.tight_layout()
-    fig1.savefig(Path(one.cache_dir, 'dmn', 'figs', 'mean_time_aligned_PETHs.svg'),
+    fig1.savefig(DMN_BASE / 'figs' / 'mean_time_aligned_PETHs.svg',
                  format='svg', dpi=300, bbox_inches='tight')
 
     plt.show()
@@ -3227,7 +2957,7 @@ def plot_ave_PETHs(feat='concat_z', vers='concat',
 
     fig2.canvas.manager.set_window_title('Concatenated mean feature vector')
     fig2.tight_layout()
-    fig2.savefig(Path(one.cache_dir, 'dmn', 'figs', 'mean_concat_feature_vector.svg'),
+    fig2.savefig(DMN_BASE / 'figs' / 'mean_concat_feature_vector.svg',
                  format='svg', dpi=300, bbox_inches='tight')      
 
 
@@ -3242,7 +2972,6 @@ def plot_xyz(
     ax=None,
     axoff: bool = True,
     exa: bool = True,
-    ephys: bool = False,
     nclus: int = 7,
     nclus_rm: int = 100,   # NEW: forwarded to regional_group (RM cache + optional isort attach logic)
     cv: bool = True,
@@ -3270,7 +2999,6 @@ def plot_xyz(
     r = regional_group(
         mapping,
         vers=vers,
-        ephys=ephys,
         nclus=int(nclus),
         nclus_rm=int(nclus_rm),
         cv=cv,
@@ -3634,9 +3362,6 @@ def plot_connectivity_matrix(metric='umap_z', mapping='Beryl',
         zip([pal[reg] for reg in regs],
         ax0.yaxis.get_ticklabels())]
     
-    if metric[-1] == 'e':
-        vers = '30 ephysAtlas'
-        
     ax0.set_title(f'{metric}, {vers}')
     cbar = plt.colorbar(ims,fraction=0.046, pad=0.04,
                         extend='neither')
@@ -3671,7 +3396,7 @@ def plot_multi_matrices(ticktype='rectangles', add_clus=True,
     '''
 
 
-    pth_matrices = Path(one.cache_dir, 'dmn', 'd.npy')
+    pth_matrices = DMN_BASE / 'd.npy'
     
     if (not pth_matrices.is_file() or rerun):        
         verss = ['concat','stim_surp_incon', 'resting']
@@ -3679,8 +3404,6 @@ def plot_multi_matrices(ticktype='rectangles', add_clus=True,
         for vers in verss:
             if vers == 'cartesian':
                 D[vers] = trans_(get_centroids(dist_=True))
-            elif vers == 'ephysAtlas':
-                D[vers] = trans_(get_umap_dist(algo='umap_e', vers='concat'))
             elif vers == 'pw':
                 D[vers] = trans_(get_pw_dist(vers='concat'))   
             else:     
@@ -3804,13 +3527,11 @@ def plot_dendrograms():
     """
     
     
-    verss = list(PETH_types_dict.keys()) + ['cartesian','ephysAtlas']
+    verss = list(PETH_types_dict.keys()) + ['cartesian']
     D = {}
     for vers in verss:
         if vers == 'cartesian':
             D[vers] = trans_(get_centroids(dist_=True))
-        elif vers == 'ephysAtlas':
-            D[vers] = trans_(get_umap_dist(algo='umap_e', vers='concat'))
         else:     
             D[vers] = trans_(get_umap_dist(algo='umap_z', vers=vers))
 
@@ -3878,8 +3599,8 @@ right=0.984,
 hspace=1.0,
 wspace=0.335)
 
-    fig.savefig(Path(one.cache_dir,'dmn', 'figs','dendros.svg'))    
-    fig.savefig(Path(one.cache_dir,'dmn', 'figs','dendros.pdf'),
+    fig.savefig(DMN_BASE / 'figs' / 'dendros.svg')    
+    fig.savefig(DMN_BASE / 'figs' / 'dendros.pdf',
                 dpi=150)
 
 
@@ -4063,7 +3784,7 @@ def plot_dist_clusters(anno=True, axs=None):
     plot umap per region by using the
     similarity scores obtained by smoothing over neurons
     
-    also for cartesian and ephysAtlas 
+    also for Cartesian distances
     '''
 
     alone = False
@@ -4126,7 +3847,6 @@ def plot_single_feature(
     mapping: str = "kmeans",
     *,
     cats=None,
-    ephys: bool = False,
     nclus: int = 25,
     cv: bool = False,
 ):
@@ -4142,7 +3862,7 @@ def plot_single_feature(
 
     Parameters
     ----------
-    vers, mapping, ephys, nclus, cv
+    vers, mapping, nclus, cv
         Passed through to regional_group().
     cats : sequence
         Categories to average over. Must match dtype of r['acs'] entries.
@@ -4151,7 +3871,7 @@ def plot_single_feature(
     if cats is None or len(cats) == 0:
         raise ValueError("Provide `cats` as a non-empty list/tuple of categories to plot.")
 
-    r = regional_group(mapping, vers=vers, ephys=ephys, nclus=nclus, cv=cv)
+    r = regional_group(mapping, vers=vers, nclus=nclus, cv=cv)
 
     acs = np.asarray(r["acs"])
     X = r[feat]
@@ -4210,7 +3930,7 @@ def plot_single_feature(
     ax.legend(frameon=False, fontsize=9)
     fig.tight_layout()
     plt.show()
-    fig.savefig(Path(one.cache_dir, 'dmn', 'figs', f'single_feature_{mapping}_cats_{"_".join(map(str, cats))}.svg'))
+    fig.savefig(DMN_BASE / 'figs' / f'single_feature_{mapping}_cats_{"_".join(map(str, cats))}.svg')
 
 
 def plot_example_neurons(
@@ -4291,7 +4011,7 @@ def plot_example_neurons(
 
     # saving
     if savefig:
-        save_dir = Path(one.cache_dir, 'dmn', 'figs')
+        save_dir = DMN_BASE / 'figs'
         save_dir.mkdir(parents=True, exist_ok=True)
         print(f"[info] Figures will be saved to {save_dir}")
 
@@ -4475,7 +4195,7 @@ def plot_mistake_examples(
       If provided and `cells` is None, cells are loaded from CSV.
     concat_dir:
       directory containing per-insertion files "{eid}_{probe}.npy".
-      Default: Path(one.cache_dir, 'dmn', 'concat').
+      Default: DMN_BASE / 'concat'.
 
     Returns
     -------
@@ -4483,7 +4203,7 @@ def plot_mistake_examples(
     """
 
     if concat_dir is None:
-        concat_dir = Path(one.cache_dir, 'dmn', 'concat')
+        concat_dir = DMN_BASE / 'concat'
     concat_dir = Path(concat_dir)
 
     if cells is None:
@@ -4748,7 +4468,7 @@ def plot_mistake_examples(
     fig.tight_layout(rect=[0.02, 0.02, 0.90, 0.96])
 
     if savefig:
-        outdir = Path(one.cache_dir, 'dmn', 'figs')
+        outdir = DMN_BASE / 'figs'
         outdir.mkdir(parents=True, exist_ok=True)
         fpath = outdir / f"{out_name}_{event_key}.svg"
         fig.savefig(fpath, dpi=dpi, bbox_inches='tight')
@@ -4766,7 +4486,6 @@ def plot_cluster_profile(
     nclus_rm: int | None = None,
     grid_upsample: int = 0,
     cv: bool = False,
-    ephys: bool = False,
     axs=None,                     # expects (ax_left, ax_right) or None (kept for backward compat)
     norm_reg_count: bool = True,
     savefig: bool = False,
@@ -4820,7 +4539,6 @@ def plot_cluster_profile(
         r_map = regional_group(
             mapping="rm",
             vers=vers,
-            ephys=ephys,
             grid_upsample=grid_upsample,
             nclus=nclus,          # unused in rm branch; kept for logging/backward compat
             nclus_rm=nclus_rm,
@@ -4834,7 +4552,6 @@ def plot_cluster_profile(
         r_map = regional_group(
             mapping="kmeans",
             vers=vers,
-            ephys=ephys,
             grid_upsample=grid_upsample,
             nclus=nclus,
             nclus_rm=nclus_rm,
@@ -4848,7 +4565,6 @@ def plot_cluster_profile(
     r_B = regional_group(
         mapping="Beryl",
         vers=vers,
-        ephys=ephys,
         grid_upsample=grid_upsample,
         nclus=nclus,
         nclus_rm=nclus_rm,
@@ -5129,7 +4845,7 @@ def plot_cluster_profile(
         plt.show()
 
         if savefig:
-            save_dir = Path(one.cache_dir, "dmn", "figs")
+            save_dir = DMN_BASE / "figs"
             save_dir.mkdir(parents=True, exist_ok=True)
             fstem = (
                 f"{clus_label}clus_ALL_of{nclus_total}"
@@ -5201,7 +4917,7 @@ def plot_cluster_profile(
         plt.show()
 
         if savefig:
-            save_dir = Path(one.cache_dir, "dmn", "figs")
+            save_dir = DMN_BASE / "figs"
             save_dir.mkdir(parents=True, exist_ok=True)
             fstem = (
                 f"{clus_label}clus_{clus}_of{nclus_total}"
@@ -5348,7 +5064,7 @@ def plot_cluster_profile(
     plt.show()
 
     if savefig:
-        save_dir = Path(one.cache_dir, "dmn", "figs")
+        save_dir = DMN_BASE / "figs"
         save_dir.mkdir(parents=True, exist_ok=True)
 
         fstem = (
@@ -5472,12 +5188,12 @@ def clus_freqs(
     """
     Plot or compute frequencies.
 
-    foc: 'clustering', 'Beryl', 'dec'
+    foc: 'clustering', 'Beryl', or 'dec'
     get_res: if True, DO NOT generate plots; just compute d, save (if save_=True) and return d.
     norm_: normalize distributions to sum to 1 (when denominator > 0)
     save_: save results (and figures only if plots are generated)
-    single_regions: list of region acronyms to plot separately (only for foc in {'Beryl','dec'})
-    axs: optional axes array to draw into (only supported for foc in {'Beryl','dec'}).
+    single_regions: list of region acronyms to plot separately (for foc in {'Beryl','dec'})
+    axs: optional axes array to draw into (supported for foc in {'Beryl','dec'}).
     cv: passed through to regional_group(...)
 
     single_regions = ['PA','PAA','MOB','MEA','MRN',
@@ -5879,7 +5595,7 @@ def clus_freqs(
         np.save(pthres, d, allow_pickle=True)
 
         if fig is not None:
-            outdir = Path(pth_dmn.parent, "imgs")
+            outdir = DMN_BASE / "figs"
             outdir.mkdir(parents=True, exist_ok=True)
 
             fig.tight_layout()
@@ -5979,7 +5695,6 @@ def plot_rastermap(
     r = regional_group(
         mapping,
         vers=vers,
-        ephys=False,
         nclus=nclus,
         nclus_rm=nclus_rm,
         rerun=rerun,
@@ -6043,7 +5758,7 @@ def plot_rastermap(
 
     # ---------------- choose sorting algorithm ----------------
     if sort_method == "rastermap":
-        isort = r["isort" if feat_plot != "ephysTF" else "isort_e"]
+        isort = r["isort"]
 
     elif sort_method == "umap":
         # embeddings are stack-derived; if you need them to respect zsc=False you must add separate embedding caches upstream
@@ -6073,6 +5788,12 @@ def plot_rastermap(
             rank = {reg: i for i, reg in enumerate(regs_can)}
             unk = len(regs_can) + 1
             keys = np.array([rank.get(str(a), unk) for a in acs_arr], dtype=int)
+            isort = np.argsort(keys, kind="stable")
+
+        elif sort_method == "hier":
+            ord_C, _, clu_vals = get_hier_cluster_order(nclus=nclus, vers=vers)
+            hier_rank = {int(clu_vals[ord_C[i]]): i for i in range(len(ord_C))}
+            keys = np.array([hier_rank.get(int(a), len(ord_C)) for a in acs_arr], dtype=int)
             isort = np.argsort(keys, kind="stable")
 
         else:
@@ -6249,47 +5970,43 @@ def plot_rastermap(
             clip_on=False,
         )
 
-    if feat_plot != "ephysTF":
-        if "len" not in r or not isinstance(r["len"], dict) or len(r["len"]) == 0:
-            raise KeyError("Segment lengths r['len'] missing or empty; cannot draw boundaries/labels.")
+    if "len" not in r or not isinstance(r["len"], dict) or len(r["len"]) == 0:
+        raise KeyError("Segment lengths r['len'] missing or empty; cannot draw boundaries/labels.")
 
-        ordered_segments = list(r["len"].keys())
-        labels = r.get("peth_dict", {})
+    ordered_segments = list(r["len"].keys())
+    labels = r.get("peth_dict", {})
 
-        if data.shape[1] != sum(r["len"].values()):
-            print(f"[warn] data.shape[1] ({data.shape[1]}) != sum(len) ({sum(r['len'].values())})")
+    if data.shape[1] != sum(r["len"].values()):
+        print(f"[warn] data.shape[1] ({data.shape[1]}) != sum(len) ({sum(r['len'].values())})")
 
-        trans_top = mpl.transforms.blended_transform_factory(ax.transData, ax.transAxes)
+    trans_top = mpl.transforms.blended_transform_factory(ax.transData, ax.transAxes)
 
-        h = 0
-        for seg in ordered_segments:
-            seg_len = r["len"][seg]
-            xv = h + seg_len
-            if xv > n_cols:
-                break
-            ax.axvline(xv, linestyle="--", linewidth=1, color="grey")
+    h = 0
+    for seg in ordered_segments:
+        seg_len = r["len"][seg]
+        xv = h + seg_len
+        if xv > n_cols:
+            break
+        ax.axvline(xv, linestyle="--", linewidth=1, color="grey")
 
-            midpoint = h + seg_len / 2.0
-            if not img_only:
-                ax.text(
-                    midpoint, 1.02,
-                    labels.get(seg, seg),
-                    rotation=90,
-                    color="k",
-                    fontsize=10,
-                    ha="center",
-                    va="bottom",
-                    transform=trans_top,
-                    clip_on=False,
-                )
-            h += seg_len
+        midpoint = h + seg_len / 2.0
+        if not img_only:
+            ax.text(
+                midpoint, 1.02,
+                labels.get(seg, seg),
+                rotation=90,
+                color="k",
+                fontsize=10,
+                ha="center",
+                va="bottom",
+                transform=trans_top,
+                clip_on=False,
+            )
+        h += seg_len
 
-        x_ticks = np.arange(0, n_cols, c_sec)
-        ax.set_xticks(x_ticks)
-        ax.set_xticklabels([f"{int(tick / c_sec)}" for tick in x_ticks])
-    else:
-        ax.set_xticks(range(data.shape[1]))
-        ax.set_xticklabels(r["fts"], rotation=90)
+    x_ticks = np.arange(0, n_cols, c_sec)
+    ax.set_xticks(x_ticks)
+    ax.set_xticklabels([f"{int(tick / c_sec)}" for tick in x_ticks])
 
     ax.set_xlabel("time [sec]")
     ax.set_ylabel(f"cells in {regex}" if feat == "single_reg" else "cells")
@@ -6324,7 +6041,7 @@ def plot_rastermap(
     except Exception:
         pass
 
-    out_path = pth_dmn.parent / "imgs" / fname
+    out_path = DMN_BASE / "figs" / fname
     fig.savefig(out_path, dpi=150, bbox_inches="tight", facecolor="white")
 
     if clsfig:
@@ -6379,6 +6096,18 @@ def flatness_entropy_score(d, get_cells=False):
     return dict(sorted(scores.items(), key=lambda item: item[1], reverse=True))
 
 
+
+
+
+
+
+
+
+
+
+
+ 
+
 def get_dec_bwm(nscores=3):
     """
     Calculate the average score per variable for each region, 
@@ -6392,7 +6121,7 @@ def get_dec_bwm(nscores=3):
       average scores per variable as values.
     """        
             
-    dec_pth = Path(one.cache_dir, 'bwm_res', 'bwm_figs_data', 'decoding') 
+    dec_pth = DMN_BASE / 'bwm_decoding'
     varis = ['stimside', 'choice', 'feedback', 'wheel-speed', 'wheel-velocity']
 
     res = {}
@@ -6434,405 +6163,111 @@ def get_dec_bwm(nscores=3):
     return combined_res
 
 
-def plot_histograms(clustering='kmeans', nclus=25, nclus_rm=100, cv=False):
-    '''
-    Plot two histograms of the flatness scores across regions:
-    one for decoding, one for clustering, as line outlines.
-    '''
-
-    n_bins = 20
-
-    be = flatness_entropy_score(clus_freqs(foc='Beryl', get_res=True, clustering=clustering, nclus=nclus, nclus_rm=nclus_rm, cv=cv))
-    print(f"# regions in clustering (be): {len(be)}")
-    de = flatness_entropy_score(clus_freqs(foc='dec', get_res=True))
-    print(f"# regions in decoding   (de): {len(de)}")
-
-    regions = sorted(set(be.keys()) & set(de.keys()))
-    print(f"# regions in intersection: {len(regions)}")
-
-    be_values = [be[reg] for reg in regions]
-    de_values = [de[reg] for reg in regions]
-
-    # Shared bins
-    all_values = be_values + de_values
-    bins = np.histogram_bin_edges(all_values, bins=20)
-
-    # Histogram counts
-    be_counts, _ = np.histogram(be_values, bins=bins)
-    de_counts, _ = np.histogram(de_values, bins=bins)
-
-    bin_centers = 0.5 * (bins[1:] + bins[:-1])
-
-    fig, ax = plt.subplots(figsize=(3, 2.5))
-
-    ax.step(bin_centers, be_counts, where='mid', label='Clustering', color='blue', linewidth=2)
-    ax.step(bin_centers, de_counts, where='mid', label='Decoding', color='red', linewidth=2)
-
-    ax.set_xlabel('Specialization', fontsize=10)
-    ax.set_ylabel('# Regions', fontsize=10)
-
-    ax.legend()
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
-    ax.yaxis.set_major_locator(plt.MaxNLocator(3))
-    ax.xaxis.set_major_locator(plt.MaxNLocator(3))
-
-    plt.tight_layout()
-    fig.savefig(Path(pth_dmn.parent, 'imgs', 'overleaf_pdf',
-        'flatness_histograms.svg'), format='svg', bbox_inches='tight')
-    plt.show()
-
-
-def plot_three_swansons(clustering='kmeans', nclus=25, nclus_rm=100, cv=False):
-    '''
-    For the cluster count figure, plot three Swansons:
-    1. Cluster counts per region (flatness entropy from clustering)
-    2. Specialization scores from decoding
-    3. Cosmos colors
-    '''
-
-    # Load flatness scores independently
-    be = flatness_entropy_score(clus_freqs(foc='Beryl', get_res=True,       
-        clustering=clustering, nclus=nclus, nclus_rm=nclus_rm, cv=cv))
-    de = flatness_entropy_score(clus_freqs(foc='dec', get_res=True, cv=cv))
-
-    acronyms_be = np.array(list(be.keys()))
-    acronyms_de = np.array(list(de.keys()))
-
-    log_be = np.log([be[k] for k in acronyms_be])
-    log_de = np.log([de[k] for k in acronyms_de])
-
-    fig, axs = plt.subplots(ncols=3, figsize=(4.5, 3))
-
-    # Define colormaps and value ranges separately
-    cmap = plt.get_cmap('magma')
-    vmin_be, vmax_be = log_be.min(), log_be.max()
-    vmin_de, vmax_de = log_de.min(), log_de.max()
-
-    # Panel 1: Clustering specialization
-    plot_swanson_vector(
-        acronyms=acronyms_be,
-        values=log_be,
-        ax=axs[0],
-        br=br,
-        orientation='portrait',
-        cmap=cmap,
-        vmin=vmin_be,
-        vmax=vmax_be,
-        show_cbar=False,
-    )
-    axs[0].axis('off')
-
-    # Add colorbar and grey "no data" box to first panel
-    cax1 = fig.add_axes([0.05, 0.72, 0.015, 0.2])
-    cb1 = plt.colorbar(ScalarMappable(norm=Normalize(vmin_be, vmax_be), cmap=cmap), cax=cax1)
-    cb1.ax.tick_params(labelsize=5)
-    cb1.set_label('log(specialization(clu))', fontsize=6, labelpad=2)
-    grey_patch = mpatches.Patch(color='lightgrey', label='no data')
-    axs[0].legend(handles=[grey_patch], loc='upper left', fontsize=5, frameon=False, handlelength=1, handleheight=0.8)
-
-    # Panel 2: Decoding specialization
-    plot_swanson_vector(
-        acronyms=acronyms_de,
-        values=log_de,
-        ax=axs[1],
-        br=br,
-        orientation='portrait',
-        cmap=cmap,
-        vmin=vmin_de,
-        vmax=vmax_de,
-        show_cbar=False,
-    )
-    axs[1].axis('off')
-
-    # Add colorbar to second panel
-    cax2 = fig.add_axes([0.38, 0.72, 0.015, 0.2])
-    cb2 = plt.colorbar(ScalarMappable(norm=Normalize(vmin_de, vmax_de), cmap=cmap), cax=cax2)
-    cb2.ax.tick_params(labelsize=5)
-    cb2.set_label('log(specialization(dec))', fontsize=6, labelpad=2)
-
-    # Panel 3: Color overlay
-    plot_swanson_vector(ax=axs[2], orientation='portrait')
-    axs[2].axis('off')
-
-    plt.tight_layout()
-    fig.savefig(Path(pth_dmn.parent, 'imgs', 'overleaf_pdf', 'swanson_three_flatness.svg'),
-                format='svg', bbox_inches='tight')
-    plt.show()
-
-
 def scat_dec_clus(norm_=True, harris=False, nclus=25, nclus_rm=100,
-                  corr_only=False, clustering='kmeans', log_scale=True, axs=None,
-                  compare='clu', cv=False, anno=False):
-    '''
-    Scatter plots comparing specialization scores from clustering and decoding,
-    and optionally Harris hierarchy scores.
+                  corr_only=False, clustering='kmeans', log_scale=True,
+                  axs=None, compare='clu', cv=False, anno=False,
+                  save_=True, outpath=None):
+    """Compare clustering- and decoding-based regional specialization.
 
-    Parameters
-    ----------
-    norm_ : bool
-        Placeholder; not used in current implementation.
-    harris : bool
-        If True, compare specialization scores to Harris hierarchy.
-    log_scale : bool
-        If True, use logarithmic axes.
-    axs : matplotlib.axes.Axes
-        Optional axis to plot on.
-    compare : {'clu', 'dec'}
-        In Harris mode, whether to compare clustering or decoding specialization to the hierarchy.
-    anno : bool
-        If True, annotate Beryl region labels in Beryl colors next to scatter points.
-    '''
-
-    # Load specialization scores
+    This is the function used for Fig. S6a.  With ``harris=True`` it also
+    produces the hierarchy comparisons used for Fig. S6c.
+    """
     be = flatness_entropy_score(clus_freqs(
-        foc='Beryl', get_res=True, nclus=nclus, nclus_rm=nclus_rm, cv=cv, clustering=clustering
-    ))
+        foc='Beryl', get_res=True, nclus=nclus, nclus_rm=nclus_rm,
+        cv=cv, clustering=clustering, norm_=norm_))
     de = flatness_entropy_score(clus_freqs(
-        foc='dec', get_res=True, cv=cv, clustering=clustering
-    ))
+        foc='dec', get_res=True, cv=cv, clustering=clustering,
+        norm_=norm_))
 
-    if axs is None:
+    created_axes = axs is None
+    if created_axes:
         fig, axs = plt.subplots(figsize=(2, 2))
+    else:
+        fig = axs.figure
 
-    def scatter_panel(ax, x, y, xlabel, ylabel, labels, colors, annotate_r=True, anno=True):
-        # Correlation
+    def scatter_panel(ax, x, y, xlabel, ylabel, labels, colors,
+                      annotate_r=True):
         corr, pval = pearsonr(x, y)
         print(f"Pearson r = {corr:.2f}, p = {pval:.4g}")
 
-        # Linear fit
-        slope, intercept, _, _, _ = linregress(x, y)
-        xx = np.linspace(min(x), max(x), 100)
-        yy = slope * xx + intercept
-
-        # Scatter + optional per-point label
         for i in range(len(x)):
             ax.scatter(x[i], y[i], color=colors[i], s=10, zorder=2)
             if anno:
-                ax.annotate(
-                    labels[i],
-                    (x[i], y[i]),
-                    xytext=(3, 2), textcoords="offset points",
-                    fontsize=7,
-                    color=colors[i],
-                    ha="left", va="bottom",
-                    zorder=3,
-                    clip_on=True
-                )
+                ax.annotate(labels[i], (x[i], y[i]), xytext=(3, 2),
+                            textcoords='offset points', fontsize=7,
+                            color=colors[i], ha='left', va='bottom',
+                            zorder=3, clip_on=True)
 
         if log_scale:
             ax.set_xscale('log')
             ax.set_yscale('log')
+        else:
+            ax.xaxis.set_major_locator(MaxNLocator(3))
+            ax.yaxis.set_major_locator(MaxNLocator(3))
 
         ax.set_xlabel(xlabel, fontsize=10)
         ax.set_ylabel(ylabel, fontsize=10)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
-
-        if not log_scale:
-            ax.xaxis.set_major_locator(MaxNLocator(3))
-            ax.yaxis.set_major_locator(MaxNLocator(3))
-
         if annotate_r:
-            ax.text(
-                0.02, 0.98,
-                f"$r$ = {corr:.2f}\n$p$ = {pval:.2g}",
-                transform=ax.transAxes,
-                ha="left", va="top", fontsize=9, color="k"
-            )
-
-        ax.text(0.98, 0.02, f'{len(x)} regions',
-                transform=ax.transAxes, ha='right', va='bottom', color='k')
+            ax.text(0.02, 0.98, f'$r$ = {corr:.2f}\n$p$ = {pval:.2g}',
+                    transform=ax.transAxes, ha='left', va='top', fontsize=9)
+        ax.text(0.98, 0.02, f'{len(x)} regions', transform=ax.transAxes,
+                ha='right', va='bottom', color='k')
+        return corr, pval
 
     if harris:
-        log_scale = False  # Harris hierarchy is ordinal; disable log scale
-
-        harris_hierarchy_scores = {region: idx for idx, region in enumerate(harris_hierarchy)}
-
-        if compare == 'clu':
-            common = set(be) & set(harris_hierarchy_scores)
-            labels = list(common)
-            x_vals = [be[r] for r in labels]
-            y_vals = [harris_hierarchy_scores[r] for r in labels]
-            colors = [pal[r] for r in labels]
-            xlabel = 'log(Specialization (clu))' if log_scale else 'Specialization (clu)'
-            ylabel = 'Harris hierarchy score'
-            save_name = 'scat_clu_vs_harris.svg'
-
-        elif compare == 'dec':
-            common = set(de) & set(harris_hierarchy_scores)
-            labels = list(common)
-            x_vals = [de[r] for r in labels]
-            y_vals = [harris_hierarchy_scores[r] for r in labels]
-            colors = [pal[r] for r in labels]
-            xlabel = 'log(Specialization (dec))' if log_scale else 'Specialization (dec)'
-            ylabel = 'Harris hierarchy score'
-            save_name = 'scat_dec_vs_harris.svg'
-
-        else:
-            raise ValueError("compare must be 'clu' or 'dec'")
-
-        if corr_only:
-            plt.gcf().clear()
-            corr, pval = pearsonr(x_vals, y_vals)
-            print(f'{nclus} clusters; compare {compare} to Harris')
-            print(f"Pearson r = {corr:.2f}, p = {pval:.4g}")
-            return corr, pval
-
-        scatter_panel(axs, x_vals, y_vals, xlabel, ylabel, labels, colors, anno=anno)
-
+        # The hierarchy is ordinal, so this panel is deliberately linear.
+        use_log_scale = log_scale
+        log_scale = False
+        hierarchy_scores = {region: idx for idx, region in enumerate(harris_hierarchy)}
+        source = be if compare == 'clu' else de
+        common = sorted(set(source) & set(hierarchy_scores))
+        x_vals = [source[r] for r in common]
+        y_vals = [hierarchy_scores[r] for r in common]
+        labels = common
+        colors = [pal.get(r, 'k') for r in labels]
+        xlabel = f"Specialization ({compare})"
+        ylabel = 'Harris hierarchy score'
+        default_name = f'scat_{compare}_vs_harris.svg'
+        log_scale = False
     else:
-        common = set(be) & set(de)
-        labels = list(common)
+        common = sorted(set(be) & set(de))
+        labels = common
         x_vals = [be[r] for r in labels]
         y_vals = [de[r] for r in labels]
-
-        if corr_only:
-            corr, pval = pearsonr(x_vals, y_vals)
-            print(f'{nclus} clusters; compare to dec')
-            print(f"Pearson r = {corr:.2f}, p = {pval:.4g}")
-            return corr, pval
-
-        colors = [pal[r] for r in labels]
+        colors = [pal.get(r, 'k') for r in labels]
         xlabel = 'log(Specialization (clu))' if log_scale else 'Specialization (clu)'
         ylabel = 'log(Specialization (dec))' if log_scale else 'Specialization (dec)'
-        save_name = 'scat_clu_vs_dec.svg'
+        default_name = 'scat_clu_vs_dec.svg'
 
-        scatter_panel(axs, x_vals, y_vals, xlabel, ylabel, labels, colors, anno=anno)
+    corr, pval = pearsonr(x_vals, y_vals)
+    if corr_only:
+        if created_axes:
+            plt.close(fig)
+        print(f'{nclus} clusters; Pearson r = {corr:.2f}, p = {pval:.4g}')
+        return corr, pval
 
-    plt.tight_layout()
-    plt.savefig(Path(pth_dmn.parent, 'imgs', 'overleaf_pdf', save_name),
-                format='svg', bbox_inches='tight')
-    plt.show()
-
-
-
-def spec_corr_dec_nclus(
-    vers="concat",
-    norm_=True,
-    n_min=3,
-    n_max=49,
-    axs=None,
-    savefig=True,
-    outpath=None,
-    kmeans_nclusrm=100,
-):
-    """
-    Pearson correlation between specialization from clustering (Beryl frequencies)
-    and decoding specialization, as a function of nclus (kmeans) or nclus_rm (rm).
-
-    Plotting:
-      - 4 colored connecting lines (colors follow Matplotlib default cycle; legend uses these).
-      - Markers indicate significance: black if p<=0.05 else grey.
-      - Markers stay unfilled-by-line-color (significance encoding dominates).
-    """
-    ns = list(range(int(n_min), int(n_max) + 1))
-
-    series = [
-        ("kmeans", True),
-        ("kmeans", False),
-        ("rm", True),
-        ("rm", False),
-    ]
-
-    created = axs is None
-    if created:
-        fig, ax = plt.subplots(figsize=(4.5, 3.0))
-    else:
-        ax = axs
-        fig = ax.figure
-
-    # Precompute decoding specialization only once per cv (independent of n and clustering)
-    de_cache = {}
-
-    for clustering, cv in series:
-        xs, rs, ps = [], [], []
-
-        # decoding spec (per cv) cached in memory
-        if cv not in de_cache:
-            de_cache[cv] = flatness_entropy_score(
-                clus_freqs(
-                    foc="dec",
-                    get_res=True,
-                    cv=cv,
-                    clustering=clustering,  # if your cache keys incorrectly include clustering, keep this
-                    norm_=norm_,
-                    save_=True,
-                    vers=vers,
-                )
-            )
-        de = de_cache[cv]
-
-        for n in ns:
-            if clustering == "kmeans":
-                nclus = n
-                nclus_rm = kmeans_nclusrm
-            else:  # rm
-                nclus = n
-                nclus_rm = n
-
-            be = flatness_entropy_score(
-                clus_freqs(
-                    foc="Beryl",
-                    get_res=True,
-                    nclus=nclus,
-                    nclus_rm=nclus_rm,
-                    cv=cv,
-                    clustering=clustering,
-                    norm_=norm_,
-                    save_=True,
-                    vers=vers,
-                )
-            )
-
-            common = set(be) & set(de)
-            if len(common) < 3:
-                r, p = np.nan, np.nan
-            else:
-                x_vals = [be[r_] for r_ in common]
-                y_vals = [de[r_] for r_ in common]
-                r, p = pearsonr(x_vals, y_vals)
-
-            xs.append(n)
-            rs.append(r)
-            ps.append(p)
-
-        xs = np.asarray(xs, float)
-        rs = np.asarray(rs, float)
-        ps = np.asarray(ps, float)
-
-        label = f"{clustering}, cv={cv}"
-
-        # 1) draw colored connecting line
-        ln, = ax.plot(xs, rs, linestyle='-', linewidth=1.5, label=label)
-        line_color = ln.get_color()
-
-        # 2) overlay significance markers
-        sig = np.isfinite(ps) & (ps <= 0.05)
-        nonsig = np.isfinite(ps) & (ps > 0.05)
-
-        ax.scatter(xs[sig], rs[sig], c='k', s=10, zorder=3)
-        ax.scatter(xs[nonsig], rs[nonsig], c='0.7', s=10, zorder=3)
-
-
-    ax.set_xlabel("nclus")
-    ax.set_ylabel("Pearson correlation \n (clu spec vs dec spec)")
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    ax.set_xlim(min(ns) - 0.5, max(ns) + 0.5)
-    ax.legend(fontsize=8, frameon=False)
-
+    scatter_panel(axs, x_vals, y_vals, xlabel, ylabel,
+                  labels, colors, annotate_r=True)
     fig.tight_layout()
 
-    plt.show()
-    if savefig:
+    if save_:
         if outpath is None:
-            outdir = Path(pth_dmn).parent / "imgs"
-            outdir.mkdir(parents=True, exist_ok=True)
-            outpath = outdir / f"spec_corr_dec_nclus_{vers}_norm{norm_}.svg"
-        fig.savefig(outpath, format="svg", bbox_inches="tight")
+            outpath = DMN_BASE / 'figs' / 'overleaf_pdf' / default_name
+        outpath = Path(outpath)
+        outpath.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(outpath, format=outpath.suffix.lstrip('.') or 'svg',
+                    bbox_inches='tight')
+        # Save a PDF companion when the requested output is SVG.
+        if outpath.suffix.lower() == '.svg':
+            fig.savefig(outpath.with_suffix('.pdf'), bbox_inches='tight')
+        print(f'Saved: {outpath}')
 
- 
+    if created_axes:
+        plt.show()
+    return fig, axs, corr, pval
+
 
 def ghostscript_compress_pdf(level='/printer'):
 
@@ -6882,7 +6317,6 @@ def save_rastermap_pdf(
     bg: bool = False,
     cv: bool = False,
     vers: str = "concat",
-    ephys: bool = False,
     nclus: int = 13,
     rerun: bool = False,
     bounds: bool = True,
@@ -6908,7 +6342,6 @@ def save_rastermap_pdf(
     r = regional_group(
         mapping,
         vers=vers,
-        ephys=ephys,
         grid_upsample=grid_upsample,
         nclus=nclus,
         rerun=rerun,
@@ -7000,7 +6433,7 @@ def save_rastermap_pdf(
         f".pdf"
     )
 
-    out_dir = pth_dmn.parent / "imgs"
+    out_dir = DMN_BASE / "figs"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / fname
     img.save(out_path, "PDF")
@@ -7101,7 +6534,7 @@ def plot_umap_SI(algo='umap_z', mapping='Beryl',smooth=True, norm_=True):
         row += 1
 
     fig.tight_layout()
-    fig.savefig(Path(pth_dmn.parent, 'imgs', 'overleaf_pdf',
+    fig.savefig(Path(DMN_BASE, 'figs', 'overleaf_pdf',
          f'umap_si_norm{norm_}_smooth{smooth}.png'), dpi=180, bbox_inches='tight')
 
 
@@ -7178,7 +6611,7 @@ def plot_umap_SI_concat_cosmos(algo='umap_z', mapping='Cosmos',
         ax.set_title(f'{reg}\n{sum(r["acs"] == reg)}', fontsize=6, color=pal[reg])
 
     fig.tight_layout()
-    fig.savefig(Path(pth_dmn.parent, 'imgs', 'overleaf_pdf',
+    fig.savefig(Path(DMN_BASE, 'figs', 'overleaf_pdf',
          f'umap_si_concat_cosmos_norm{norm_}_smooth{smooth}.png'), dpi=180, bbox_inches='tight')
 
 
@@ -7345,6 +6778,19 @@ def plot_fr_lz_scatter_with_marginals(
     plt.show()
 
 
+def synthetic_row_labels(r):
+    """Beryl region and real-data k-means cluster for each row of r['C'] / r['B'].
+
+    In regional_group(synthetic=True), C = X[r['C_rows']] @ V.T, so row i of C is
+    stack neuron C_rows[i]. r['Beryl'] is in stack order and r['acs'] clusters the
+    *synthetic* responses, so neither lines up with C's rows. This returns row i's
+    own region and its cluster in the real-data k-means basis (the functional
+    groups).
+    """
+    rows = np.asarray(r["C_rows"], dtype=int)
+    return np.asarray(r["Beryl"])[rows], np.asarray(r["kmeans_basis_labels"])[rows]
+
+
 def plot_synthetic_marginals_compare_blocks(
     vers: str = "concat",
     nclus: int = 20,
@@ -7476,12 +6922,12 @@ def plot_coeff_correlation_heatmaps(
 ):
     """
     Composite layout (3 rows x 5 cols):
-      col1 (rows 1..3): C (real coeff matrix), unsorted display
+      col1 (rows 1..3): C (real coeff matrix)
       col2 row1: corr(C) hierarchically sorted
       col2 row2: corr(neurons in C coefficients), hier sorted (capped)
       col2 row3: corr(neurons in real feature vectors), hier sorted (capped)
       col3 (rows 1..3): synthetic marginals comparison (15 examples)
-      col4 (rows 1..3): B (synthetic coeff matrix), unsorted display
+      col4 (rows 1..3): B (synthetic coeff matrix)
       col5 row1: corr(B) hierarchically sorted
       col5 row2: corr(neurons in B coefficients), hier sorted (capped)
       col5 row3: corr(neurons in synthetic feature vectors), hier sorted (capped)
@@ -7776,7 +7222,7 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     def _save_both(fig, path_like, default_stem: str):
         """Save a matplotlib figure as both PNG and SVG."""
         if path_like is None:
-            out_dir = Path(one.cache_dir, 'dmn', 'figs')
+            out_dir = DMN_BASE / 'figs'
             out_dir.mkdir(parents=True, exist_ok=True)
             stem_path = out_dir / default_stem
         else:
@@ -7940,10 +7386,9 @@ def plot_coeff_entropy_flatness_real_vs_synth(
     metric_synth = metric_synth[good]
     C = C[good]
     B = B[good]
-    if 'Beryl' in r and len(np.asarray(r['Beryl'])) == len(good):
-        r['Beryl'] = np.asarray(r['Beryl'])[good]
-    if 'acs' in r and len(np.asarray(r['acs'])) == len(good):
-        r['acs'] = np.asarray(r['acs'])[good]
+    # Region and real-data k-means cluster of each (kept) row of C.
+    beryl, acs = synthetic_row_labels(r)
+    beryl, acs = beryl[good], acs[good]
 
     # --- pick extremes + 3 middle rows (closest to median) ---
     k = 5
@@ -8122,12 +7567,6 @@ def plot_coeff_entropy_flatness_real_vs_synth(
 
     # ---------------- Figure 3 (REAL only): group summary (median vs variance) ----------------
     from matplotlib.ticker import MaxNLocator
-
-    if "Beryl" not in r or "acs" not in r:
-        raise KeyError("Expected r['Beryl'] (region per neuron) and r['acs'] (kmeans label per neuron).")
-
-    beryl = np.asarray(r["Beryl"])
-    acs = np.asarray(r["acs"])
 
     # Beryl colors per neuron (as requested; not directly used in the per-group scatter)
     cols_b = np.array([pal[reg] for reg in beryl])
@@ -8388,7 +7827,7 @@ def plot_umaps_si(
       Col 2 : nclus=100       (full column height)
 
     GridSpec rows:  1 row per cluster line,  SCATTER rows for scatter,  GAP rows between slots.
-    Saved as PDF to  <one.cache_dir>/dmn/imgs/si_umaps_nclus.pdf
+    Saved as PDF to  <DMN_BASE>/imgs/si_umaps_nclus.pdf
     """
     from matplotlib import gridspec as mgridspec
 
@@ -8512,7 +7951,7 @@ def plot_umaps_si(
     if out_pdf is not None:
         out = Path(out_pdf)
     else:
-        out = Path(one.cache_dir, "dmn", "imgs", "si_umaps_nclus.pdf")
+        out = DMN_BASE / "figs" / "si_umaps_nclus.pdf"
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, bbox_inches="tight")
     print(f"Saved: {out}")
@@ -8617,10 +8056,9 @@ def plot_fig4_assembly(
     good = np.isfinite(mr) & np.isfinite(ms)
     mr, ms = mr[good], ms[good]
 
-    beryl = np.asarray(r.get("Beryl", []))
-    acs   = np.asarray(r.get("acs",   []))
-    if len(beryl) == len(good): beryl = beryl[good]
-    if len(acs)   == len(good): acs   = acs[good]
+    # Region and real-data k-means cluster of each row of C (see synthetic_row_labels).
+    beryl, acs = synthetic_row_labels(r)
+    beryl, acs = beryl[good], acs[good]
 
     def _grp(labels, exclude=None, nmin=1):
         labels  = np.asarray(labels)
@@ -8788,25 +8226,18 @@ def plot_sorted_cluster_lines(
     figsize: tuple | None = None,
 ):
     """
-    Plot nclus k-means cluster mean PETHs sorted by ord_C.
+    Plot nclus k-means cluster mean PETHs sorted by ord_C, with a compact
+    dendrogram on the left.
     ord_C is derived from hierarchical clustering of corr(C) from the
     synthetic analysis (cv=False), so the cluster order matches the
     basis-vector ordering used in the synthetic figure panels.
     """
     from scipy.spatial.distance import squareform
     from scipy.cluster import hierarchy as _hier
+    from matplotlib.gridspec import GridSpecFromSubplotSpec
 
-    # compute ord_C from synthetic C matrix
-    r_syn = regional_group(
-        mapping="kmeans", vers=vers, synthetic=True,
-        cv=False, nclus=nclus, nclus_s=nclus, zsc=True,
-    )
-    C      = np.asarray(r_syn["C"], float)[:, :nclus]
-    corr_C = np.corrcoef(C, rowvar=False)
-    corr_C = np.nan_to_num(corr_C, nan=0.0, posinf=0.0, neginf=0.0)
-    dist   = np.clip(1.0 - corr_C, 0.0, None); np.fill_diagonal(dist, 0.0)
-    Z      = _hier.linkage(squareform(dist, checks=False), method='average')
-    ord_C  = _hier.leaves_list(Z)
+    # use cached hierarchical ordering (avoids reloading full synthetic dataset)
+    ord_C, Z, _ = get_hier_cluster_order(nclus=nclus, vers=vers, nclus_s=nclus)
 
     # load real data
     r = regional_group(
@@ -8821,20 +8252,38 @@ def plot_sorted_cluster_lines(
     ordered_segs = list(r["len"].keys())
     peth_dict    = r.get("peth_dict", {s: s for s in ordered_segs})
 
-    fh = figsize or (4, max(4, n_clu * 0.09))
+    fh  = figsize or (5, max(4, n_clu * 0.09))
     fig = plt.figure(figsize=fh)
-    gs  = fig.add_gridspec(n_clu, 1, hspace=0)
+    # outer: dendrogram strip (narrow) + cluster lines
+    outer = fig.add_gridspec(1, 2, width_ratios=[1, 5], wspace=0.02)
+    ax_dend = fig.add_subplot(outer[0])
+    inner   = GridSpecFromSubplotSpec(n_clu, 1, subplot_spec=outer[1], hspace=0)
+
+    # dendrogram — thin lines, leaves aligned top→bottom with cluster rows
+    _hier.dendrogram(
+        Z, orientation='left', ax=ax_dend,
+        no_labels=True, color_threshold=0,
+        above_threshold_color='k',
+        link_color_func=lambda _: 'k',
+    )
+    ax_dend.set_ylim(10 * n_clu, 0)   # flip so leaf 0 is at top
+    ax_dend.axis('off')
+    # thin all dendrogram lines
+    for line in ax_dend.get_lines():
+        line.set_linewidth(0.2)
 
     for k, clu in enumerate(sorted_clus):
-        ax  = fig.add_subplot(gs[k, 0])
+        ax  = fig.add_subplot(inner[k, 0])
         idx = np.where(r["acs"] == clu)[0]
         yy  = np.mean(r[feat][idx, :], axis=0)
         ax.plot(xx, yy, color=r["cols"][idx[0]], lw=0.6)
         ax.set_xlim(0, n_bins / c_sec)
-        ax.set_ylabel(str(k), rotation=0, fontsize=4, labelpad=8, va='center')
+        ax.yaxis.set_label_position('right')
+        ax.set_ylabel(str(k), rotation=0, fontsize=4, labelpad=10, va='center')
         for sp in ["top", "right", "left", "bottom"]:
             ax.spines[sp].set_visible(False)
-        ax.tick_params(left=False, labelleft=False, bottom=False, labelbottom=False)
+        ax.tick_params(left=False, labelleft=False, right=False, labelright=False,
+                       bottom=False, labelbottom=False)
 
         h = 0
         ymax = float(np.max(yy)) if yy.size else 0.0
@@ -8861,3 +8310,534 @@ def plot_sorted_cluster_lines(
     plt.show()
     return fig
 
+
+def si_quantify_cortical_sub(
+    clustering='kmeans',
+    nclus=25,
+    nclus_rm=100,
+    vers='concat',
+    cv=True,
+    nmin=20,
+    n_perm=1000,
+    savepath=None,
+):
+    """
+    Three complementary metrics of cortical vs. subcortical separation in
+    functional-cluster composition space.
+
+    For each Beryl region with >= nmin cells, compute the K-dimensional
+    composition vector p_r = [fraction of neurons in cluster k].
+
+    Metrics
+    -------
+    A) Weighted Fisher criterion D = ||mu_ctx - mu_sub|| / sqrt((s2_ctx + s2_sub)/2)
+       Compared against n_perm label-shuffle permutations (group sizes preserved).
+    B) PERMANOVA pseudo-F on pairwise Euclidean distances between p_r vectors,
+       cortical vs. subcortical grouping (via skbio; null computed manually for plot).
+    C) PCA of p_r matrix, scatter colored cortical/subcortical with 1-SD ellipses.
+
+    Cortical Cosmos groups: Isocortex, OLF, HPF, CTXsp.
+    Subcortical: CNU, TH, HY, MB, HB, CB.
+    void/root excluded.
+    """
+
+    # ------------------------------------------------------------------ #
+    # 1.  Load cluster and region labels
+    # ------------------------------------------------------------------ #
+    r_a = regional_group('Beryl', vers=vers, nclus=nclus, cv=cv)
+    r_k = regional_group(clustering, vers=vers, nclus=nclus,
+                         nclus_rm=nclus_rm, cv=cv)
+
+    beryl_labels = np.array(r_a['acs'])
+    clus_labels  = np.array(r_k['acs'])
+
+    ctx_cosmos = {'Isocortex', 'OLF', 'HPF', 'CTXsp'}
+    unique_beryl = np.unique(beryl_labels)
+    beryl2cosmos = {b: beryl_to_cosmos(b, br) for b in unique_beryl}
+
+    # ------------------------------------------------------------------ #
+    # 2.  Build composition matrix (regions × clusters)
+    # ------------------------------------------------------------------ #
+    unique_clus = np.sort(np.unique(clus_labels))
+    K = len(unique_clus)
+    clus_to_idx = {c: i for i, c in enumerate(unique_clus)}
+
+    regs_all, P, N, group, cosmos_label = [], [], [], [], []
+    for reg in unique_beryl:
+        cos = beryl2cosmos[reg]
+        if cos in ('void', 'root'):
+            continue
+        mask = beryl_labels == reg
+        n = int(mask.sum())
+        if n < nmin:
+            continue
+        vec = np.zeros(K)
+        for c in clus_labels[mask]:
+            vec[clus_to_idx[c]] += 1
+        vec /= n
+        regs_all.append(reg)
+        P.append(vec)
+        N.append(n)
+        cosmos_label.append(cos)
+        group.append('cortical' if cos in ctx_cosmos else 'subcortical')
+
+    P            = np.array(P)
+    N            = np.array(N, float)
+    group        = np.array(group)
+    regs_all     = np.array(regs_all)
+    cosmos_label = np.array(cosmos_label)
+
+    ctx_mask = group == 'cortical'
+    sub_mask = group == 'subcortical'
+    n_ctx, n_sub = int(ctx_mask.sum()), int(sub_mask.sum())
+    n_total = len(group)
+    print(f"Regions: {n_total} total  |  cortical: {n_ctx}  |  subcortical: {n_sub}")
+
+    # ------------------------------------------------------------------ #
+    # 3.  Metric A — weighted Fisher criterion
+    # ------------------------------------------------------------------ #
+    def _fisher_D(P, N, mc, ms):
+        wc, ws = N[mc], N[ms]
+        mu_c = (P[mc] * wc[:, None]).sum(0) / wc.sum()
+        mu_s = (P[ms] * ws[:, None]).sum(0) / ws.sum()
+        s2c = (wc * np.sum((P[mc] - mu_c) ** 2, axis=1)).sum() / wc.sum()
+        s2s = (ws * np.sum((P[ms] - mu_s) ** 2, axis=1)).sum() / ws.sum()
+        D = np.linalg.norm(mu_c - mu_s) / np.sqrt((s2c + s2s) / 2)
+        return D, mu_c, mu_s
+
+    D_real, mu_ctx_real, mu_sub_real = _fisher_D(P, N, ctx_mask, sub_mask)
+
+    rng = np.random.default_rng(42)
+    D_null = np.empty(n_perm)
+    for i in range(n_perm):
+        idx = rng.permutation(n_total)
+        mc = np.zeros(n_total, bool); mc[idx[:n_ctx]] = True
+        D_null[i] = _fisher_D(P, N, mc, ~mc)[0]
+    # +1 correction: minimum resolvable p = 1/(n_perm+1)
+    p_fisher = (1 + float((D_null >= D_real).sum())) / (1 + n_perm)
+
+    # ------------------------------------------------------------------ #
+    # 4.  Metric B — PERMANOVA (skbio) + manual null for plotting
+    # ------------------------------------------------------------------ #
+    dist_mat  = pdist(P, metric='euclidean')
+    dm        = DistanceMatrix(squareform(dist_mat), ids=list(regs_all))
+    grp_ser   = pd.Series(group, index=list(regs_all), name='group')
+    perm_res  = permanova(dm, grp_ser, column='group', permutations=n_perm)
+    F_real    = float(perm_res['test statistic'])
+    p_perm    = float(perm_res['p-value'])
+    # R² = SS_A / SS_T; derived from pseudo-F with a=2 groups
+    R2_real   = F_real / (F_real + (n_total - 2))
+
+    # recompute null F distribution manually (for histogram)
+    D_sq = squareform(dist_mat) ** 2
+    SS_T = D_sq.sum() / (2 * n_total)
+    F_null = np.empty(n_perm)
+    for i in range(n_perm):
+        perm_grp = group[rng.permutation(n_total)]
+        SS_W = sum(
+            D_sq[np.ix_(perm_grp == g, perm_grp == g)].sum() / (2 * (perm_grp == g).sum())
+            for g in ('cortical', 'subcortical')
+        )
+        SS_A = SS_T - SS_W
+        F_null[i] = (SS_A / 1.0) / (SS_W / (n_total - 2))
+
+    # ------------------------------------------------------------------ #
+    # 5.  Metric C — PCA
+    # ------------------------------------------------------------------ #
+    pca = PCA(n_components=2)
+    pca.fit(P * np.sqrt(N[:, None]))   # weight rows by sqrt(n) for fitting
+    PC      = pca.transform(P)         # project unweighted for display
+    var_exp = pca.explained_variance_ratio_
+
+    # ------------------------------------------------------------------ #
+    # 6.  Metric D — specialization per Beryl region
+    # ------------------------------------------------------------------ #
+    K_spec = P.shape[1]
+    spec_scores = np.array([
+        1 - entropy(p) / np.log(K_spec) if p.sum() > 0 else 0.0
+        for p in P
+    ])
+    spec_ctx = spec_scores[ctx_mask]
+    spec_sub = spec_scores[sub_mask]
+    emd_spec  = wasserstein_distance(spec_ctx, spec_sub)
+    # normalise EMD to [0,1] by dividing by the range of the pooled distribution
+    spec_range = float(np.max(spec_scores) - np.min(spec_scores))
+    emd_spec_norm = emd_spec / spec_range if spec_range > 0 else 0.0
+
+    # ------------------------------------------------------------------ #
+    # 7.  Figure  (2 × 2)
+    # ------------------------------------------------------------------ #
+    COL_CTX = '#E05A2B'
+    COL_SUB = '#2B7BB5'
+
+    fig, axes = plt.subplots(2, 2, figsize=(11, 9))
+    axes = axes.ravel()
+    fig.subplots_adjust(wspace=0.38, hspace=0.45)
+
+    # Panel A — Fisher D
+    ax = axes[0]
+    ax.hist(D_null, bins=40, color='lightgrey', edgecolor='grey', lw=0.4, label='Shuffle null')
+    ax.axvline(D_real, color='k', lw=1.8, label=f'Observed D = {D_real:.3f}')
+    p_a_str = f'p = {p_fisher:.3f}'
+    # place annotation to the left of the vertical line to avoid overlap
+    ax.text(0.60, 0.95, p_a_str, transform=ax.transAxes,
+            ha='left', va='top', fontsize=8)
+    ax.set_xlabel('Fisher criterion D', fontsize=9)
+    ax.set_ylabel(f'Count  (n={n_perm} permutations)', fontsize=9)
+    ax.set_title('a   Weighted Fisher criterion', fontsize=8, fontweight='bold', loc='left')
+    ax.legend(fontsize=7, frameon=False, bbox_to_anchor=(0.78, 1.0), loc='upper right')
+
+    # Panel b — PERMANOVA pseudo-F
+    ax = axes[1]
+    ax.hist(F_null, bins=40, color='lightgrey', edgecolor='grey', lw=0.4, label='Shuffle null')
+    ax.axvline(F_real, color='k', lw=1.8, label=f'Observed F = {F_real:.2f}')
+    p_b_str = f'p = {p_perm:.3f}'
+    ax.text(0.18, 0.25, f'{p_b_str}\n$R^2 = {R2_real:.3f}$', transform=ax.transAxes,
+            ha='left', va='top', fontsize=8, linespacing=1.5)
+    ax.set_xlabel('PERMANOVA pseudo-F', fontsize=9)
+    ax.set_ylabel(f'Count  (n={n_perm} permutations)', fontsize=9)
+    ax.set_title('b   PERMANOVA', fontsize=8, fontweight='bold', loc='left')
+    ax.legend(fontsize=7, frameon=False)
+
+    # Panel C — PCA scatter
+    ax = axes[2]
+
+
+    def _ellipse_1sd(x, y, ax, color):
+        """Draw 1-SD covariance ellipse."""
+        from matplotlib.patches import Ellipse as _Ell
+        cov = np.cov(x, y)
+        vals, vecs = np.linalg.eigh(cov)
+        order = vals.argsort()[::-1]
+        vals, vecs = vals[order], vecs[:, order]
+        angle = np.degrees(np.arctan2(*vecs[:, 0][::-1]))
+        w, h  = 2 * np.sqrt(vals)
+        ell   = _Ell(xy=(x.mean(), y.mean()), width=w, height=h, angle=angle,
+                     facecolor='none', edgecolor=color, lw=1.5, linestyle='--', zorder=4)
+        ax.add_patch(ell)
+
+    # per-region Allen colors; fall back to grey if acronym missing from pal
+    region_cols = np.array([pal.get(reg, (0.5, 0.5, 0.5, 1.0)) for reg in regs_all])
+
+    # draw all points with Allen colors; marker shape encodes cortical/subcortical
+    for mask, marker in [(ctx_mask, 'o'), (sub_mask, 's')]:
+        ax.scatter(PC[mask, 0], PC[mask, 1],
+                   c=region_cols[mask], s=20, alpha=0.85,
+                   marker=marker, zorder=3, edgecolors='none')
+        if mask.sum() > 2:
+            _ellipse_1sd(PC[mask, 0], PC[mask, 1], ax,
+                         color=COL_CTX if (mask is ctx_mask) else COL_SUB)
+
+    # annotate the 12 largest regions by cell count
+    for i in np.argsort(N)[::-1][:12]:
+        ax.text(PC[i, 0], PC[i, 1] + 0.002, regs_all[i],
+                fontsize=5, ha='center', va='bottom', color='#333333')
+
+    ax.set_xlabel(f'PC 1  ({var_exp[0]*100:.1f} % var.)', fontsize=9)
+    ax.set_ylabel(f'PC 2  ({var_exp[1]*100:.1f} % var.)', fontsize=9)
+    ax.set_title('c   PCA of composition vectors', fontsize=8, fontweight='bold', loc='left')
+
+    # legend: white-filled shapes only, no color, to convey category by shape alone
+    import matplotlib.lines as mlines
+    leg_handles = [
+        mlines.Line2D([], [], marker='o', color='w', markerfacecolor='w',
+                      markeredgecolor='k', markersize=6,
+                      label=f'Cortical  (n={n_ctx})', linestyle='None'),
+        mlines.Line2D([], [], marker='s', color='w', markerfacecolor='w',
+                      markeredgecolor='k', markersize=6,
+                      label=f'Subcortical  (n={n_sub})', linestyle='None'),
+    ]
+    ax.legend(handles=leg_handles, fontsize=7, frameon=False,
+              title='colours = Allen atlas', title_fontsize=6)
+
+    # Panel d — specialization density histograms cortical vs subcortical
+    ax = axes[3]
+    bins = np.linspace(0, max(spec_scores.max(), 0.01), 30)
+    ax.hist(spec_ctx, bins=bins, density=True, histtype='step',
+            color=COL_CTX, lw=1.5, label=f'Cortical  (n={n_ctx})')
+    ax.hist(spec_sub, bins=bins, density=True, histtype='step',
+            color=COL_SUB, lw=1.5, label=f'Subcortical  (n={n_sub})')
+    ax.text(0.97, 0.97, f'EMD = {emd_spec_norm:.3f}', transform=ax.transAxes,
+            ha='right', va='top', fontsize=8)
+    ax.set_xlabel('Specialization  (1 − H/log K)', fontsize=9)
+    ax.set_ylabel('Probability density', fontsize=9)
+    ax.set_title('d   Specialization per Beryl region', fontsize=8, fontweight='bold', loc='left')
+    ax.legend(fontsize=7, frameon=False)
+
+    for ax in axes:
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    if savepath is not None:
+        p_out = Path(savepath).with_suffix('')
+        p_out.parent.mkdir(parents=True, exist_ok=True)
+        for ext in ('.svg', '.pdf'):
+            out = p_out.with_suffix(ext)
+            kw = dict(bbox_inches='tight', facecolor='white')
+            if ext == '.pdf':
+                kw['dpi'] = 150
+            fig.savefig(out, **kw)
+            print(f'Saved: {out}')
+
+    plt.tight_layout()
+    plt.show()
+
+    # ------------------------------------------------------------------ #
+    # 7.  Comprehensive printed summary
+    # ------------------------------------------------------------------ #
+    lines = [
+        '',
+        '╔══════════════════════════════════════════════════════════════════╗',
+        '║  si_quantify_cortical_sub — Results Summary                     ║',
+        '╠══════════════════════════════════════════════════════════════════╣',
+        f'║  Clustering : {clustering}, K={K}, vers={vers}, cv={cv}',
+        f'║  Regions    : {n_total} total (nmin≥{nmin} cells)',
+        f'║    Cortical   : {n_ctx}  ({", ".join(sorted(ctx_cosmos))})',
+        f'║    Subcortical: {n_sub}',
+        f'║  Permutations: {n_perm}',
+        '╠══════════════════════════════════════════════════════════════════╣',
+        f'║  [A] Weighted Fisher D = {D_real:.4f}',
+        f'║      Null  mean ± SD  = {D_null.mean():.4f} ± {D_null.std():.4f}',
+        f'║      p (permutation, +1 corrected) = {p_fisher:.4f}',
+        '║      Observed D exceeded all permutations.',
+        '║      Cell-count-weighted centroids and scatter.',
+        '╠══════════════════════════════════════════════════════════════════╣',
+        f'║  [B] PERMANOVA pseudo-F = {F_real:.4f}  |  R² = {R2_real:.4f} ({R2_real*100:.1f}%)',
+        f'║      p (skbio, +1 corrected, {n_perm} perms) = {p_perm:.4f}',
+        '║      Multivariate ANOVA on pairwise Euclidean distances between',
+        '║      composition vectors; null preserves group sizes.',
+        '╠══════════════════════════════════════════════════════════════════╣',
+        f'║  [C] PCA: PC1={var_exp[0]*100:.1f}%, PC2={var_exp[1]*100:.1f}% variance explained',
+        f'║      Cortical centroid  (PC1,PC2) = ({PC[ctx_mask,0].mean():.3f}, {PC[ctx_mask,1].mean():.3f})',
+        f'║      Subcortical centroid         = ({PC[sub_mask,0].mean():.3f}, {PC[sub_mask,1].mean():.3f})',
+        '║      Dashed ellipses = 1-SD within-group scatter.',
+        '║      Rows weighted by sqrt(n_cells) for PCA fit.',
+        '╠══════════════════════════════════════════════════════════════════╣',
+        f'║  [D] Specialization (1 - H/log K) per Beryl region',
+        f'║      Cortical   mean ± SD = {spec_ctx.mean():.3f} ± {spec_ctx.std():.3f}',
+        f'║      Subcortical mean ± SD = {spec_sub.mean():.3f} ± {spec_sub.std():.3f}',
+        f'║      EMD (normalised) = {emd_spec_norm:.4f}',
+        '╚══════════════════════════════════════════════════════════════════╝',
+        '',
+    ]
+    print('\n'.join(lines))
+
+    return fig
+
+
+# ======================================================================
+# Hierarchical cluster ordering — shared helper
+# ======================================================================
+
+def get_hier_cluster_order(nclus: int = 100, vers: str = 'concat',
+                           nclus_s: int = 100, rerun: bool = False):
+    """
+    Compute and cache the hierarchical ordering of k-means clusters derived
+    from corr(C) in the synthetic analysis (cv=False).
+
+    Returns
+    -------
+    ord_C    : ndarray (nclus,) — leaf order (indices into clu_vals)
+    Z        : ndarray — linkage matrix for dendrogram drawing
+    clu_vals : ndarray (nclus,) — sorted unique cluster IDs
+    """
+    pth_cache = DMN_BASE / f'hier_ord_C_{vers}_nclus{nclus}_nclusS{nclus_s}.npy'
+
+    if not rerun and pth_cache.is_file():
+        c = np.load(pth_cache, allow_pickle=True).flat[0]
+        return c['ord_C'], c['Z'], c['clu_vals']
+
+    r_syn = regional_group(
+        mapping='kmeans', vers=vers, synthetic=True,
+        cv=False, nclus=nclus, nclus_s=nclus_s, zsc=True,
+    )
+    C      = np.asarray(r_syn['C'], float)[:, :nclus_s]
+    corr_C = np.corrcoef(C, rowvar=False)
+    corr_C = np.nan_to_num(corr_C, nan=0.0, posinf=0.0, neginf=0.0)
+    dist   = np.clip(1.0 - corr_C, 0.0, None)
+    np.fill_diagonal(dist, 0.0)
+    Z      = hierarchy.linkage(squareform(dist, checks=False), method='average')
+    ord_C  = hierarchy.leaves_list(Z)
+    clu_vals = np.array(sorted(np.unique(r_syn['acs'])))
+
+    np.save(pth_cache, dict(ord_C=ord_C, Z=Z, clu_vals=clu_vals), allow_pickle=True)
+    print(f'[hier_order] cached → {pth_cache.name}')
+    return ord_C, Z, clu_vals
+
+
+def plot_fig2e_clean_examples(
+        n_per_cluster: int = 2,
+        vers: str = 'concat',
+        nclus: int = 25,
+        reliability_threshold: float = 0.2,
+        min_max_fr: Optional[Tuple[float, float]] = (0.1, 100),
+        min_max_lz: Optional[Tuple[float, float]] = (0.0, 0.6),
+        exclude_regions: tuple = ('root', 'void'),
+        prefer_unique_regions: bool = True,
+        linewidth: float = 0.65,
+        trace_gap_frac: float = 0.06,
+        cluster_gap_frac: float = 0.12,
+        region_label_fontsize: float = 8.0,
+        cluster_label_fontsize: float = 8.0,
+        peth_label_fontsize: float = 7.0,
+        figsize: Tuple[float, float] = (5.0, 8.5),
+        save_formats: tuple = ('svg', 'pdf', 'png'),
+        dpi: int = 600,
+        out_stem: str = 'fig2e_clean_examples',
+        show: bool = False,
+):
+    """Automatically select and plot reliable, cluster-representative neurons.
+
+    Clusters and their prototypes are defined on ``concat_z_train``. A neuron is
+    eligible only when the Pearson correlation between its two disjoint trial-half
+    vectors (``concat_z_train`` and ``concat_z``) reaches the reliability threshold
+    and it passes the optional FR/LZ filters. Eligible cells are ranked by the
+    correlation of the held-out vector to the cluster's mean training vector. When
+    requested, selection first takes the best cells from distinct Beryl regions.
+
+    Returns the figure and a DataFrame containing the selected neuron metadata.
+    """
+    if n_per_cluster < 1:
+        raise ValueError('n_per_cluster must be >= 1')
+
+    r = regional_group('kmeans', vers=vers, cv=True, nclus=int(nclus))
+    required = ('concat_z_train', 'concat_z', 'acs', 'fr', 'lz', 'ids')
+    missing = [key for key in required if key not in r]
+    if missing:
+        raise KeyError(f'Missing required CV fields: {missing}')
+
+    train = np.asarray(r['concat_z_train'], dtype=float)
+    test = np.asarray(r['concat_z'], dtype=float)
+    if train.shape != test.shape or train.ndim != 2:
+        raise ValueError(f'Expected matching 2D half-trial matrices; got {train.shape}, {test.shape}')
+
+    def row_corr(a, b):
+        """Pearson r row-wise, with invalid/constant rows returned as NaN."""
+        a = np.asarray(a, dtype=float)
+        b = np.asarray(b, dtype=float)
+        if b.ndim == 1:
+            b = np.broadcast_to(b, a.shape)
+        ac = a - np.nanmean(a, axis=1, keepdims=True)
+        bc = b - np.nanmean(b, axis=1, keepdims=True)
+        num = np.nansum(ac * bc, axis=1)
+        den = np.sqrt(np.nansum(ac * ac, axis=1) * np.nansum(bc * bc, axis=1))
+        return np.divide(num, den, out=np.full(a.shape[0], np.nan), where=den > 0)
+
+    reliability = row_corr(train, test)
+    labels = np.asarray(r['acs'])
+    beryl = np.asarray(r.get('Beryl', [''] * labels.size), dtype=object)
+    eligible = np.isfinite(reliability) & (reliability >= float(reliability_threshold))
+    if exclude_regions:
+        excluded = {str(region).lower() for region in exclude_regions}
+        eligible &= np.array([str(region).lower() not in excluded for region in beryl])
+    if min_max_fr is not None:
+        eligible &= (np.asarray(r['fr']) >= min_max_fr[0]) & (np.asarray(r['fr']) <= min_max_fr[1])
+    if min_max_lz is not None:
+        eligible &= (np.asarray(r['lz']) >= min_max_lz[0]) & (np.asarray(r['lz']) <= min_max_lz[1])
+
+    selected = []
+    similarity = np.full(labels.size, np.nan)
+    for cluster in np.sort(np.unique(labels)):
+        members = np.flatnonzero(labels == cluster)
+        prototype_train = np.nanmean(train[members], axis=0)
+        similarity[members] = row_corr(test[members], prototype_train)
+        candidates = members[eligible[members] & np.isfinite(similarity[members])]
+        candidates = candidates[np.argsort(similarity[candidates])[::-1]]
+        if candidates.size < n_per_cluster:
+            raise RuntimeError(
+                f'Cluster {cluster} has only {candidates.size} eligible neurons '
+                f'(need {n_per_cluster}); lower reliability_threshold or relax filters.'
+            )
+
+        chosen = []
+        if prefer_unique_regions:
+            seen = set()
+            for idx in candidates:
+                region = str(beryl[idx])
+                if region not in seen:
+                    chosen.append(int(idx))
+                    seen.add(region)
+                if len(chosen) == n_per_cluster:
+                    break
+        if len(chosen) < n_per_cluster:
+            chosen_set = set(chosen)
+            chosen.extend(int(i) for i in candidates if int(i) not in chosen_set)
+        selected.extend(chosen[:n_per_cluster])
+
+    rows = []
+    for idx in selected:
+        rows.append(dict(
+            array_index=int(idx), cluster=int(labels[idx]), Beryl=str(beryl[idx]),
+            atlas_id=int(r['ids'][idx]), uuid=str(r['uuids'][idx]), pid=str(r['pid'][idx]),
+            firing_rate=float(r['fr'][idx]), lz=float(r['lz'][idx]),
+            half_trial_reliability=float(reliability[idx]),
+            heldout_prototype_similarity=float(similarity[idx]),
+        ))
+    selection = pd.DataFrame(rows)
+
+    fig, ax = plt.subplots(figsize=figsize)
+    x = np.arange(test.shape[1]) / c_sec
+    robust_amp = np.nanmedian(np.nanpercentile(test[selected], 95, axis=1) -
+                              np.nanpercentile(test[selected], 5, axis=1))
+    trace_gap = max(0.05, float(trace_gap_frac) * robust_amp)
+    cluster_gap = max(0.0, float(cluster_gap_frac) * robust_amp)
+    cursor = 0.0
+    previous_cluster = None
+    previous_curve = None
+    plotted_curves = []
+    for idx in selected:
+        cluster = int(labels[idx])
+        yi = test[idx]
+        if previous_curve is not None:
+            # Smallest vertical shift that keeps the complete current trace above
+            # the preceding trace; add only a narrow visual margin.
+            cursor = float(np.nanmax(previous_curve - yi)) + trace_gap
+            if cluster != previous_cluster:
+                cursor += cluster_gap
+        plotted = yi + cursor
+        ax.plot(x, plotted, color='black', lw=linewidth, alpha=0.95)
+        region = str(beryl[idx])
+        ax.text(x[0] - 0.012 * (x[-1] - x[0]), cursor, region,
+                ha='right', va='center', fontsize=region_label_fontsize,
+                color=pal[region] if region in pal else 'black', clip_on=False)
+        ax.text(x[-1] + 0.012 * (x[-1] - x[0]), cursor, str(cluster + 1),
+                ha='left', va='center', fontsize=cluster_label_fontsize,
+                color=r['cols'][idx], clip_on=False)
+        plotted_curves.append(plotted)
+        previous_curve = plotted
+        previous_cluster = cluster
+
+    # Segment boundaries and compact condition labels, matching the manuscript panel.
+    start = 0
+    plotted_curves = np.asarray(plotted_curves)
+    y_span = float(np.nanmax(plotted_curves) - np.nanmin(plotted_curves))
+    y_top = float(np.nanmax(plotted_curves)) + 0.015 * y_span
+    peth_labels = r.get('peth_dict', {key: key for key in r['len']})
+    for segment in r['len']:
+        seg_len = int(r['len'][segment])
+        ax.axvline((start + seg_len) / c_sec, color='0.75', lw=0.35, zorder=0)
+        ax.text((start + seg_len / 2) / c_sec, y_top,
+                peth_labels.get(segment, segment), rotation=45,
+                ha='left', va='bottom', rotation_mode='anchor',
+                fontsize=peth_label_fontsize, color='0.2', clip_on=False)
+        start += seg_len
+
+    ax.set_xlim(x[0] - 0.01 * (x[-1] - x[0]), x[-1])
+    ax.set_ylim(float(np.nanmin(plotted_curves)) - 0.01 * y_span,
+                y_top + 0.07 * y_span)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    fig.tight_layout(pad=0.15)
+
+    out_dir = DMN_BASE / 'figs'
+    out_dir.mkdir(parents=True, exist_ok=True)
+    selection.to_csv(out_dir / f'{out_stem}_selection.csv', index=False)
+    for fmt in save_formats:
+        fig.savefig(out_dir / f'{out_stem}.{fmt}', dpi=dpi, bbox_inches='tight', facecolor='white')
+    print(f'[fig2e] selected {len(selected)} reliable neurons; saved to {out_dir / out_stem}')
+
+    if show:
+        plt.show(block=False)
+    return fig, selection
