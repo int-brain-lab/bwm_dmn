@@ -9,6 +9,18 @@ Data access: https://docs.internationalbrainlab.org/notebooks_external/data_stru
 
 ---
 
+## Rebuilding the manuscript
+
+- `report/`: the LaTeX manuscript with all figure PDFs; `report/build.sh`
+  compiles it (`--figures` first rebuilds the figures below from data).
+- `fig2/`, `fig4/`, `fig5/` (with `fig5/si/` for Fig. S10): one folder per
+  main figure; each rebuilds its figure from the data stacks with `dmn_bwm.py`
+  functions and keeps its caches in `figN/cache/`. See each folder's README.
+- Data location: `$DMN_DATA` (default `~/dmn`), see `DATA_REQUIREMENTS.md`.
+  Figure style defaults: `FIGURE_STYLE.md`.
+
+---
+
 ## Requirements
 
 Python 3.10+, with: `numpy`, `scipy`, `pandas`, `matplotlib`, `seaborn`, `scikit-learn`, `umap-learn`, `rastermap`, `iblatlas`, `brainbox`, `one.api`.
@@ -22,7 +34,7 @@ All figures are generated from `dmn_bwm.py`. Start an interactive Python session
 ```python
 import matplotlib
 matplotlib.use('Agg')  # or 'QtAgg' for interactive display
-import sys; sys.path.insert(0, '/home/mic/Dropbox/scripts/IBL/')
+import sys; sys.path.insert(0, '/path/to/bwm_dmn')  # this repository
 from dmn_bwm import *
 ```
 
