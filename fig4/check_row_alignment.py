@@ -15,7 +15,7 @@ from scipy.stats import wasserstein_distance
 from sklearn.decomposition import PCA
 
 from compute_synthetic import load
-from fig5_common import use_private_base
+from fig4_common import use_private_base
 
 
 def se_per_group(score, labels, exclude=("root", "void"), nmin=20):

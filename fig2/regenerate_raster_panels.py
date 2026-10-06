@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Render the raster images of Fig. 2d and 2f with dmn_bwm.plot_rastermap.
+"""Render the raster image of Fig. 2a (neurons sorted by k-means cluster) with
+dmn_bwm.plot_rastermap(sort_method="acs").
 
 The RGBA image that plot_rastermap draws is captured unchanged, averaged over
 blocks of ROW_BLOCK neurons for a manageable file size, and saved as PNG
@@ -12,7 +13,7 @@ matplotlib.use("Agg")  # plot_rastermap calls plt.ion(); never open windows
 import matplotlib.pyplot as plt
 import numpy as np
 
-from fig2_common import OUT, F_BG, F_BG_BRIGHT, use_private_base
+from fig2_common import OUT, use_private_base
 
 ROW_BLOCK = 5
 
@@ -39,23 +40,15 @@ def save_rows(rgba, path):
 def main():
     d = use_private_base()
 
-    # d: all 54,719 neurons (no trial split, as panels a-c) sorted by k-means
-    # cluster, row background = cluster colour.
+    # Panel a: all 54,719 neurons (all trials) sorted by k-means cluster,
+    # grey on white (cluster boundaries are drawn in make_figure2.py).
     save_rows(capture_raster(d, False, mapping="kmeans", sort_method="acs", nclus=25,
-                             bg=True, bg_bright=0.99),
+                             bg=False),  # grey on white, no cluster background colours
               OUT / "panel_d_kmeans_raster.png")
     rk = d.regional_group("kmeans", vers="concat", cv=False, nclus=25)
     clusters_d = np.asarray(rk["acs"])[np.argsort(rk["acs"], kind="stable")]
 
-    # f: held-out half of 53,021 neurons in Rastermap order (fitted on the
-    # training half) on a light background; 100 Rastermap clusters.
-    save_rows(capture_raster(d, True, mapping="rm", sort_method="rastermap",
-                             bg=F_BG, bg_bright=F_BG_BRIGHT),
-              OUT / "panel_f_rastermap_raster.png")
-    rr = d.regional_group("rm", vers="concat", cv=True)
-    clusters_f = np.asarray(rr["acs"])[rr["isort"]]
-
-    np.savez(OUT / "raster_rows.npz", clusters_d=clusters_d, clusters_f=clusters_f)
+    np.savez(OUT / "raster_rows.npz", clusters_d=clusters_d)
     print(f"Saved {OUT / 'raster_rows.npz'}")
 
 

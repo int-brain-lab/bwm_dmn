@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Assemble Fig. 2 (functional response structure) from dmn_bwm functions.
 
-a  dmn_bwm.plot_cluster_mean_PETHs (25 k-means cluster means)
-b,c  the same cluster means for selected clusters and trial segments
-d,f  raster images from regenerate_raster_panels.py (dmn_bwm.plot_rastermap)
-e  neurons selected by dmn_bwm.plot_fig2e_clean_examples, stacked top-down
+Rastermap-free (all panels use k-means on all trials):
+a  single-cell raster sorted by k-means cluster, from regenerate_raster_panels.py
+   (dmn_bwm.plot_rastermap with sort_method="acs", i.e. no Rastermap ordering)
+b  neurons selected by dmn_bwm.plot_fig2e_clean_examples, stacked top-down
+c  dmn_bwm.plot_cluster_mean_PETHs (25 k-means cluster means)
+d,e  the same cluster means for selected clusters and trial segments
 
 Run regenerate_raster_panels.py first (or pass --rasters).
 """
@@ -22,10 +24,11 @@ import numpy as np
 from matplotlib.transforms import blended_transform_factory
 
 from fig2_common import (OUT, B_CLUSTERS, B_SEGMENTS, C_CLUSTERS, C_SEGMENTS,
-                         use_private_base)
+                         dmn_bwm, use_private_base)
 
 MM = 1 / 25.4
-SEG_FONTSIZE = 4.3
+SEG_FONTSIZE = 4.3  # PETH-type labels: same size and tilt in every panel
+SEG_ROTATION = 65
 
 
 def configure_style():
@@ -36,7 +39,7 @@ def configure_style():
         "ytick.labelsize": 5, "axes.linewidth": 0.5, "xtick.major.width": 0.5,
         "ytick.major.width": 0.5, "xtick.major.size": 2, "ytick.major.size": 2,
         "pdf.fonttype": 42, "svg.fonttype": "none",
-        # math text (segment labels) in the same sans-serif as fig4/fig5
+        # math text (segment labels) in the same sans-serif as fig3/fig4
         "mathtext.fontset": "custom", "mathtext.rm": "Liberation Sans",
         "mathtext.it": "Liberation Sans:italic", "mathtext.bf": "Liberation Sans:bold",
     })
@@ -47,8 +50,18 @@ def label(fig, ax, letter, dx=-0.03, dy=0.0):
     fig.text(pos.x0 + dx, pos.y1 + dy, letter, fontsize=8, fontweight="bold",
              ha="left", va="bottom")
 
+def scale_bar(ax, length, text, y=-0.03, lw=1.2):
+    """Horizontal scale bar at the bottom right of ax: length in data x-units,
+    y in axes fraction (below the axes when negative)."""
+    trans = blended_transform_factory(ax.transData, ax.transAxes)
+    x1 = ax.get_xlim()[1]
+    ax.plot([x1 - length, x1], [y, y], color="k", lw=lw, transform=trans,
+            clip_on=False, solid_capstyle="butt")
+    ax.text(x1 - length / 2, y - 0.012, text, ha="center", va="top", fontsize=5,
+            transform=trans)
 
-def segment_labels(ax, r, x_of_bin, y=1.01, segments=None, rotation=65):
+
+def segment_labels(ax, r, x_of_bin, y=1.01, segments=None, rotation=SEG_ROTATION):
     """Rotated trial-segment names above an axes (x in data, y in axes units)."""
     trans = blended_transform_factory(ax.transData, ax.transAxes)
     start = 0
@@ -81,7 +94,7 @@ def segment_bins(r, segments):
     return np.concatenate(bins), [len(b) for b in bins]
 
 
-def panel_a(fig, d, r, rect):
+def panel_prototypes(fig, d, r, rect):
     n = len(np.unique(r["acs"]))
     top = rect[1] + rect[3]
     h = rect[3] / n
@@ -102,17 +115,15 @@ def panel_a(fig, d, r, rect):
                 ha="left", va="center")
     segment_labels(axes[0], r, lambda b: b / d.c_sec, y=1.3)
     # 200 ms scale bar under the last trace.
-    x1 = axes[-1].get_xlim()[1]
-    axes[-1].plot([x1 - 0.2, x1], [-0.25, -0.25], color="k", lw=1.2,
-                  transform=blended_transform_factory(axes[-1].transData, axes[-1].transAxes),
-                  clip_on=False)
-    axes[-1].text(x1 - 0.1, -0.4, "200 ms", ha="center", va="top", fontsize=5,
-                  transform=blended_transform_factory(axes[-1].transData, axes[-1].transAxes))
-    axes[0].set_title("cluster prototype features", fontsize=6, pad=30)
+    scale_bar(axes[-1], 0.2, "200 ms", y=-0.25)  # x in seconds
+    axes[0].set_title("Mean cluster feature vector", fontsize=6, pad=30)
+    top, bottom = axes[0].get_position(), axes[-1].get_position()
+    fig.text(top.x1 + 0.028, (top.y1 + bottom.y0) / 2, "k-means cluster", rotation=90,
+             ha="center", va="center", fontsize=5)
     return axes[0]
 
 
-def panel_b(fig, r, rect):
+def panel_zoom_events(fig, r, rect):
     ax = fig.add_axes(rect)
     bins, lens = segment_bins(r, B_SEGMENTS)
     x = np.arange(bins.size)
@@ -141,14 +152,16 @@ def panel_b(fig, r, rect):
         ax.axvline(b, color="0.35", lw=0.3, ls=(0, (2, 2)))
     trans = blended_transform_factory(ax.transData, ax.transAxes)
     for s, lo, n in zip(B_SEGMENTS, [0] + list(bounds[:-1]), lens):
-        ax.text(lo + n / 2, 1.12, r["peth_dict"][s], transform=trans, rotation=65,
-                ha="left", va="bottom", rotation_mode="anchor", fontsize=5.5, clip_on=False)
+        ax.text(lo + n / 2, 1.12, r["peth_dict"][s], transform=trans, rotation=SEG_ROTATION,
+                ha="left", va="bottom", rotation_mode="anchor", fontsize=SEG_FONTSIZE,
+                clip_on=False)
     ax.set_xlim(0, x[-1])
     ax.set_axis_off()
+    scale_bar(ax, 0.1 * dmn_bwm.c_sec, "100 ms", y=-0.05)  # x in bins; segments are 150 ms
     return ax
 
 
-def panel_c(fig, r, rect):
+def panel_zoom_states(fig, r, rect):
     ax = fig.add_axes(rect)
     bins, lens = segment_bins(r, C_SEGMENTS)
     x = np.arange(bins.size)
@@ -169,11 +182,12 @@ def panel_c(fig, r, rect):
         ax.axvline(b, color="0.35", lw=0.3, ls=(0, (2, 2)))
     trans = blended_transform_factory(ax.transData, ax.transAxes)
     for s, lo, n in zip(C_SEGMENTS, [0] + list(bounds[:-1]), lens):
-        ax.text(lo + n / 2, 1.01, r["peth_dict"][s], transform=trans, rotation=65,
+        ax.text(lo + n / 2, 1.01, r["peth_dict"][s], transform=trans, rotation=SEG_ROTATION,
                 ha="left", va="bottom", rotation_mode="anchor", fontsize=SEG_FONTSIZE,
                 clip_on=False)
     ax.set_xlim(0, x[-1])
     ax.set_axis_off()
+    scale_bar(ax, 0.2 * dmn_bwm.c_sec, "200 ms", y=-0.04)  # x in bins
     return ax
 
 
@@ -193,26 +207,24 @@ def raster_axes(fig, r, rect, image, n_rows, yticks):
     return ax
 
 
-def panel_d(fig, r, rect, rows):
+def panel_raster_by_cluster(fig, r, rect, rows):
     clusters = rows["clusters_d"]
     ax = raster_axes(fig, r, rect, plt.imread(OUT / "panel_d_kmeans_raster.png"),
                      clusters.size, [1, 10, 20, 30, 40, 50])
     edges = np.flatnonzero(np.diff(clusters)) + 1
+    for y in edges:  # cluster boundaries
+        ax.axhline(y, color="k", lw=0.3, zorder=5)
     edges = np.r_[0, edges, clusters.size]
     trans = blended_transform_factory(ax.transAxes, ax.transData)
+    acs = np.asarray(r["acs"])
     for lo, hi in zip(edges[:-1], edges[1:]):
-        ax.text(1.01, (lo + hi) / 2, str(int(clusters[lo]) + 1), transform=trans,
-                fontsize=4.3, ha="left", va="center")
+        cl = int(clusters[lo])
+        ax.text(1.01, (lo + hi) / 2, str(cl + 1), transform=trans, fontsize=4.3,
+                ha="left", va="center", color=r["cols"][np.flatnonzero(acs == cl)[0]])
+    ax.text(1.075, 0.5, "k-means cluster", transform=ax.transAxes, rotation=90,
+            ha="center", va="center", fontsize=5)
+    scale_bar(ax, 0.2 * dmn_bwm.c_sec, "200 ms", y=-0.012)  # x in bins
     ax.set_title("single-cell response vectors by cluster", fontsize=6, pad=32)
-    return ax
-
-
-def panel_f(fig, r, rect, rows):
-    clusters = rows["clusters_f"]
-    ax = raster_axes(fig, r, rect, plt.imread(OUT / "panel_f_rastermap_raster.png"),
-                     clusters.size, [0, 10, 20, 30, 40, 50])
-    for y in np.flatnonzero(np.diff(clusters)) + 1:
-        ax.axhline(y, color="k", lw=0.2, zorder=5)
     return ax
 
 
@@ -244,14 +256,16 @@ def full_trial_clusters(d):
         d.regional_group = original
 
 
-def panel_e(fig, d, rect):
+def panel_examples(fig, d, rect):
     """Two reliable example neurons per cluster, stacked with cluster 1 at the top
     (as in a and d); cluster numbers on the left, Beryl regions on the right.
 
-    Neurons are chosen by dmn_bwm.plot_fig2e_clean_examples (held-out half-trial
-    trace ranked by correlation with the training-half cluster mean), with
-    panel a's clusters and without the Lempel-Ziv filter; the drawing mirrors
-    that function (same traces, gaps and segment labels) in top-down order.
+    Neurons are chosen by dmn_bwm.plot_fig2e_clean_examples on the odd/even trial
+    split (even-trial trace ranked by correlation with the odd-trial cluster mean,
+    reliability between the two), with panel a's clusters and without the
+    Lempel-Ziv filter. As in panels a-d, the traces shown are the all-trial
+    feature vectors (cv=False) of those neurons. The drawing mirrors that function
+    (gaps, segment labels) in top-down order.
     """
     with full_trial_clusters(d) as regional_group:
         fig_e, selection = d.plot_fig2e_clean_examples(min_max_lz=None, save_formats=())
@@ -259,73 +273,101 @@ def panel_e(fig, d, rect):
     plt.close(fig_e)
     selection.to_csv(OUT / "panel_e_selection.csv", index=False)
     idx = selection.array_index.to_numpy()
-    traces = np.asarray(rcv["concat_z"][idx], dtype=float)
+    rall = d.regional_group("kmeans", vers="concat", cv=False, nclus=25)
+    row = {u: i for i, u in enumerate(np.asarray(rall["uuids"]).astype(str))}
+    traces = np.asarray(rall["concat_z"][[row[u] for u in selection.uuid.astype(str)]], dtype=float)
     amp = np.nanmedian(np.nanpercentile(traces, 95, axis=1) - np.nanpercentile(traces, 5, axis=1))
-    trace_gap, cluster_gap = max(0.05, 0.06 * amp), 0.12 * amp
+    trace_gap, cluster_gap = max(0.05, 0.18 * amp), 0.30 * amp  # room for labels
 
     ax = fig.add_axes(rect)
     x = np.arange(traces.shape[1]) / d.c_sec
     xpad = 0.012 * (x[-1] - x[0])
-    plotted, previous, previous_cluster = [], None, None
-    for k, (y, cluster, region) in enumerate(zip(traces, selection.cluster, selection.Beryl)):
-        cursor = 0.0
-        if previous is not None:
-            # Smallest downward shift keeping the whole trace below the previous one.
-            cursor = float(np.nanmin(previous - y)) - trace_gap
-            if cluster != previous_cluster:
-                cursor -= cluster_gap
+    clusters = selection.cluster.to_numpy()
+
+    def stack(min_sep):
+        """Offsets: each trace just below the previous one (plus gaps), and labels
+        at least min_sep apart (data units)."""
+        cursors, previous = [], None
+        for k, y in enumerate(traces):
+            cursor = 0.0
+            if previous is not None:
+                cursor = float(np.nanmin(previous - y)) - trace_gap
+                if clusters[k] != clusters[k - 1]:
+                    cursor -= cluster_gap
+                cursor = min(cursor, cursors[-1] - min_sep)
+            cursors.append(cursor)
+            previous = y + cursor
+        return np.asarray(cursors)
+
+    # Labels are 4 pt; keep consecutive label centres >= 5 pt apart on the page.
+    height_pt = rect[3] * fig.get_figheight() * 72
+    min_sep = 0.0
+    for _ in range(6):  # the span depends on min_sep; iterate to a fixed point
+        cursors = stack(min_sep)
+        span = (traces + cursors[:, None]).max() - (traces + cursors[:, None]).min()
+        min_sep = 5.0 / height_pt * span * 1.12  # + margin for the axis padding
+
+    plotted = []
+    for k, (y, cluster, region) in enumerate(zip(traces, clusters, selection.Beryl)):
+        cursor = cursors[k]
         yy = y + cursor
         ax.plot(x, yy, color="black", lw=0.4, alpha=0.95)
         ax.text(x[0] - xpad, cursor, str(cluster + 1), ha="right", va="center",
                 fontsize=4, color=rcv["cols"][idx[k]], clip_on=False)
+        if k == 0:
+            ax.text(-0.075, 0.5, "k-means cluster", transform=ax.transAxes, rotation=90,
+                    ha="center", va="center", fontsize=5)
         ax.text(x[-1] + xpad, cursor, region, ha="left", va="center", fontsize=4,
                 color=d.pal[region] if region in d.pal else "black", clip_on=False)
         plotted.append(yy)
-        previous, previous_cluster = yy, cluster
 
     plotted = np.asarray(plotted)
     y_min, y_max = float(np.nanmin(plotted)), float(np.nanmax(plotted))
     y_span = y_max - y_min
     y_top = y_max + 0.015 * y_span
-    # Segment boundaries stop just below the rotated segment labels.
+    # Segment labels sit just above the axes top, at the same level as in panel a;
+    # boundaries stop at the axes top, below the labels.
+    trans = blended_transform_factory(ax.transData, ax.transAxes)
     start = 0
     for seg, n in rcv["len"].items():
-        ax.vlines((start + n) / d.c_sec, y_min - 0.01 * y_span, y_top - 0.004 * y_span,
+        ax.vlines((start + n) / d.c_sec, y_min - 0.01 * y_span, y_top,
                   color="0.55", lw=0.35, zorder=0)
-        ax.text((start + n / 2) / d.c_sec, y_top, rcv["peth_dict"][seg], rotation=45,
-                ha="left", va="bottom", rotation_mode="anchor", fontsize=3.8,
-                color="0.2", clip_on=False)
+        ax.text((start + n / 2) / d.c_sec, 1.01, rcv["peth_dict"][seg], rotation=SEG_ROTATION,
+                ha="left", va="bottom", rotation_mode="anchor", fontsize=SEG_FONTSIZE,
+                transform=trans, clip_on=False)
         start += n
     ax.set_xlim(x[0] - 0.01 * (x[-1] - x[0]), x[-1])
-    ax.set_ylim(y_min - 0.01 * y_span, y_top + 0.07 * y_span)
+    ax.set_ylim(y_min - 0.01 * y_span, y_top)
     ax.set_axis_off()
+    scale_bar(ax, 0.2, "200 ms", y=-0.012)  # x in seconds
     return ax
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rasters", action="store_true",
-                        help="re-render the raster images of d and f first")
+                        help="re-render the raster image of panel a first")
     args = parser.parse_args()
     if args.rasters or not (OUT / "raster_rows.npz").exists():
         subprocess.run([sys.executable, str(OUT / "regenerate_raster_panels.py")], check=True)
 
     configure_style()
     d = use_private_base()
-    # a-d use the clustering of all trials (54,719 neurons); e uses the CV split.
+    # a-d use the clustering of all trials (54,719 neurons); e selects neurons
+    # with the odd/even split and shows their all-trial feature vectors.
     r = d.regional_group("kmeans", vers="concat", cv=False, nclus=25)
     rows = np.load(OUT / "raster_rows.npz")
 
-    fig = plt.figure(figsize=(183 * MM, 167 * MM))
-    # Rectangles follow the manuscript layout (fractions of the figure).
-    axa = panel_a(fig, d, r, [0.035, 0.555, 0.285, 0.335])
-    axb = panel_b(fig, r, [0.375, 0.775, 0.235, 0.115])
-    axc = panel_c(fig, r, [0.375, 0.555, 0.235, 0.165])
-    axd = panel_d(fig, r, [0.69, 0.555, 0.265, 0.335], rows)
-    axe = panel_e(fig, d, [0.035, 0.02, 0.26, 0.435])
-    axf = panel_f(fig, r, [0.385, 0.015, 0.6, 0.44], rows)
-    for ax, letter, dy in [(axa, "a", 0.075), (axb, "b", 0.06), (axc, "c", 0.045),
-                           (axd, "d", 0.062), (axe, "e", 0.03), (axf, "f", 0.045)]:
+    fig = plt.figure(figsize=(183 * MM, 140 * MM))
+    # Rastermap-free layout, read left to right: a raster by cluster, b example
+    # neurons, c prototypes with the zooms d and e below.
+    axa = panel_raster_by_cluster(fig, r, [0.055, 0.04, 0.255, 0.78], rows)
+    axb = panel_examples(fig, d, [0.385, 0.04, 0.215, 0.78])  # same extent as a
+    axc = panel_prototypes(fig, d, r, [0.70, 0.55, 0.25, 0.30])
+    axd = panel_zoom_events(fig, r, [0.70, 0.285, 0.255, 0.135])
+    axe = panel_zoom_states(fig, r, [0.70, 0.04, 0.255, 0.165])
+    for ax, letter, dy in [(axa, "a", 0.075), (axb, "b", 0.075), (axc, "c", 0.085),
+                           (axd, "d", 0.065), (axe, "e", 0.05)]:
         label(fig, ax, letter, dy=dy)
 
     stem = OUT / "functional_response_structure"

@@ -25,9 +25,6 @@ B_SEGMENTS = ["stimLbLcL", "sLbLchoiceL", "choiceL"]
 C_CLUSTERS = {16: "change", 22: "mistake", 2: "R block", 11: "L block"}
 C_SEGMENTS = ["blockL", "blockR", "quiescence", "block_change_s", "stimLbLcL",
               "stimLbRcL", "stimRbRcR", "stimRbLcR", "mistake_s"]
-# Panel f background: dmn_bwm's default Rastermap tint, brightened to the
-# manuscript's cream (sampled as RGB 0.99, 0.98, 0.97).
-F_BG, F_BG_BRIGHT = "#c2a37a", 0.05
 
 
 def use_private_base():

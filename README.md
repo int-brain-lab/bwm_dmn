@@ -13,9 +13,12 @@ Data access: https://docs.internationalbrainlab.org/notebooks_external/data_stru
 
 - `report/`: the LaTeX manuscript with all figure PDFs; `report/build.sh`
   compiles it (`--figures` first rebuilds the figures below from data).
-- `fig2/`, `fig4/`, `fig5/` (with `fig5/si/` for Fig. S10): one folder per
-  main figure; each rebuilds its figure from the data stacks with `dmn_bwm.py`
-  functions and keeps its caches in `figN/cache/`. See each folder's README.
+- `fig2/`–`fig5/` (with `fig4/si/` for Fig. S10): one folder per main figure;
+  each rebuilds its figure from the data stacks with `dmn_bwm.py` functions and
+  keeps its caches in `figN/cache/`. See each folder's README. Since the
+  2026-10-06 section reorder: Fig. 3 = anatomy/function (`fig3/`), Fig. 4 =
+  mixed selectivity (`fig4/`), Fig. 5 = stimulus-locked latency tiling
+  (`fig5/`, which uses the analyses in `sequence_analysis/`).
 - Data location: `$DMN_DATA` (default `~/dmn`), see `DATA_REQUIREMENTS.md`.
   Figure style defaults: `FIGURE_STYLE.md`.
 

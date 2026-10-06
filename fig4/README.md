@@ -1,86 +1,95 @@
-# Figure 4 from the compressed-printer manuscript
+# Figure 4: structured, non-random selectivity
 
-The requested Figure 4 is on page 13 of
-`IBL_supersession_paper_resubmission_compressed_printer.pdf`. It is the
-anatomy/function correspondence figure with panels **a--j**, beginning with
-Rastermap-sorted response vectors and ending with anatomical hierarchy versus
-specialization.
-
-Figure numbering changed during revision. The exact assembled source for this
-printer figure is:
-
-`IBL_supersession_paper_resubmission/figures/anatomy_function_correspondence.pdf`
-
-It was assembled in Adobe Illustrator from analysis panels, rather than made by
-one Python function. `regenerate_fig4.py` therefore preserves that publication
-source as the PDF master and creates SVG and 600-dpi PNG review copies. It also
-checks that the regenerated PDF is byte-identical to the source.
-
-## Analysis provenance
-
-The underlying analyses are in `~/dmn/dmn_bwm.py` and the historical scripts in
-`~/Dropbox/scripts/IBL/`:
-
-- **a--b:** `plot_rastermap`; the same held-out response vectors from
-  `concat_cvTrue.npy` are ordered by Rastermap or canonical Beryl anatomy.
-  Rastermap ordering was fitted on the training half. Run
-  `regenerate_panel_a.py` and `regenerate_panel_b.py` for the individual panels.
-- **c:** full-resolution regional subsets of panel a for CP, MRN, ZI, MOp,
-  CA1, and CUL4,5. The original cache retains the Rastermap order but omits
-  cluster IDs, so `regenerate_panel_c.py` colors 100 successive bands of the
-  saved order with the manuscript's rainbow palette.
-- **d--e:** The four point-cloud images are extracted without alteration from
-  `IBL_supersession_paper_resubmission/figures/anatomy_function_correspondence_alternate.pdf`.
-  Both pairs show UMAP on the left and anatomical xyz on the right, with UMAP
-  axes and an xyz orientation triad overlaid during assembly.
-- **f:** drawn directly in `regenerate_from_data.py` as vector polar pies
-  (`cluster_region_fractions`, `draw_cluster_pies`). Wedges are the same as in
-  `dmn_bwm.plot_cluster_profile(norm_reg_count=True, canonical_order=True)`:
-  root/void removed, each region's count in the cluster divided by its total
-  count, canonical Beryl order. The 5 largest wedges are labelled radially,
-  centred on the wedge's middle angle. Label font size is linear in wedge
-  fraction on one scale shared by all pies (smallest labelled wedge 3.5 pt,
-  largest wedge 7 pt). Overlaps (tested on the rotated text rectangles) are
-  resolved only by moving labels outward along their own radius
-  (`separate_labels`). Pie radius is 1/`PIE_RMAX` of its cell. Colours are the
-  Allen atlas colours of the Beryl regions (258 regions, 63 distinct colours),
-  so the 5 labelled wedges get white outlines to stay visible inside
-  same-coloured blocks. `check_labels_centred` stops the build if any rendered
-  label's centre is more than 1 degree off its wedge's middle angle.
-  `regenerate_panel_f.py` (the earlier 800-dpi PNG version) is no longer used.
-- **d–e:** the xyz tripods carry a vertical "anatomical space" label.
-- **g:** `clus_freqs` plots the original eight example regions (PA, PAA, MOB,
-  MEA, MRN, SCm, PRNr, PGRN) in two compact columns with in-panel labels and
-  regional cluster-specialization scores.
-- **h:** regional specialization distributions, directly below g.
-- **i:** portrait Swanson flatmaps produced with `plot_swanson_vector`, tightly
-  paired above j. The left map has a matching raw-specialization colorbar and
-  a key for regions without data. Panel f fills the full lower-left block.
-- **j:** specialization versus the Harris anatomical hierarchy; the current
-  comparison helper starts at `plot_specialization_comparison` in the analysis
-  script.
-
-The main inputs are `concat_cvFalse.npy`, the 25-cluster k-means cache, Beryl
-region assignments, BWM decoding tables, and the Harris hierarchy table.
-
-## Private cache
-
-`fig4_common.py` makes `fig4/cache` dmn_bwm's base folder (`DMN_BASE` and
-`pth_dmn`), with `~/dmn/*.npy` and `counts/` symlinked in. Every cache and
-intermediate figure (e.g. the panel a/b Rastermap SVGs) is written there, and
-nothing outside `fig4` is written.
+Regenerates the manuscript's Fig. 4 (Fig. 5 before the 2026-10-06 section reorder) ("Structured, non-random selectivity at
+the cellular level with random distributions at the regional level") from the
+local DMN data. All computation goes through `~/dmn/dmn_bwm.py`, and all caches
+and outputs stay in this folder (`fig4_common.py` makes `fig4/cache` dmn_bwm's
+base folder, as in `fig2`).
 
 ## Run (iblenv)
 
 ```bash
-cd fig4
-python regenerate_from_data.py   # panels a-c via regenerate_panel_{a,b,c}.py, then a-j + printer PDF
+cd ~/dmn/fig4
+/home/mic/miniforge3/envs/iblenv/bin/python compute_synthetic.py      # once, ~2 min
+/home/mic/miniforge3/envs/iblenv/bin/python make_figure4.py --rasters  # full figure
+/home/mic/miniforge3/envs/iblenv/bin/python check_row_alignment.py     # j-k regression check
 ```
 
-`anatomy_function_correspondence_panels.pdf/.svg/.png` is the figure;
-`anatomy_function_correspondence_printer.pdf` is the compressed manuscript
-file (`report/figures/anatomy_function_correspondence.pdf`). Panels d–e use the
-four point-cloud images `source_alternate_*.jpg` (pixels unchanged within the
-displayed crops); all other panels are computed from the data. Beryl colours
-use `dmn_bwm.py`'s palette (Allen atlas colours, with a readable cerebellar
-olive). Data are read from `$DMN_DATA` (default `~/dmn`).
+Outputs: `structured_mixed_selectivity.pdf/.svg/.png` and
+`structured_mixed_selectivity_printer.pdf` (Ghostscript /printer).
+
+## Files
+
+- `compute_synthetic.py`: `regional_group(mapping="kmeans", synthetic=True,
+  cv=False, nclus=100, nclus_s=100)`, with and without `syn_control`. It makes a
+  100-cluster k-means basis V (random_state=0), real coefficients C = X V^T,
+  i.i.d. synthetic coefficients B drawn from C's 200-bin marginals (seed 0),
+  and the Rastermap orders of the synthetic and reconstructed responses.
+- `regenerate_rastermap_panels.py`: panel h via `plot_rastermap(synthetic=True)`.
+  Left: responses reconstructed from real C (`syn_control=True`). Right:
+  synthetic B V.
+- `si/`: Fig. S10, the same figure with a 40-cluster basis (`si/make_figure_s10.py`,
+  which runs these scripts with `--nclus 40 --out-dir si`).
+- `make_figure4.py`: panels a–k. The computations follow
+  `dmn_bwm.plot_fig4_assembly` (this figure's earlier name); the layout follows
+  the manuscript.
+
+## Panels
+
+a C, alpha columns in hierarchical order of corr(C) (used for all alpha axes),
+neuron rows in Rastermap order. b corr(C). c neuron-by-neuron corr of C for
+2000 evenly spaced neurons, kept in panel a's order (as the caption says). d 15
+evenly spaced alpha marginals, synthetic (black) and real (green). e–g the same
+as a–c for B. h Rastermap images. i PC0 (fit on C) of real and synthetic
+neurons. j SE(PC0) per Beryl region (>= 20 neurons) vs the same labels shuffled.
+k SE(PC0) per Beryl region vs per k-means cluster. EMD is the Wasserstein
+distance divided by the pooled range.
+
+## Row alignment of panels j–k (fixed 2026-09-30)
+
+In `regional_group(synthetic=True)`, C's rows are X in Rastermap order
+(`C = X[isort] @ V.T`). `r['Beryl']` is in stack order, and `r['acs']` is a
+k-means fit on the synthetic responses. The manuscript version (via
+`plot_fig4_assembly`) grouped C's PC0 by these, so each score was paired with
+another neuron's region and with a synthetic-data cluster.
+
+Fix in `~/dmn/dmn_bwm.py` (the change is saved as `dmn_bwm_alignment_fix.patch`;
+`patch -R` undoes it):
+- the synthetic analysis stores the row order as `r['C_rows']` (also in new
+  caches; caches written earlier fall back to the stack isort they were built with);
+- new `synthetic_row_labels(r)` returns each row's own Beryl region and
+  real-data k-means basis cluster;
+- `plot_fig4_assembly` and `plot_coeff_entropy_flatness_real_vs_synth` use it.
+
+`check_row_alignment.py` verifies `C == X[C_rows] @ V.T` and prints both pairings:
+
+| | manuscript pairing | fixed |
+|---|---|---|
+| i PC0 real vs synth, EMD | 0.14 | 0.14 |
+| j Beryl vs random, EMD | 0.036 | 0.028 |
+| k Beryl vs KMeans, EMD | 0.216 | 0.337 |
+| k median SE(PC0), KMeans groups | 106 | 34 |
+
+The figure uses the fixed pairing. The old pairing reproduces the manuscript's
+published values exactly, which confirms the rebuild otherwise matches. Panel
+j's EMD also depends on the random shuffle (seed 0), by about ±0.01. SE
+scales with group size (k-means groups average ~550 neurons; Beryl regions
+vary widely).
+
+## k-means-sorted version (2026-10-06)
+
+```bash
+/home/mic/miniforge3/envs/iblenv/bin/python make_figure4.py --sort kmeans --rasters
+```
+
+Writes `structured_mixed_selectivity_kmeans_sort.*` and `panel_h_kmeans_*.png`.
+This is the manuscript's Fig. 4 since 2026-10-06 (`_printer.pdf` copied to
+`figures/structured_mixed_selectivity.pdf`).
+Every Rastermap neuron order (a, c, e, g, h) is replaced by the canonical k-means
+sorting of Fig. 2a: 25 clusters fit on all trials, neurons sorted by cluster
+(`fig4_common.kmeans_canonical`). Real neurons (a, c, h left) use their own
+cluster, with ties in stack order. Synthetic neurons have no identity, so in e, g
+and h right each is assigned to the nearest of the same 25 centroids
+(nearest-centroid = `KMeans.predict`; it reproduces the real labels exactly). The
+alpha order and panels b, d, f, i–k are unchanged. Synthetic neurons fall mostly
+into 2 clusters (22,628 and 18,290 neurons), and 5 clusters stay empty.

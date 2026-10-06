@@ -5,7 +5,7 @@ from collections import Counter
 from pathlib import Path
 import subprocess
 import sys
-from fig4_common import ROOT, use_private_base  # sets the Agg backend first
+from fig3_common import ROOT, use_private_base  # sets the Agg backend first
 import numpy as np
 import pandas as pd
 import matplotlib as mpl
@@ -18,7 +18,7 @@ import iblatlas
 from iblatlas.regions import BrainRegions
 from iblatlas.plots import plot_swanson_vector
 
-_d = use_private_base()  # all dmn_bwm caches/figures go to fig4/cache
+_d = use_private_base()  # all dmn_bwm caches/figures go to fig3/cache
 clus_freqs, pal, regional_group = _d.clus_freqs, _d.pal, _d.regional_group
 
 
@@ -304,12 +304,13 @@ def main():
     configure_style()
     # Both panels use the CV cache's displayed concat_z responses. Rastermap
     # ordering was fitted on concat_z_train; Beryl sorting changes rows only.
-    subprocess.run([sys.executable, str(OUT / "regenerate_panel_a.py")], check=True)
+    subprocess.run([sys.executable, str(OUT / "regenerate_panel_a_kmeans.py")], check=True)
     subprocess.run([sys.executable, str(OUT / "regenerate_panel_b.py")], check=True)
     subprocess.run([sys.executable, str(OUT / "regenerate_panel_c.py")], check=True)
-    panel_a_image = crop_panel_image(OUT / "panel_a_rastermap_beryl_background.png")
-    panel_b_image = crop_panel_image(OUT / "panel_b_anatomical_order_beryl_background.png")
-    cv_rows = len(np.load(ROOT / "concat_cvTrue.npy", allow_pickle=True).flat[0]["ids"])
+    # Rastermap-free: a-c use all trials (cv=False, 54,719 neurons).
+    panel_a_image = plt.imread(OUT / "panel_a_kmeans_beryl_background.png")
+    panel_b_image = plt.imread(OUT / "panel_b_anatomical_order_beryl_background.png")
+    n_rows = len(np.load(OUT / "panel_a_kmeans_clusters.npy"))
 
     br = BrainRegions()
     r = np.load(STACK, allow_pickle=True).flat[0]
@@ -320,24 +321,24 @@ def main():
     outer = fig.add_gridspec(4, 12, height_ratios=[1.35, 0.85, 1.35, 0.65], hspace=0.30, wspace=0.30,
                              left=0.055, right=0.992, bottom=0.055, top=0.992)
 
-    # a: Rastermap order, anatomical colors.
+    # a: k-means cluster order, Beryl (anatomical) colours.
     ax = fig.add_subplot(outer[0, 0:4]); label(ax, "a")
     ax.imshow(panel_a_image, origin="upper", aspect="auto", rasterized=True,
-              extent=(0, x.shape[1], cv_rows, 0))
+              extent=(0, x.shape[1], n_rows, 0))
     ax.set_xlabel("Task-aligned response bins")
-    ax.set_ylabel("Neurons (Rastermap order)")
+    ax.set_ylabel("Neurons (k-means cluster order)")
     ax.set_xticks([0, x.shape[1] // 2, x.shape[1]])
-    ax.set_yticks([0, cv_rows // 2, cv_rows])
+    ax.set_yticks([0, n_rows // 2, n_rows])
     clean(ax); inset_axis(ax)
 
     # b: exactly the panel-a responses, now in canonical Beryl order.
     ax = fig.add_subplot(outer[0, 4:8]); label(ax, "b")
     ax.imshow(panel_b_image, origin="upper", aspect="auto", rasterized=True,
-              extent=(0, x.shape[1], cv_rows, 0))
+              extent=(0, x.shape[1], n_rows, 0))
     ax.set_xlabel("Task-aligned response bins"); ax.set_ylabel("Neurons (anatomical order)")
     clean(ax); inset_axis(ax)
 
-    # c: all neurons in six Beryl regions, preserving panel a's Rastermap order.
+    # c: all neurons in six Beryl regions, sorted by k-means cluster (cluster colours).
     sg = outer[0, 8:12].subgridspec(3, 2, hspace=0.34, wspace=0.08)
     for q, reg in enumerate(EXAMPLE_REGIONS):
         ax = fig.add_subplot(sg[q // 2, q % 2])
