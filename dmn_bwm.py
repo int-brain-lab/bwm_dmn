@@ -9,12 +9,10 @@ import iblatlas
 from iblatlas.plots import plot_swanson_vector 
 from brainbox.io.one import SessionLoader
 from sklearn.manifold import SpectralEmbedding
+import os
 import sys
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.append(str(SCRIPT_DIR))
-# This is a local manuscript copy; keep access to the original module's sibling helpers.
-ORIGINAL_SCRIPT_DIR = Path.home() / 'Dropbox' / 'scripts' / 'IBL'
-sys.path.append(str(ORIGINAL_SCRIPT_DIR))
 from granger import get_volume, get_centroids, get_res, get_structural, get_ari
 from state_space_bwm import get_cmap_bwm, pre_post
 from random import shuffle
@@ -133,8 +131,9 @@ sts = 0.002  # stride size in [sec] for overlapping bins
 # bins per second in the strided representation (T_BIN=12.5ms, stride sts=2ms → 6 shifts → 480 bins/s)
 c_sec =  1.0 / (T_BIN / int(T_BIN // sts))
 
-DMN_BASE = Path.home() / 'dmn'
-ONE_CACHE_DIR = Path.home() / 'Downloads' / 'ONE'
+# Data, caches and figures: $DMN_DATA (default ~/dmn); ONE downloads: $ONE_CACHE_DIR.
+DMN_BASE = Path(os.environ.get('DMN_DATA', Path.home() / 'dmn'))
+ONE_CACHE_DIR = Path(os.environ.get('ONE_CACHE_DIR', Path.home() / 'Downloads' / 'ONE'))
 for directory in (
     DMN_BASE,
     ONE_CACHE_DIR,

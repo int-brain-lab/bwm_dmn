@@ -12,7 +12,7 @@ from matplotlib.transforms import blended_transform_factory
 from rastermap import Rastermap
 
 from seq_common import PREV, OUT, dmn_bwm, use_private_base
-from make_figure3 import MM, configure_style, label, scale_bar
+from seq_rasters import MM, configure_style, label, scale_bar
 
 ROW_BLOCK = 5
 

@@ -23,6 +23,7 @@ share no spikes and so are free of the overlap of the strided 12.5 ms bins):
 """
 
 import argparse
+import os
 from pathlib import Path
 
 import matplotlib
@@ -34,9 +35,10 @@ from iblatlas.regions import BrainRegions
 from matplotlib.transforms import blended_transform_factory
 from scipy.stats import spearmanr
 
-ROOT = Path.home() / "dmn"
+ROOT = Path(os.environ.get("DMN_DATA", Path.home() / "dmn"))
 HERE = Path(__file__).resolve().parent
 RES = HERE / "results"
+RES.mkdir(exist_ok=True)
 C_SEC = 480.0
 GROUPS = {"sequence": [(25, 30), (46, 51)], "stim/integ": [(90, 99)]}  # defaults (fit7z)
 COLORS = {"sequence": "#1f77b4", "stim/integ": "#ff7f0e", "rate-matched": "0.45"}

@@ -19,14 +19,16 @@ Results: results/neurons.csv, results/peths.npz, results/summary.txt.
 
 import argparse
 from multiprocessing import Pool
+import os
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-ROOT = Path.home() / "dmn"
+ROOT = Path(os.environ.get("DMN_DATA", Path.home() / "dmn"))
 HERE = Path(__file__).resolve().parent
 RES = HERE / "results"
+RES.mkdir(exist_ok=True)
 TRIALS = Path.home() / "Downloads/ONE/bwm_tables/trials.pqt"
 STIM = ["stimLbLcL", "stimLbRcL", "stimRbRcR", "stimRbLcR"]
 MOVE = ["sLbLchoiceL", "sLbRchoiceL", "sRbRchoiceR", "sRbLchoiceR"]

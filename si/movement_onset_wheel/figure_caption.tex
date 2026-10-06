@@ -1,0 +1,24 @@
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=89mm]{results/movement_onset_subthreshold_wheel.pdf}
+    \caption{\textbf{Movement onset and sub-threshold wheel motion.}
+    Analyses used 396 BWM sessions with locally available wheel data, comprising
+    128 mice from 11 laboratories; all 396 sessions contributed to panel
+    \textbf{b}.
+    \textbf{a}, Example wheel traces aligned to the reported movement onset and
+    sign-normalized to the eventual movement direction. The IBL algorithm
+    detects a candidate movement when displacement exceeds eight encoder samples
+    within 200~ms, refines its onset using a 1.5-sample displacement, and assigns
+    \texttt{firstMovement\_times} to the first candidate with peak amplitude
+    $\geq 0.1$~rad. Neither choice nor direction enters this definition. The
+    shaded interval (20~ms immediately preceding onset) was excluded from
+    pre-onset measurements to avoid onset-boundary contamination.
+    \textbf{b}, Session-wise percentages of trials in which net wheel displacement
+    between the go cue and 20~ms before onset matched the final recorded choice
+    (blue), and in which wheel displacement during the first 50~ms after movement
+    onset matched the final recorded choice (green). Brackets report
+    session interquartile ranges and the dashed line denotes 50\%. Pre-onset net
+    displacement was close to chance with respect to final choice, whereas the
+    movement beginning at the reported onset usually matched the final choice.}
+    \label{fig:subthreshold-wheel}
+\end{figure}

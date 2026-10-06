@@ -33,7 +33,7 @@ Selected neurons are concentrated in odd-fit Rastermap clusters 20–31, 42, 56�
 
 Scripts share `seq_common.py` (private `cache/`); images go to `rastermap_previews/`.
 
-- `regenerate_rasters.py`, `make_figure3.py`: train (odd) / test (even) rasters in
+- `regenerate_rasters.py`, `seq_rasters.py`: train (odd) / test (even) rasters in
   the order of the canonical odd-trial fit stored in the CV stack (all 21 types).
   Result: sharp train-only diagonals in clusters 61–69, absent on even trials;
   they sit in the rarely sampled block-change columns (noise peaks).

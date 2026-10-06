@@ -16,6 +16,8 @@ matplotlib.use("Agg")  # dmn_bwm calls plt.show()/plt.ion(); never open windows
 OUT = Path(__file__).resolve().parent
 CACHE = OUT / "cache"
 PREV = OUT / "rastermap_previews"  # images and draft figures
+for _d in (OUT / "results", PREV):
+    _d.mkdir(exist_ok=True)  # git-ignored outputs: absent in a fresh clone
 # Code (dmn_bwm.py) lives in the folder above; data in $DMN_DATA (default ~/dmn).
 sys.path.insert(0, str(OUT.parent))
 ROOT = Path(os.environ.get("DMN_DATA", Path.home() / "dmn"))

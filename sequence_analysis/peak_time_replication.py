@@ -11,13 +11,15 @@ the peak time is unaffected by z-scoring).
 """
 
 import argparse
+import os
 from pathlib import Path
 
 import numpy as np
 from scipy.stats import spearmanr
 
-ROOT = Path.home() / "dmn"
+ROOT = Path(os.environ.get("DMN_DATA", Path.home() / "dmn"))
 RES = Path(__file__).resolve().parent / "results"
+RES.mkdir(exist_ok=True)
 C_SEC = 480.0
 
 

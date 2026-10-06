@@ -1,125 +1,58 @@
-# DMN analysis data requirements
+# Data requirements
 
-The analysis script is:
+All data, caches and generated figures live in one folder, `$DMN_DATA`
+(default `~/dmn`). ONE/Alyx downloads go to `$ONE_CACHE_DIR` (default
+`~/Downloads/ONE`). The code reads both variables (`dmn_bwm.py`, the figure
+folders, `sequence_analysis/`, `pipeline/`).
 
-`/home/mic/dmn/dmn_bwm.py` (the default copy, also in github.com/int-brain-lab/bwm_dmn;
-the older `~/Dropbox/scripts/IBL/dmn_bwm.py` is no longer used)
+`pipeline/run_all.sh` builds everything below in order and skips what exists;
+`pipeline/check_stacks.py` compares a build with the published one.
 
-All downloaded data, intermediate results, and figures now live under:
+## 1. Downloaded automatically (ONE/Alyx access required)
 
-`/home/mic/dmn`
+For the 515 Brain-Wide Map insertions in `pipeline/insertions.csv`,
+`dmn_bwm.concat_PETHs` loads trials (`stimOn_times`, `firstMovement_times`,
+`feedback_times`, `intervals_1`, `probabilityLeft`, `contrastLeft`,
+`contrastRight`, `choice`, `feedbackType`, plus the BWM trial-quality mask),
+spike times and clusters, and good-unit metadata (`cluster_id`, `atlas_id`,
+`x`, `y`, `z`, `channels`, `axial_um`, `lateral_um`, `uuids`). The BWM trials
+aggregate table uses the `2024_Q2_IBL_et_al_BWM` release tag (patched in
+`dmn_bwm._bwm_trials_tag_fix`).
 
-## Directory layout
+## 2. Built by the pipeline (in `$DMN_DATA`)
 
-- `/home/mic/Downloads/ONE/`: datasets downloaded by ONE/Alyx (outside the DMN base folder).
-- `concat/`, `contrast/`, or another version name: per-insertion PETH bundles.
-- The DMN base itself contains stacked matrices and clustering/synthetic-analysis caches.
-- `ephys_atlas_data/`: ephys-atlas release `2024_W50` tables.
-- `bwm_res/bwm_figs_data/decoding/`: externally produced BWM decoding tables.
-- `figs/`: all generated figures, with `figs/overleaf_pdf/` for Overleaf-ready PDFs.
+| File | Step | Content |
+|---|---|---|
+| `concat/<eid>_<probe>.npy` (515) | `01_bundles.py` | per-insertion, per-trial PETHs for the 21 conditions |
+| `concat_cvFalse.npy` | `02_stacks.py` | all trials per condition, z-scored; 54,719 neurons; all-trial UMAP. Used by the k-means analyses (Figs. 2–4) |
+| `concat_cvTrue.npy` | `02_stacks.py` | odd/even split per condition (Methods): `X_odd` (= `concat_z_train`, Rastermap fit), `X_even` (= `concat_z`, display), `X` (all trials, same neurons); one canonical Rastermap fit on odd trials (`isort`, `rm_labels`); 54,569 neurons (those with enough trials in both halves). Used by everything involving Rastermap (Fig. 5, SI) |
+| `kmeans_concat_cvFalse_n25_nclusrm100_zsc1.npy` | `03_caches.py` | the canonical 25-cluster k-means (all trials) of Figs. 2–4 |
+| `counts/cf_Beryl_…npy`, `counts/cf_dec_…npy` | `03_caches.py` | region × cluster counts and decoding-based counts (Fig. 3f–j) |
+| `alleninfo.npy` | automatic | Allen region colours (from `iblatlas`) |
 
-## Primary data downloaded automatically
+Both stacks are needed. The CV stack holds only the 54,569 neurons with enough
+trials in each half; its `X` is the all-trial vectors of those neurons, copied
+from `concat_cvFalse.npy`. The k-means clustering (and its cluster numbers, used
+in the text) is fit on all 54,719 neurons of the all-trial stack.
 
-`concat_PETHs(pid)` uses `load_trials_and_mask` and `load_good_units`. For each
-BWM probe insertion, ONE must be able to obtain:
+Every figure folder writes its own caches to `figN/cache/` (with the inputs
+above symlinked in), and `sequence_analysis/` to `sequence_analysis/cache/` and
+`results/`.
 
-- Trial data containing at least `stimOn_times`, `firstMovement_times`,
-  `feedback_times`, `intervals_1`, `probabilityLeft`, `contrastLeft`,
-  `contrastRight`, `choice`, and `feedbackType`.
-- Trial-quality/saturation information used by `load_trials_and_mask`.
-- Spike times and spike-to-cluster assignments.
-- Good-unit cluster metadata: `cluster_id`, `atlas_id`, `x`, `y`, `z`,
-  `channels`, `axial_um`, `lateral_um`, and `uuids`.
+## 3. External inputs (not downloadable by the code)
 
-These are fetched into `/home/mic/Downloads/ONE/`; they are not expected to be copied into
-the project manually. An operational ONE/Alyx setup and network access are
-therefore required for a fresh build.
+- `bwm_decoding/{stimside,choice,feedback,wheel-speed,wheel-velocity}_stage2.pqt`:
+  Brain-Wide Map decoding results (International Brain Laboratory, 2025), read
+  by `dmn_bwm.get_dec_bwm` for the decoding-based specialization (Fig. 3h, j).
+  Copy them from the BWM paper's released data.
+- The Harris et al. (2019) cortico-thalamic hierarchy is included in the code
+  (`dmn_bwm.harris_hierarchy`, `fig3/regenerate_from_data.py`).
+- Fig. 1 is an Illustrator figure, included as a PDF only.
+- Supplementary figures without a folder in this repository are included as
+  PDFs only (see `report/README.md`).
 
-`reaction_time_hist()` also downloads the BWM aggregate trials table through
-`download_aggregate_tables(one, type='trials')`.
+## Optional
 
-## Generated files required by later functions
-
-Run the pipeline in this order:
-
-1. `get_all_PETHs_parallel(vers='concat')`
-   writes one file per insertion:
-   `concat/<eid>_<probe>.npy`.
-2. `stack_concat(vers='concat', cv=..., ephys=...)`
-   reads those files and writes one of:
-   - `concat_only.npy`
-   - `concat_cvFalse_ephysFalse.npy`
-   - `concat_cvFalse_ephysTrue.npy`
-   - `concat_cvTrue_ephysFalse.npy`
-3. `regional_group(...)` reads the matching stacked file and may create
-   Rastermap, k-means, and synthetic caches in the DMN base directory.
-
-Most other `.npy` files in the DMN base are reproducible caches, not raw inputs.
-
-## Ephys-atlas files
-
-When `ephys=True`, `load_atlas_data()` calls
-`ephys_atlas.data.download_tables(label='2024_W50')` and stores the downloaded
-raw-feature, cluster, channel, and probe tables in `ephys_atlas_data/`.
-
-The `ephys_atlas` Python package must be installed; the tables are downloaded
-automatically when available.
-
-## Files not generated by this script
-
-`get_dec_bwm()` requires these five parquet files:
-
-- `bwm_res/bwm_figs_data/decoding/stimside_stage2.pqt`
-- `bwm_res/bwm_figs_data/decoding/choice_stage2.pqt`
-- `bwm_res/bwm_figs_data/decoding/feedback_stage2.pqt`
-- `bwm_res/bwm_figs_data/decoding/wheel-speed_stage2.pqt`
-- `bwm_res/bwm_figs_data/decoding/wheel-velocity_stage2.pqt`
-
-They are external Brain-Wide Map decoding outputs and must be copied or
-generated separately.
-
-`plot_mistake_examples(cells_csv=...)` optionally requires a user-supplied CSV
-with columns `pid` and `uuid`. It then reads the matching
-`concat/<eid>_<probe>.npy` files.
-
-## Package-supplied atlas files
-
-The script reads `allen_structure_tree.csv` and `beryl.npy` from the installed
-`iblatlas` package. They should not be copied into the DMN folder. The derived
-color/mapping cache is written as `alleninfo.npy` in the DMN base directory.
-
-## Code dependencies
-
-The helper modules `granger.py` and `state_space_bwm.py` sit beside
-`dmn_bwm.py` in `/home/mic/dmn` (copied from `~/Dropbox/scripts/IBL`); they are
-code, not data.
-
-The current machine must also provide the scientific/IBL packages imported by
-the script, notably `brainwidemap`, `ephys_atlas`, `one`, `brainbox`, `iblatlas`,
-`ibllib`/IBL style packages, `rastermap`, `umap`, `hdbscan`, `skbio`, `datoviz`,
-`figrid`, and `venny4py`.
-
-## Current local status (2026-08-06)
-
-Present and validated:
-
-- `concat_cvFalse_ephysFalse.npy`: 54,719 neurons; contains `concat_z` with
-  shape `(54719, 1872)` plus coordinates, region IDs, UUIDs, PIDs, firing rate,
-  latency, Rastermap order, UMAP, and PCA fields.
-- `concat_cvTrue_ephysFalse.npy`: 53,021 neurons; contains test `concat_z` and
-  train `concat_z_train`, each with shape `(53021, 1872)`, plus metadata and
-  cached embedding fields.
-
-These two files are sufficient as the stack inputs for downstream
-`regional_group(..., vers='concat', ephys=False, zsc=True)` analyses with the
-matching `cv` setting.
-
-Not currently present:
-
-- Per-insertion `concat/<eid>_<probe>.npy` bundles, so `stack_concat()` cannot
-  be rebuilt locally without downloading the raw ONE data first.
-- The five decoding `.pqt` files required by `get_dec_bwm()`.
-- Ephys-atlas tables and any `ephys=True` stacked result.
-- A Python environment containing all imported IBL packages. No inspected
-  local Python environment currently imports both `brainwidemap` and
-  `ephys_atlas`; this must be resolved before executing the complete script.
+`load_atlas_data()` (ephys-atlas features, `ephys=True` stacks) needs the
+`ephys_atlas` package and downloads release `2024_W50`; the manuscript figures
+do not use it.

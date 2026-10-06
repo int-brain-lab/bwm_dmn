@@ -1,0 +1,42 @@
+# Analysis environment for the manuscript build (versions of the environment the
+# published figures were made with, 2026-10).
+#   conda env create -f environment.yml && conda activate bwm_dmn
+# System tools (not installed by conda here): tectonic (LaTeX), Ghostscript (gs),
+# Inkscape (Fig. 1 / SVG conversion only). A CUDA GPU is optional (torch).
+name: bwm_dmn
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - numpy=2.3.5
+  - scipy=1.17.1
+  - pandas=3.0.3
+  - matplotlib=3.11.0
+  - scikit-learn=1.9.0
+  - seaborn=0.13.2
+  - statsmodels=0.14.6
+  - networkx=3.6.1
+  - pyarrow=24.0.0
+  - numba=0.65.1
+  - h5py=3.16.0
+  - pillow=12.2.0
+  - tqdm
+  - joblib
+  - pip:
+      - torch==2.6.0
+      - umap-learn==0.5.12
+      - pynndescent==0.6.0
+      - rastermap==1.0
+      - ONE-api==3.5.2
+      - ibllib==4.0.1
+      - iblatlas==1.0.0
+      - iblutil==1.20.0
+      - ibl-neuropixel==1.11.0
+      - ibl-style==0.1.0
+      - figrid==0.1.7
+      - scikit-bio==0.7.3
+      - spectral-connectivity==2.0.1
+      - venny4py==1.0.4
+      - datoviz==0.3.5
+      - git+https://github.com/int-brain-lab/paper-brain-wide-map.git
