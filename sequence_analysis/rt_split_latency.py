@@ -28,6 +28,7 @@ import pandas as pd
 ROOT = Path(os.environ.get("DMN_DATA", Path.home() / "dmn"))
 HERE = Path(__file__).resolve().parent
 RES = HERE / "results"
+RES.mkdir(exist_ok=True)
 TRIALS = Path.home() / "Downloads/ONE/bwm_tables/trials.pqt"
 STIM = ["stimLbLcL", "stimLbRcL", "stimRbRcR", "stimRbLcR"]
 MOVE = ["sLbLchoiceL", "sLbRchoiceL", "sRbRchoiceR", "sRbLchoiceR"]

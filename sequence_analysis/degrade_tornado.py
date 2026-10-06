@@ -25,6 +25,7 @@ from scipy.stats import spearmanr
 
 ROOT = Path(os.environ.get("DMN_DATA", Path.home() / "dmn"))
 RES = Path(__file__).resolve().parent / "results"
+RES.mkdir(exist_ok=True)
 # Groups = row ranges in the upsampled Rastermap order (Fig. 5a/b), inclusive
 SEQ, TOR = (29600, 35599), (11800, 16299)
 STIM = ["block_change_s", "stimLbLcL", "stimLbRcL", "stimRbRcR", "stimRbLcR", "mistake_s"]

@@ -38,6 +38,7 @@ from scipy.stats import spearmanr
 ROOT = Path(os.environ.get("DMN_DATA", Path.home() / "dmn"))
 HERE = Path(__file__).resolve().parent
 RES = HERE / "results"
+RES.mkdir(exist_ok=True)
 C_SEC = 480.0
 GROUPS = {"sequence": [(25, 30), (46, 51)], "stim/integ": [(90, 99)]}  # defaults (fit7z)
 COLORS = {"sequence": "#1f77b4", "stim/integ": "#ff7f0e", "rate-matched": "0.45"}

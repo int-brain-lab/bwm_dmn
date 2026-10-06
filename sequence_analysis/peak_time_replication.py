@@ -19,6 +19,7 @@ from scipy.stats import spearmanr
 
 ROOT = Path(os.environ.get("DMN_DATA", Path.home() / "dmn"))
 RES = Path(__file__).resolve().parent / "results"
+RES.mkdir(exist_ok=True)
 C_SEC = 480.0
 
 

@@ -34,6 +34,7 @@ from scipy.stats import spearmanr
 
 ROOT = Path(os.environ.get("DMN_DATA", Path.home() / "dmn"))
 RES = Path(__file__).resolve().parent / "results"
+RES.mkdir(exist_ok=True)
 C_SEC = 480.0
 # Groups = row ranges in the upsampled Rastermap order (Fig. 5a/b), inclusive
 SEQ, TOR = (29600, 35599), (11800, 16299)

@@ -17,6 +17,7 @@ from scipy.stats import wilcoxon
 
 HERE = __import__("pathlib").Path(__file__).resolve().parent
 RES = HERE / "results"
+RES.mkdir(exist_ok=True)
 REL, MIN_RATE = 0.5, 0.5
 BINS = np.array([0, 25, 50, 75, 100, 125, 150]) / 1000
 

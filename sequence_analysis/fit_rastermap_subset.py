@@ -19,6 +19,7 @@ from rastermap import Rastermap
 
 ROOT = Path(os.environ.get("DMN_DATA", Path.home() / "dmn"))
 RES = Path(__file__).resolve().parent / "results"
+RES.mkdir(exist_ok=True)
 TYPE_SETS = {
     # >= 10 trials per half in >= 98% of insertions
     "fit9": ["stimLbLcL", "stimRbRcR", "mistake_s", "motor_init", "sLbLchoiceL",
