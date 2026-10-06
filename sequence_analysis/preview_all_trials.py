@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from seq_common import OUT, PREV, use_private_base
-from make_figure3 import configure_style, raster_panel, MM
+from seq_rasters import configure_style, raster_panel, MM
 
 ROW_BLOCK = 5
 

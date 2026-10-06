@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Assemble Fig. 3 (neural sequences). Work in progress.
+"""Raster helpers shared by the sequence previews and ../fig5/make_figure5.py
+(configure_style, label, scale_bar, raster_panel, segment-label style).
+
+main() assembles the earlier cluster-based draft of the sequence figure (preview).
 
 Top row: Rastermap of the odd-trial averages (train, sorted by its own fit) and of
 the even-trial averages (test) sorted by the same order, i.e. cross-validated.

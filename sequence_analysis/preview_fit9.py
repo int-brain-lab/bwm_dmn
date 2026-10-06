@@ -13,7 +13,7 @@ from matplotlib.transforms import blended_transform_factory
 
 from seq_common import OUT, PREV, ROOT, use_private_base
 from fit_rastermap_subset import zrows
-from make_figure3 import MM, configure_style, label, raster_panel
+from seq_rasters import MM, configure_style, label, raster_panel
 
 FIT = ROOT / "sequence_analysis/results/rastermap_fit9.npz"
 ROW_BLOCK = 5

@@ -17,7 +17,6 @@ k-m   ../sequence_analysis/degrade_tornado.py: dense tiling cells + noise matche
 Run degrade_tornado.py (and rt_split_latency.py) in ../sequence_analysis first.
 """
 
-import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -35,10 +34,8 @@ from matplotlib.transforms import blended_transform_factory  # noqa: E402
 
 from seq_common import use_private_base  # noqa: E402
 import sparse_tornado  # noqa: E402
+import seq_rasters  # noqa: E402
 
-_spec = importlib.util.spec_from_file_location("seq_rasters", SEQ_DIR / "make_figure3.py")
-seq_rasters = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(seq_rasters)
 
 MM = 1 / 25.4
 ROW_BLOCK = 5

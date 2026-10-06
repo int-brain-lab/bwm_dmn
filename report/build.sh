@@ -3,7 +3,9 @@
 #   report/build.sh            compile with the figures in report/figures
 #   report/build.sh --figures  first rebuild fig2-fig5 (+ Fig. S10) from data
 #                              ($DMN_DATA, default ~/dmn) and copy them into report/figures
-# Needs: python env with dmn_bwm's dependencies, Ghostscript, tectonic.
+# FIG3_POINTCLOUDS=data renders Fig. 3d-e from the data (default: the images
+# extracted from the earlier published figure, as in the manuscript).
+# Needs: python env with dmn_bwm's dependencies (environment.yml), Ghostscript, tectonic.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(dirname "$HERE")
@@ -12,7 +14,7 @@ TECTONIC=${TECTONIC:-tectonic}
 
 if [[ "${1:-}" == "--figures" ]]; then
   (cd "$REPO/fig2" && "$PY" make_figure2.py --rasters)
-  (cd "$REPO/fig3" && "$PY" regenerate_from_data.py)
+  (cd "$REPO/fig3" && "$PY" regenerate_from_data.py --pointclouds "${FIG3_POINTCLOUDS:-source}")
   (cd "$REPO/fig4" && "$PY" compute_synthetic.py && "$PY" make_figure4.py --rasters --sort kmeans \
      && "$PY" si/make_figure_s10.py)
   (cd "$REPO/sequence_analysis" && "$PY" preview_upsample.py && "$PY" rt_split_latency.py \

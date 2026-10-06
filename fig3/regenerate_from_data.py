@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
-"""Regenerate the anatomy/function correspondence figure from local data."""
+"""Regenerate the anatomy/function correspondence figure from local data.
 
+--pointclouds source (default, as in the manuscript): panels d-e use the four
+point-cloud images extracted from the earlier published figure
+(source_alternate_*.jpg). --pointclouds data: they are rendered from the data
+by regenerate_panel_de.py (all trials, cv=False, as panels a-c).
+"""
+
+import argparse
 from collections import Counter
 from pathlib import Path
 import subprocess
@@ -69,6 +76,13 @@ def crop_panel_image(path):
     content = np.any(image[..., :3] < 0.985, axis=2)
     yy, xx = np.where(content)
     return image[yy.min():yy.max() + 1, xx.min():xx.max() + 1]
+
+
+def data_image(name):
+    """Image rendered by regenerate_panel_de.py, cropped to its non-white content."""
+    image = plt.imread(OUT / name)[..., :3]
+    ink = np.where((image < 0.98).any(axis=2))
+    return image[ink[0].min():ink[0].max() + 1, ink[1].min():ink[1].max() + 1]
 
 
 def source_image(name, box, size):
@@ -301,6 +315,12 @@ def label(ax, letter, x=-0.04, y=1.0):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--pointclouds", choices=("source", "data"), default="source",
+                        help="panels d-e: images from the earlier figure, or rendered from data")
+    args = parser.parse_args()
+    if args.pointclouds == "data":
+        subprocess.run([sys.executable, str(OUT / "regenerate_panel_de.py")], check=True)
     configure_style()
     # Both panels use the CV cache's displayed concat_z responses. Rastermap
     # ordering was fitted on concat_z_train; Beryl sorting changes rows only.
@@ -356,14 +376,18 @@ def main():
 
     # d/e: use the exact image assets embedded in the alternate manuscript PDF.
     # White margins and embedded asset headings are cropped; point pixels are unchanged.
-    source_umap = {
-        "d": source_image("source_alternate_d_umap_beryl.jpg", (25, 20, 547, 410), (428, 571)),
-        "e": source_image("source_alternate_e_umap_kmeans.jpg", (25, 20, 547, 410), (428, 571)),
-    }
-    source_xyz = {
-        "d": source_image("source_alternate_d_xyz_beryl.jpg", (200, 175, 630, 652), (726, 817)),
-        "e": source_image("source_alternate_e_xyz_kmeans.jpg", (212, 175, 645, 655), (726, 843)),
-    }
+    if args.pointclouds == "data":
+        source_umap = {k: data_image(f"panel_{k}_umap.png") for k in "de"}
+        source_xyz = {k: data_image(f"panel_{k}_xyz.png") for k in "de"}
+    else:
+        source_umap = {
+            "d": source_image("source_alternate_d_umap_beryl.jpg", (25, 20, 547, 410), (428, 571)),
+            "e": source_image("source_alternate_e_umap_kmeans.jpg", (25, 20, 547, 410), (428, 571)),
+        }
+        source_xyz = {
+            "d": source_image("source_alternate_d_xyz_beryl.jpg", (200, 175, 630, 652), (726, 817)),
+            "e": source_image("source_alternate_e_xyz_kmeans.jpg", (212, 175, 645, 655), (726, 843)),
+        }
     low, high = np.min(umap, axis=0), np.max(umap, axis=0)
     pad = (high - low) * 0.02
     umap_extent = (low[0] - pad[0], high[0] + pad[0],

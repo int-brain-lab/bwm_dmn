@@ -21,6 +21,7 @@ Panels
   g  latency distribution of reliable cells
 """
 
+import os
 from pathlib import Path
 
 import matplotlib
@@ -31,7 +32,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 
-ROOT = Path.home() / "dmn"
+ROOT = Path(os.environ.get("DMN_DATA", Path.home() / "dmn"))
 RES = Path(__file__).resolve().parent / "results"
 C_SEC = 480.0
 # Groups = row ranges in the upsampled Rastermap order (Fig. 5a/b), inclusive

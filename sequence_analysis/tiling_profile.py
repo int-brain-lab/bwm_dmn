@@ -9,6 +9,7 @@ Shuffle baseline: rho with even peaks permuted within the band (95th percentile)
 Output: results/tiling_profile.png/.csv.
 """
 
+import os
 from pathlib import Path
 
 import matplotlib
@@ -19,7 +20,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 
-ROOT = Path.home() / "dmn"
+ROOT = Path(os.environ.get("DMN_DATA", Path.home() / "dmn"))
 RES = Path(__file__).resolve().parent / "results"
 STIM = ["block_change_s", "stimLbLcL", "stimLbRcL", "stimRbRcR", "stimRbLcR", "mistake_s"]
 BAND, STEP = 1000, 250
