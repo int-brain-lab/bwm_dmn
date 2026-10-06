@@ -143,7 +143,37 @@ for directory in (
 ):
     directory.mkdir(parents=True, exist_ok=True)
 
-one = ONE(cache_dir=ONE_CACHE_DIR)
+one = ONE(cache_dir=ONE_CACHE_DIR)  # local cache only; see use_online_one()
+
+
+def use_online_one():
+    """Switch the module-level ONE to an online Alyx connection (needed to
+    download BWM data, e.g. for get_all_PETHs_parallel). Returns it."""
+    global one
+    one = ONE(base_url='https://alyx.internationalbrainlab.org',
+              cache_dir=ONE_CACHE_DIR, silent=True)
+    return one
+
+
+def _bwm_trials_tag_fix():
+    """brainwidemap's default aggregate tag (2026_Q2) has no checksum for the
+    'trials' table, so load_trials_and_mask fails; use the BWM 2024_Q2 release
+    tag for trials (the release used by the published analyses)."""
+    import brainwidemap.bwm_loading as bl
+    if getattr(bl, "_dmn_trials_tag_fix", False):
+        return
+    orig = bl.download_aggregate_tables
+
+    def download_aggregate_tables(one, target_path=None, type='clusters', tag=None, overwrite=False):
+        if tag is None:
+            tag = '2024_Q2_IBL_et_al_BWM' if type == 'trials' else '2026_Q2_IBL_et_al_BWM'
+        return orig(one, target_path=target_path, type=type, tag=tag, overwrite=overwrite)
+
+    bl.download_aggregate_tables = download_aggregate_tables
+    bl._dmn_trials_tag_fix = True
+
+
+_bwm_trials_tag_fix()
 
 br = BrainRegions()
 
@@ -1180,7 +1210,13 @@ def regional_group(
     # ---------------- mapping ----------------
     if mapping == "rm":
         rm_cache_path = _cache_path("rm")
-        labels, isort = _load_rm_cache(rm_cache_path, n_rows)
+        if cv and (not synthetic) and nclus_rm == 100 and "rm_labels" in r and "isort" in r:
+            # Use the single canonical Rastermap fit stored in the CV stack
+            # (fit on odd trials), so all Rastermap panels share one ordering.
+            labels = np.asarray(r["rm_labels"], dtype=int)
+            isort = np.asarray(r["isort"], dtype=int)
+        else:
+            labels, isort = _load_rm_cache(rm_cache_path, n_rows)
 
         if labels is None or isort is None:
             # with zsc=False, cv is guaranteed False, so this reduces cleanly.
@@ -1602,7 +1638,8 @@ def stack_concat(
     Stack concatenated PETHs from per-trial data on disk and optionally compute embeddings.
 
     - Non-CV:       average trials per segment -> concat time -> one matrix (neurons x time)
-    - CV (half0/1): split trials per segment into two halves -> train & test matrices
+    - CV: split trials per segment into odd- and even-numbered trials -> train
+      (odd: 1st, 3rd, ...) & test (even) matrices; Rastermap is fit on train
     """
     start_time = time.time()
 
@@ -1613,7 +1650,7 @@ def stack_concat(
     pth_res.mkdir(parents=True, exist_ok=True)
 
     # ---- discover per-insertion files "<eid>_<probe>.npy" ----
-    ss_all = [fn for fn in os.listdir(pth) if fn.endswith(".npy")]
+    ss_all = sorted(fn for fn in os.listdir(pth) if fn.endswith(".npy"))  # fixed row order
     ss = [fn for fn in ss_all if "_" in fn and not fn.startswith(f"{vers}_")]
     if not ss:
         raise RuntimeError(f"No per-insertion .npy files found in {pth}")
@@ -1682,7 +1719,7 @@ def stack_concat(
             lens.append(int(Xt.shape[1]))
         return lens
 
-    def _half_means_concat(D, ttypes_eff):
+    def _oddeven_means_concat(D, ttypes_eff):
         segs0, segs1 = [], []
         for t in ttypes_eff:
             X = _extract_trials_3d(D, t)  # (N,T,M)
@@ -1691,14 +1728,11 @@ def stack_concat(
                 if mk.size:
                     X = X[:, :, mk]
 
+            # Odd/even split (Methods): odd-numbered trials (1st, 3rd, ...) -> train,
+            # even-numbered trials -> test. Trials are in session order.
             M = X.shape[2]
-            if M <= 1:
-                idx0 = np.arange(M, dtype=int)
-                idx1 = np.array([], dtype=int)
-            else:
-                k = (M + 1) // 2
-                idx0 = np.arange(0, k, dtype=int)
-                idx1 = np.arange(k, M, dtype=int)
+            idx0 = np.arange(0, M, 2, dtype=int)
+            idx1 = np.arange(1, M, 2, dtype=int)
 
             A0 = _avg_trials(X[:, :, idx0])
             A1 = _avg_trials(X[:, :, idx1])
@@ -1808,7 +1842,7 @@ def stack_concat(
         print(f"embedding Rastermap on {vers}...")
         try:
             model = Rastermap(
-                n_PCs=200, n_clusters=100, locality=0.75, time_lag_window=5, bin_size=1
+                n_PCs=200, n_clusters=100, locality=0.75, grid_upsample=0, time_lag_window=5, bin_size=1
             ).fit(r["concat_z"])
             r["isort"] = model.isort
         except Exception as e:
@@ -1855,7 +1889,7 @@ def stack_concat(
             continue
 
         try:
-            P0, P1 = _half_means_concat(D, ttypes_eff)
+            P0, P1 = _oddeven_means_concat(D, ttypes_eff)
         except Exception as ex:
             print(f"[CV] Skipping {eid}_{probe_name}: {type(ex).__name__}: {ex}")
             continue
@@ -1882,7 +1916,7 @@ def stack_concat(
         tot_after += P0c.shape[0]
 
     print(len(ws_train), "CV train insertions combined; ", len(ws_test), "CV test insertions combined")
-    print(f"[CV] TOTALS (before cleaning): half0={tot0_raw}, half1={tot1_raw} neurons")
+    print(f"[CV] TOTALS (before cleaning): train(odd)={tot0_raw}, test(even)={tot1_raw} neurons")
     print(f"[CV] TOTALS (after joint mask): kept={tot_after} neurons")
 
     for ke in r.keys():
@@ -1916,9 +1950,13 @@ def stack_concat(
     r["ttypes"] = list(ttypes_eff)
     r["len"] = dict(zip(ttypes_eff, lens_eff))
 
-    print("[CV] fitting Rastermap on TRAIN (half0) and storing sorting for TEST (half1)...")
-    model = Rastermap(n_PCs=200, n_clusters=100, locality=0.75, time_lag_window=5, bin_size=1).fit(Z_train)
+    print("[CV] fitting Rastermap on TRAIN (odd trials) and storing sorting for TEST (even trials)...")
+    model = Rastermap(n_PCs=200, n_clusters=100, locality=0.75, grid_upsample=0, time_lag_window=5, bin_size=1).fit(Z_train)
     r["isort"] = model.isort
+    # Keep the cluster labels of this canonical fit; every Rastermap-based panel
+    # (regional_group(mapping="rm", cv=True), Beryl-sorted rasters) uses this fit.
+    r["rm_labels"] = np.asarray(model.embedding_clust, dtype=int).reshape(-1)
+    r["cv_split"] = "oddeven"
 
     print("embedding UMAP on TEST concat_z...")
     r["umap_z"] = umap.UMAP(n_components=2, random_state=0, n_neighbors=8, min_dist=0.2).fit_transform(

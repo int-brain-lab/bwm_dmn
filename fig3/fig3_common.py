@@ -1,8 +1,9 @@
-"""Shared setup for the Figure 5 scripts.
+"""Shared setup for the Figure 3 scripts.
 
-``dmn_bwm`` reads its inputs from, and writes every cache and figure to,
-``dmn_bwm.DMN_BASE``. ``use_private_base`` points that at ``fig5/cache``, where
-the existing ~/dmn caches are symlinked, so nothing outside ``fig5`` is written.
+``dmn_bwm`` reads inputs from, and writes caches and figures to, ``DMN_BASE``
+(and ``pth_dmn`` for the cluster-count caches). ``use_private_base`` points both
+at ``fig3/cache``, where the ~/dmn inputs (*.npy and counts/) are symlinked, so
+nothing outside ``fig3`` is written.
 """
 
 from pathlib import Path
@@ -23,11 +24,12 @@ import dmn_bwm  # noqa: E402
 
 
 def use_private_base():
-    """Symlink ~/dmn inputs into fig5/cache and make it dmn_bwm's base folder."""
+    """Symlink ~/dmn inputs into fig3/cache and make it dmn_bwm's base folder."""
     (CACHE / "figs").mkdir(parents=True, exist_ok=True)
-    for source in ROOT.glob("*.npy"):
+    for source in [*ROOT.glob("*.npy"), ROOT / "counts"]:
         link = CACHE / source.name
         if not link.exists():
             link.symlink_to(source)
     dmn_bwm.DMN_BASE = CACHE
+    dmn_bwm.pth_dmn = CACHE
     return dmn_bwm

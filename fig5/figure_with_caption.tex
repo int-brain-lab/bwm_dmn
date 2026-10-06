@@ -1,0 +1,14 @@
+% One A4 page with Fig. 5 and its caption, typeset with the manuscript's class
+% (elife.cls, 10pt: Source Sans Pro, small captions, bold "Figure N." labels,
+% linespread 1.2). Text width 183 mm, as in the manuscript (US Letter, 2.0 + 1.3 cm).
+% elife.cls here = manuscript copy, mono font loaded by file name for tectonic.
+\documentclass[10pt]{elife}
+\geometry{a4paper,left=13.5mm,right=13.5mm,top=12mm,bottom=12mm,marginparwidth=0pt,marginparsep=0pt}
+\begin{document}
+\thispagestyle{empty}
+\setcounter{figure}{4}
+\begin{figure}[p]
+\includegraphics[width=\linewidth]{contextual_neural_sequences_printer.pdf}
+\input{figure_caption.tex}
+\end{figure}
+\end{document}

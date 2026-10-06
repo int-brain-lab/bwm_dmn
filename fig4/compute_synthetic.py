@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""Compute (or load) the cached synthetic analyses used by Fig. 5 (and Fig. S10).
+"""Compute (or load) the cached synthetic analyses used by Fig. 4 (and Fig. S10).
 
 - synthetic=True, syn_control=False: NCLUS-cluster k-means basis V (100 for
-  Fig. 5, 40 for Fig. S10), real
+  Fig. 4, 40 for Fig. S10), real
   coefficients C, i.i.d. marginal-matched synthetic coefficients B, synthetic
   responses B @ V with their Rastermap order (panels a-g, h right, i-k).
 - synthetic=True, syn_control=True: responses reconstructed from the real
   coefficients, with their Rastermap order (panel h left).
-All caches are written to fig5/cache.
+All caches are written to fig4/cache.
 """
 
 import argparse
 
-from fig5_common import use_private_base
+from fig4_common import use_private_base
 
 
 def load(syn_control=False, nclus=100):

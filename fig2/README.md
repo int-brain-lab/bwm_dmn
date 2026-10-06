@@ -29,41 +29,29 @@ Ghostscript-compressed `functional_response_structure_printer.pdf`.
 
 ## Panel provenance
 
+Rastermap-free since 2026-10-02 (the Rastermap panel, previously f, was removed;
+re-lettered to read left to right: old d → a, e → b, a → c, b → d, c → e).
+Panel b keeps consecutive labels >= 5 pt apart.
+
 | Panel | dmn_bwm function | Data |
 |---|---|---|
-| a | `plot_cluster_mean_PETHs` (restyled) | 25 k-means clusters, `cv=False` (54,719 neurons) |
-| b | cluster means, min–max normalized in the window | clusters 21, 9, 12, 14, 5; segments L_sL_cL_b,s / L_sL_cL_b,m / L_move |
-| c | cluster means, vertically offset | clusters 16, 22, 2, 11; segments L_b … mistake,s |
-| d | `plot_rastermap(mapping="kmeans", sort_method="acs")` | `cv=False`, cluster-coloured rows |
-| e | neurons selected by `plot_fig2e_clean_examples` (`min_max_lz=None`), drawn top-down (cluster 1 at top; cluster numbers left, regions right) | `cv=True` trial halves, labelled with each neuron's panel-a (`cv=False`) cluster via UUID; 2 reliable neurons per cluster |
-| f | `plot_rastermap(mapping="rm", sort_method="rastermap")` | `cv=True` (53,021 neurons, held-out half), 100 Rastermap clusters |
+| a | `plot_rastermap(mapping="kmeans", sort_method="acs")`: neurons sorted by k-means cluster, no Rastermap ordering | all trials (`cv=False`, 54,719 neurons), grey on white with cluster boundary lines (no background colours) |
+| b | neurons selected by `plot_fig2e_clean_examples` (`min_max_lz=None`) on the odd/even trial split, shown as their all-trial feature vectors; top-down, cluster numbers left, regions right | panel-a clusters via UUID |
+| c | `plot_cluster_mean_PETHs` (restyled) | 25 k-means clusters, all trials |
+| d | cluster means, min–max normalized in the window | clusters 21, 9, 12, 14, 5; segments L_sL_cL_b,s / L_sL_cL_b,m / L_move |
+| e | cluster means, vertically offset | clusters 16, 22, 2, 11; segments L_b … mistake,s |
 
 The `cv=False` clustering is the one that matches the manuscript's cluster
 numbering (e.g. cluster 21 = stimulus, cluster 16 = largest).
 
-Panel e needs the trial halves, which only exist in the `cv=True` data, but the
-`cv=True` and `cv=False` clusterings number clusters differently and agree
-for only 43% of neurons. `full_trial_clusters` in `make_figure2.py` therefore
-gives every `cv=True` neuron its `cv=False` cluster (same UUID), so the numbers
-in e are panel a's clusters. Selection: reliability (half vs half r >= 0.2),
-firing rate 0.1-100 (stored units), no Lempel-Ziv filter; ranked by
-held-out trace vs training-half cluster mean, two different regions per
-cluster. The chosen traces correlate with panel a's cluster means at median
-r = 0.90 (min 0.53). Note that the `cv=False` cluster assignment itself used
-all trials. The selection is written to `panel_e_selection.csv`.
+## Changes from the original manuscript version
 
-## Known differences from the manuscript version
-
-- **f:** no Rastermap cache for the manuscript's ordering existed locally, so
-  `fig2/cache/rm_concat_cvTrue_nclusrm100_zsc1.npy` was computed afresh. The
-  main blocks (sequence whorl at the top, feedback block at the bottom) recur,
-  but block positions differ (e.g. the dark "rest" block is at ~35k rather
-  than ~50k).
-- **e:** the manuscript's panel e labelled neurons with the `cv=True` cluster
-  numbers (which do not correspond to panel a) and used an LZ <= 0.6 filter;
-  both are changed here, so the example neurons differ from the manuscript.
-- **Caption:** the manuscript caption describes a panel g (UMAP) and says f's
-  clusters are numbered on the right. Neither is in the manuscript figure, so
-  neither is drawn here.
-- Fonts and sizes follow `~/dmn/FIGURE_STYLE.md` (Arial, 5–6 pt, 183 mm)
-  rather than the Illustrator-assembled original.
+- **Rastermap panel removed** (was f); its Rastermap analyses belong with the
+  odd/even CV stack (Fig. 3, Fig. 4a–c, SI). The old `rm_*` cache in
+  `fig2/cache` is no longer used.
+- **e:** the original labelled neurons with the `cv=True` cluster numbers (which
+  do not correspond to panel b's clusters) and used an LZ <= 0.6 filter; both
+  changed, so the example neurons differ.
+- **Caption:** the original described a UMAP panel g that the figure did not
+  contain (removed from the caption on 2026-10-01).
+- Fonts and sizes follow `~/dmn/FIGURE_STYLE.md` (Arial, 5–6 pt, 183 mm).

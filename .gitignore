@@ -8,3 +8,9 @@ fig*/**/*_values.txt
 fig2/panel_e_selection.csv
 fig2/raster_rows.npz
 report/main.pdf
+
+# sequence_analysis outputs and caches (rebuilt by its scripts)
+sequence_analysis/cache/
+sequence_analysis/results/
+sequence_analysis/rastermap_previews/
+sequence_analysis/sequences_old/
