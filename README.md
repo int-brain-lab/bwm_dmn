@@ -11,6 +11,23 @@ Data access: https://docs.internationalbrainlab.org/notebooks_external/data_stru
 
 ## Rebuilding the manuscript
 
+From the IBL data up (each step skips what already exists):
+
+```bash
+conda env create -f environment.yml && conda activate bwm_dmn
+export DMN_DATA=~/dmn            # data, stacks and caches (default ~/dmn)
+pipeline/run_all.sh              # download -> stacks -> caches -> check -> figures -> report/main.pdf
+pipeline/run_all.sh --from 5     # only figures + manuscript, from existing stacks
+```
+
+`pipeline/`: `01_bundles.py` (ONE download, per-insertion PETH bundles for the
+515 insertions in `insertions.csv`; hours), `02_stacks.py` (all-trial and
+odd/even CV stacks with the canonical Rastermap fit), `03_caches.py` (25-cluster
+k-means, region/cluster counts), `check_stacks.py` (neuron counts etc. against
+the published build). Inputs the code cannot download (BWM decoding tables) are
+listed in `DATA_REQUIREMENTS.md`; figures without code are listed in
+`report/README.md`.
+
 - `report/`: the LaTeX manuscript with all figure PDFs; `report/build.sh`
   compiles it (`--figures` first rebuilds the figures below from data).
 - `fig2/`–`fig5/` (with `fig4/si/` for Fig. S10): one folder per main figure;
