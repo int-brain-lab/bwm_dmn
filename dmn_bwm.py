@@ -13,6 +13,8 @@ import os
 import sys
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.append(str(SCRIPT_DIR))
+# granger.py and state_space_bwm.py live in auxiliary_analyses/
+sys.path.append(str(SCRIPT_DIR / 'auxiliary_analyses'))
 from granger import get_volume, get_centroids, get_res, get_structural, get_ari
 from state_space_bwm import get_cmap_bwm, pre_post
 from random import shuffle
