@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Does noise alone turn stimulus-locked "tornado" cells into "sequence" cells?
 
-Tornado cells (canonical clusters 21-28) get independent, temporally smoothed
+Tornado cells (dense tiling, latency_tiling_groups.DENSE) get independent, temporally smoothed
 Gaussian noise added to their odd and even feature vectors (6-bin boxcar, like the
 strided 12.5 ms bins), scaled so their median odd/even reliability over the
-stimulus window matches that of the sequence cells (canonical 60-69). Rastermap
+stimulus window matches that of the sequence cells (sparse tiling, latency_tiling_groups.SPARSE). Rastermap
 (Methods parameters) is fitted on the noisy odd vectors; the same cross-validated
 statistics as in sequence_vs_stim.py are computed for
   real sequence cells, noisy tornado cells, original tornado cells.
@@ -23,11 +23,11 @@ from rastermap import Rastermap
 from scipy.ndimage import uniform_filter1d
 from scipy.stats import spearmanr
 
+import latency_tiling_groups
+
 ROOT = Path(os.environ.get("DMN_DATA", Path.home() / "dmn"))
 RES = Path(__file__).resolve().parent / "results"
 RES.mkdir(exist_ok=True)
-# Groups = row ranges in the upsampled Rastermap order (Fig. 5a/b), inclusive
-SEQ, TOR = (29600, 35599), (11800, 16299)
 STIM = ["block_change_s", "stimLbLcL", "stimLbRcL", "stimRbRcR", "stimRbLcR", "mistake_s"]
 C_SEC = 480.0
 MM = 1 / 25.4
@@ -79,14 +79,11 @@ def fit_order(r):
 
 def main():
     r = np.load(ROOT / "concat_cvTrue.npy", allow_pickle=True).flat[0]
-    order = fit_order(r)
-    lab = np.empty_like(order); lab[order] = np.arange(order.size)  # row of each neuron
-    pos = np.empty_like(order); pos[order] = np.arange(order.size)
+    G = latency_tiling_groups.group_indices(r)  # each sorted by row in Fig. 5a, b
     start = np.cumsum([0] + list(r["len"].values())); names = list(r["len"])
     seg = {t: slice(start[names.index(t)], start[names.index(t) + 1]) for t in names}
     Xo, Xe = np.asarray(r["X_odd"], np.float32), np.asarray(r["X_even"], np.float32)
-    seq = np.flatnonzero((lab >= SEQ[0]) & (lab <= SEQ[1])); seq = seq[np.argsort(pos[seq])]
-    tor = np.flatnonzero((lab >= TOR[0]) & (lab <= TOR[1])); tor = tor[np.argsort(pos[tor])]
+    seq, tor = G["sparse"], G["dense"]
     target = stats(Xo[seq], Xe[seq], seg)["rel"]
 
     # Per-neuron noise: map the tornado reliability distribution onto the sequence
@@ -122,9 +119,9 @@ def main():
                       time_lag_window=5, bin_size=1).fit(Do)
     dsort = np.asarray(model.isort)
 
-    S = {"sparse cells (rows 29.6-35.6k)": stats(Xo[seq], Xe[seq], seg),
+    S = {"sparse tiling": stats(Xo[seq], Xe[seq], seg),
          "dense tiling + noise": stats(Do, De, seg),
-         "dense tiling (rows 11.8-16.3k)": stats(Xo[tor], Xe[tor], seg)}
+         "dense tiling": stats(Xo[tor], Xe[tor], seg)}
     lines = [f"per-neuron noise (median scale {s:.2f} x feature SD) maps the tornado reliability "
              f"distribution onto the sequence cells' (median {target:.2f})",
              "group | median reliability | fraction r>=0.3 | xval lag-0 corr | peak-time rho"]
@@ -142,9 +139,9 @@ def main():
                                 "font.size": 5.5, "pdf.fonttype": 42, "mathtext.fontset": "custom",
                                 "mathtext.rm": "Liberation Sans"})
     fig, axs = plt.subplots(2, 3, figsize=(183 * MM, 130 * MM), gridspec_kw=dict(hspace=0.35, wspace=0.25))
-    panels = [(Xo[seq], Xe[seq], "real sequence cells (canonical 60–69)"),
+    panels = [(Xo[seq], Xe[seq], "real sparse tiling"),
               (Do[dsort], De[dsort], "tornado cells + trial-count-scaled noise, own fit"),
-              (Xo[tor], Xe[tor], "original tornado cells (21–28)")]
+              (Xo[tor], Xe[tor], "original dense tiling cells")]
     for j, (A, B, title) in enumerate(panels):
         for i, (M, half) in enumerate(((A, "odd (train)"), (B, "even (test)"))):
             ax = axs[i, j]

@@ -6,7 +6,7 @@
 #        2 stacks (all-trial and odd/even CV, with the canonical Rastermap fit)
 #        3 shared caches (25-cluster k-means, region/cluster counts)
 #        4 check the stacks against the published build
-#        5 all figures with code (Figs. 2-5, S10) + compile -> report/main.pdf
+#        5 all figures with code (see FIGURES.md) + compile -> report/main.pdf
 # Data and caches: $DMN_DATA (default ~/dmn); see DATA_REQUIREMENTS.md.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)

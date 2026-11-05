@@ -29,7 +29,7 @@ spread broadens with latency (the "tornado"). Caveat: the windows are only 150 m
 so peaks near the window end (> ~110 ms) are truncated and not informative.
 Selected neurons are concentrated in odd-fit Rastermap clusters 20–31, 42, 56–57.
 
-## 2. Rastermap exploration (moved here from `../fig3` on 2026-10-05)
+## 2. Rastermap exploration (moved here from `../fig_anatomy` on 2026-10-05)
 
 Scripts share `seq_common.py` (private `cache/`); images go to `rastermap_previews/`.
 

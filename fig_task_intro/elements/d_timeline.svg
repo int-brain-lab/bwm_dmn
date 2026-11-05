@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="61.5mm" height="15.0mm" viewBox="0 0 61.5 15.0">
+<defs>
+<linearGradient id="up" x1="0" x2="1" y1="0" y2="0"><stop offset="0" stop-color="rgb(125,107,104)" stop-opacity="0.0"/><stop offset="1" stop-color="rgb(125,107,104)" stop-opacity="1.0"/></linearGradient>
+<linearGradient id="down" x1="0" x2="1" y1="0" y2="0"><stop offset="0" stop-color="rgb(125,107,104)" stop-opacity="1.0"/><stop offset="1" stop-color="rgb(125,107,104)" stop-opacity="0.0"/></linearGradient>
+</defs>
+<rect x="2.60" y="6.40" width="4.50" height="2.40" fill="rgb(125,107,104)"/>
+<rect x="11.50" y="6.40" width="9.00" height="2.40" fill="url(#up)"/>
+<rect x="23.50" y="6.40" width="4.50" height="2.40" fill="url(#down)"/>
+<rect x="33.50" y="6.40" width="4.50" height="2.40" fill="url(#up)"/>
+<rect x="38.00" y="6.40" width="4.50" height="2.40" fill="url(#down)"/>
+<rect x="49.00" y="6.40" width="9.00" height="2.40" fill="url(#down)"/>
+<text x="4.85" y="5.60" font-family="Arial, 'Liberation Sans', Helvetica, sans-serif" font-size="1.940" text-anchor="middle" fill="#000000">rest</text>
+<text x="16.00" y="5.60" font-family="Arial, 'Liberation Sans', Helvetica, sans-serif" font-size="1.940" text-anchor="middle" fill="#000000">quiescence</text>
+<text x="37.40" y="5.60" font-family="Arial, 'Liberation Sans', Helvetica, sans-serif" font-size="1.940" text-anchor="end" fill="#000000">choice</text>
+<line x1="0.6" x2="8.70" y1="9.6" y2="9.6" stroke="#000000" stroke-width="0.25"/>
+<line x1="9.90" x2="59.90" y1="9.6" y2="9.6" stroke="#000000" stroke-width="0.25"/>
+<line x1="8.30" x2="9.10" y1="10.299999999999999" y2="8.9" stroke="#000000" stroke-width="0.25"/>
+<line x1="9.50" x2="10.30" y1="10.299999999999999" y2="8.9" stroke="#000000" stroke-width="0.25"/>
+<path d="M61.20,9.6 l-1.6,-0.65 v1.3 z" fill="#000000"/>
+<line x1="2.60" x2="2.60" y1="9.60" y2="10.20" stroke="#000000" stroke-width="0.2"/>
+<text x="2.60" y="11.90" font-family="Arial, 'Liberation Sans', Helvetica, sans-serif" font-size="1.764" text-anchor="middle" fill="#000000">−1.15</text>
+<line x1="7.10" x2="7.10" y1="9.60" y2="10.20" stroke="#000000" stroke-width="0.2"/>
+<text x="7.10" y="11.90" font-family="Arial, 'Liberation Sans', Helvetica, sans-serif" font-size="1.764" text-anchor="middle" fill="#000000">−1</text>
+<line x1="11.50" x2="11.50" y1="9.60" y2="10.20" stroke="#000000" stroke-width="0.2"/>
+<text x="11.50" y="11.90" font-family="Arial, 'Liberation Sans', Helvetica, sans-serif" font-size="1.764" text-anchor="middle" fill="#000000">−0.4</text>
+<line x1="20.50" x2="20.50" y1="9.60" y2="10.20" stroke="#000000" stroke-width="0.2"/>
+<text x="20.50" y="11.90" font-family="Arial, 'Liberation Sans', Helvetica, sans-serif" font-size="1.764" text-anchor="middle" fill="#000000">−0.1</text>
+<line x1="23.50" x2="23.50" y1="9.60" y2="10.20" stroke="#000000" stroke-width="0.2"/>
+<text x="23.50" y="11.90" font-family="Arial, 'Liberation Sans', Helvetica, sans-serif" font-size="1.764" text-anchor="middle" fill="#000000">0</text>
+<line x1="28.00" x2="28.00" y1="9.60" y2="10.20" stroke="#000000" stroke-width="0.2"/>
+<text x="28.00" y="11.90" font-family="Arial, 'Liberation Sans', Helvetica, sans-serif" font-size="1.764" text-anchor="middle" fill="#000000">0.15</text>
+<line x1="33.50" x2="33.50" y1="9.60" y2="10.20" stroke="#000000" stroke-width="0.2"/>
+<text x="33.50" y="11.90" font-family="Arial, 'Liberation Sans', Helvetica, sans-serif" font-size="1.764" text-anchor="middle" fill="#000000">−0.15</text>
+<line x1="38.00" x2="38.00" y1="9.60" y2="10.20" stroke="#000000" stroke-width="0.2"/>
+<text x="38.00" y="11.90" font-family="Arial, 'Liberation Sans', Helvetica, sans-serif" font-size="1.764" text-anchor="middle" fill="#000000">0</text>
+<line x1="42.50" x2="42.50" y1="9.60" y2="10.20" stroke="#000000" stroke-width="0.2"/>
+<text x="42.50" y="11.90" font-family="Arial, 'Liberation Sans', Helvetica, sans-serif" font-size="1.764" text-anchor="middle" fill="#000000">0.15</text>
+<line x1="49.00" x2="49.00" y1="9.60" y2="10.20" stroke="#000000" stroke-width="0.2"/>
+<text x="49.00" y="11.90" font-family="Arial, 'Liberation Sans', Helvetica, sans-serif" font-size="1.764" text-anchor="middle" fill="#000000">0</text>
+<line x1="58.00" x2="58.00" y1="9.60" y2="10.20" stroke="#000000" stroke-width="0.2"/>
+<text x="58.00" y="11.90" font-family="Arial, 'Liberation Sans', Helvetica, sans-serif" font-size="1.764" text-anchor="middle" fill="#000000">0.3</text>
+<rect x="23.15" y="3.20" width="0.7" height="6.40" fill="#000000"/>
+<text x="23.50" y="2.30" font-family="Arial, 'Liberation Sans', Helvetica, sans-serif" font-size="1.940" text-anchor="middle" fill="#000000">stimulus</text>
+<clipPath id="gabor2803"><circle cx="28.986" cy="1.650" r="0.950"/></clipPath><circle cx="28.986" cy="1.650" r="0.950" fill="#fff"/><g clip-path="url(#gabor2803)"><rect x="28.194" y="0.700" width="0.317" height="1.900" fill="#000000"/><rect x="28.828" y="0.700" width="0.317" height="1.900" fill="#000000"/><rect x="29.461" y="0.700" width="0.317" height="1.900" fill="#000000"/></g><circle cx="28.986" cy="1.650" r="0.950" fill="none" stroke="#000000" stroke-width="0.15"/>
+<path d="M30.64,1.32 h0.43 l0.52,-0.43 v1.52 l-0.52,-0.43 h-0.43 z" fill="none" stroke="#2b8cd6" stroke-width="0.2" stroke-linejoin="round"/><path d="M31.92,1.33 q0.33,0.32 0,0.64" fill="none" stroke="#2b8cd6" stroke-width="0.2" stroke-linecap="round"/><path d="M32.30,1.23 q0.33,0.42 0,0.83" fill="none" stroke="#2b8cd6" stroke-width="0.2" stroke-linecap="round"/>
+<rect x="37.65" y="3.20" width="0.7" height="6.40" fill="#000000"/>
+<text x="38.00" y="2.30" font-family="Arial, 'Liberation Sans', Helvetica, sans-serif" font-size="1.940" text-anchor="middle" fill="#000000">movement</text>
+<rect x="48.65" y="3.20" width="0.7" height="6.40" fill="#000000"/>
+<text x="49.00" y="2.30" font-family="Arial, 'Liberation Sans', Helvetica, sans-serif" font-size="1.940" text-anchor="middle" fill="#000000">feedback</text>
+<path d="M54.125,0.700 C54.449,1.365 54.714,1.834 54.714,2.011 A0.589,0.589 0 0 1 53.536,2.011 C53.536,1.834 53.801,1.365 54.125,0.700 z" fill="#2b8cd6"/>
+<path d="M55.21,1.32 h0.43 l0.52,-0.43 v1.52 l-0.52,-0.43 h-0.43 z" fill="none" stroke="#d62728" stroke-width="0.2" stroke-linejoin="round"/><path d="M56.50,1.33 q0.33,0.32 0,0.64" fill="none" stroke="#d62728" stroke-width="0.2" stroke-linecap="round"/><path d="M56.88,1.23 q0.33,0.42 0,0.83" fill="none" stroke="#d62728" stroke-width="0.2" stroke-linecap="round"/>
+<text x="36.25" y="14.40" font-family="Arial, 'Liberation Sans', Helvetica, sans-serif" font-size="1.940" text-anchor="middle" fill="#000000">time (s)</text>
+</svg>

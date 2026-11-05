@@ -1,0 +1,13 @@
+% One A4 page: revised Fig. S11 (cortex_rate.pdf) with caption, typeset with the manuscript's
+% class (elife.cls copy, mono font loaded by file name for tectonic). Text width 183 mm.
+\documentclass[10pt]{elife}
+\geometry{a4paper,left=13.5mm,right=13.5mm,top=12mm,bottom=12mm,marginparwidth=0pt,marginparsep=0pt}
+\renewcommand{\thefigure}{S\arabic{figure}}
+\begin{document}
+\thispagestyle{empty}
+\setcounter{figure}{10}
+\begin{figure}[p]
+\includegraphics[width=\linewidth]{cortex_rate.pdf}
+\input{cortex_rate_caption.tex}
+\end{figure}
+\end{document}

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Are "sequence" cells just sparse versions of the stimulus-locked "tornado" cells?
 
-Groups on the canonical odd-trial Rastermap fit (CV stack): sequence = clusters
-60-69, tornado (stim/integ) = clusters 21-28; all other neurons as background.
+Groups = cluster sets of the Fig. 5a, b Rastermap fit (latency_tiling_groups.py): sequence
+(sparse tiling) = clusters 0-7, 44, 49-53, 61-69; tornado (dense tiling) = clusters
+21-28; all other neurons as background.
 
 To avoid circularity, selection and evaluation use disjoint trials:
   selection  : the two concordant stimulus-aligned types (L_sL_cL_b,s, R_sR_cR_b,s),
@@ -32,17 +33,17 @@ import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 
+import latency_tiling_groups
+
 ROOT = Path(os.environ.get("DMN_DATA", Path.home() / "dmn"))
 RES = Path(__file__).resolve().parent / "results"
 RES.mkdir(exist_ok=True)
 C_SEC = 480.0
-# Groups = row ranges in the upsampled Rastermap order (Fig. 5a/b), inclusive
-SEQ, TOR = (29600, 35599), (11800, 16299)
 SEL = ["stimLbLcL", "stimRbRcR"]
 EVAL = ["block_change_s", "stimLbRcL", "stimRbLcR", "mistake_s"]
 R_MIN = 0.3
 COL = {"sequence": "#1f77b4", "tornado": "#ff7f0e", "other": "0.6"}
-NAME = {"sequence": "sparse cells (rows 29.6–35.6k)", "tornado": "dense tiling (rows 11.8–16.3k)", "other": "other"}
+NAME = {"sequence": "sparse tiling", "tornado": "dense tiling", "other": "other"}
 MM = 1 / 25.4
 
 
@@ -69,16 +70,16 @@ def main(fig=None, cells=None, letters=None):
                                 "mathtext.fontset": "custom", "mathtext.rm": "Liberation Sans",
                                 "mathtext.it": "Liberation Sans:italic"})
     r = np.load(ROOT / "concat_cvTrue.npy", allow_pickle=True).flat[0]
-    order = fit_order(r)
-    lab = np.empty_like(order); lab[order] = np.arange(order.size)  # row of each neuron
-    rm_pos = np.empty_like(order); rm_pos[order] = np.arange(order.size)  # row in panels a, b
+    G = latency_tiling_groups.group_indices(r)  # each sorted by row in Fig. 5a, b
+    span = latency_tiling_groups.row_clusters(r)  # cluster (row span in Fig. 5a, b) per neuron
+    n_all = len(r["uuids"])
     start = np.cumsum([0] + list(r["len"].values())); names = list(r["len"])
     seg = lambda t: slice(start[names.index(t)], start[names.index(t) + 1])
     Xo, Xe = np.asarray(r["X_odd"], np.float32), np.asarray(r["X_even"], np.float32)
     fr = np.asarray(r["fr"], float)
-    group = np.full(lab.size, "other", object)
-    group[(lab >= SEQ[0]) & (lab <= SEQ[1])] = "sequence"
-    group[(lab >= TOR[0]) & (lab <= TOR[1])] = "tornado"
+    group = np.full(n_all, "other", object)
+    group[G["sparse"]] = "sequence"
+    group[G["dense"]] = "tornado"
 
     # selection (concordant types): mean over the two types
     so = np.mean([Xo[:, seg(t)] for t in SEL], 0); se = np.mean([Xe[:, seg(t)] for t in SEL], 0)
@@ -115,7 +116,7 @@ def main(fig=None, cells=None, letters=None):
 
     rt = pd.read_csv(RES / "neurons.csv")[["uuid", "stim_fast", "stim_slow", "move_fast", "move_slow",
                                            "rt_fast", "rt_slow"]]
-    uu = pd.DataFrame(dict(uuid=np.asarray(r["uuids"]).astype(str), i=np.arange(lab.size)))
+    uu = pd.DataFrame(dict(uuid=np.asarray(r["uuids"]).astype(str), i=np.arange(n_all)))
     rt = rt.merge(uu, on="uuid")
     rt["d_stim"] = (rt.stim_slow - rt.stim_fast) * 1000
     rt["d_move"] = (rt.move_slow - rt.move_fast) * 1000
@@ -127,7 +128,7 @@ def main(fig=None, cells=None, letters=None):
         shifts[g] = (sub.d_stim.to_numpy(), sub.d_move.to_numpy())
         lines.append(f"RT split, reliable {g}, peaks 20-100 ms (n={len(sub)}): stimulus-frame shift median {sub.d_stim.median():.1f} ms, "
                      f"movement-frame {sub.d_move.median():.1f} ms (RT gap {1000*np.median(sub.rt_slow-sub.rt_fast):.0f} ms)")
-    # Population test (robust for sparse cells): correlation of fast vs slow response
+    # Population test (robust for sparse tiling): correlation of fast vs slow response
     # patterns (neurons x time, z-scored per neuron) in each alignment frame.
     P = np.load(RES / "peths.npz", allow_pickle=True)
     prow = {u: k for k, u in enumerate(P["uuid"].astype(str))}
@@ -162,7 +163,15 @@ def main(fig=None, cells=None, letters=None):
     def letter(ax, dx=-0.2):
         ax.text(dx, 1.1, next(L), transform=ax.transAxes, fontsize=8, fontweight="bold", va="bottom")
 
-    ax = fig.add_subplot(next(cell)); letter(ax)
+    def panel():
+        """Next panel; a cell given as None is skipped (drawn into a discarded figure)."""
+        spec = next(cell)
+        if spec is None:
+            return plt.figure().add_subplot()
+        ax = fig.add_subplot(spec); letter(ax)
+        return ax
+
+    ax = panel()
     centers = np.sqrt(bins[:-1] * bins[1:] + 1e-12)  # rate-octile centres (panel d)
     hb = np.linspace(-1, 1, 51)
     for g in ("other", "tornado", "sequence"):
@@ -174,7 +183,7 @@ def main(fig=None, cells=None, letters=None):
     ax.set_title("reliability of each neuron", fontsize=6)
     ax.legend(loc="upper left", frameon=True, facecolor="white", edgecolor="none", framealpha=0.85, fontsize=4.2, handlelength=1.2, borderpad=0.2); ax.spines[["top", "right"]].set_visible(False)
 
-    ax = fig.add_subplot(next(cell)); letter(ax)
+    ax = panel()
     for g in ("other", "tornado", "sequence"):
         ax.plot(centers, rep[g], color=COL[g] if g != "other" else "k", lw=1, marker="o", ms=2, label=NAME[g])
     ax.set_xscale("log"); ax.set_xlabel("mean rate (stack units)")
@@ -194,11 +203,9 @@ def main(fig=None, cells=None, letters=None):
         R = np.clip((X - med) / (hi - med + 1e-6), 0, 1)
         return np.where(R >= np.percentile(R, q, 1, keepdims=True), R, 0) ** gamma
 
-    def raster(ax, cl, title, color):
-        """Zoom of panel b: all neurons of Rastermap clusters cl, in b's order (fit on
-        odd trials), even trials, the six stimulus-aligned types, no row averaging."""
-        idx = np.flatnonzero((lab >= cl[0]) & (lab <= cl[1]))
-        idx = idx[np.argsort(rm_pos[idx], kind="stable")]
+    def raster(ax, idx, title, color):
+        """Zoom of panel b: all neurons of a group (idx, in b's order: fit on odd
+        trials), even trials, the six stimulus-aligned types, no row averaging."""
         D = zoom_display(Xe[idx])
         M = np.concatenate([D[:, seg(t)] for t in STIM6], 1)
         ax.imshow(1 - M, cmap="gray", aspect="auto", interpolation="antialiased", vmin=0, vmax=1,
@@ -208,14 +215,27 @@ def main(fig=None, cells=None, letters=None):
         ax.set_xticks([72 * b + 36 for b in range(len(STIM6))], STIM6_LAB, rotation=40, fontsize=4.3)
         ax.set_yticks([0, len(idx) - 1], ["0", f"{len(idx):,}"])
         ax.set_title(title, fontsize=6, color=color)
+        # cluster boundaries (thin lines) and cluster numbers (right axis), as in Fig. 5a, b
+        cl = span[idx]
+        edges = np.r_[0, np.flatnonzero(np.diff(cl)) + 1, len(idx)]
+        for e in edges[1:-1]:
+            ax.axhline(e - 0.5, color="0.55", lw=0.2, zorder=5)
+        sec = ax.secondary_yaxis("right")
+        mids, names, last = [], [], -np.inf
+        for m, c in zip((edges[:-1] + edges[1:]) / 2 - 0.5, cl[edges[:-1]]):
+            if m - last >= len(idx) / 24:  # skip numbers that would overlap (thin clusters)
+                mids.append(m); names.append(str(c)); last = m
+        sec.set_yticks(mids, names)
+        sec.tick_params(labelsize=3.6, length=1, pad=0.8)
+        sec.set_ylabel("Rastermap cluster", fontsize=4.5, labelpad=1)
 
-    ax = fig.add_subplot(next(cell)); letter(ax)
-    raster(ax, SEQ, "sparse cells, zoom of b\n(rows 29.6–35.6k, even trials)", COL["sequence"])
+    ax = panel()
+    raster(ax, G["sparse"], f"sparse tiling, even trials\n({latency_tiling_groups.SPARSE_TEXT})", COL["sequence"])
     ax.set_ylabel("Rastermap order (fit on odd trials)")
-    ax = fig.add_subplot(next(cell)); letter(ax)
-    raster(ax, TOR, "dense tiling, zoom of b\n(rows 11.8–16.3k, even trials)", COL["tornado"])
+    ax = panel()
+    raster(ax, G["dense"], f"dense tiling, even trials\n({latency_tiling_groups.DENSE_TEXT})", COL["tornado"])
 
-    ax = fig.add_subplot(next(cell)); letter(ax)
+    ax = panel()
     for g, idx in (("tornado", rel_tor), ("sequence", rel_seq)):
         jit = np.random.default_rng(1).uniform(-1, 1, (2, idx.size))
         ax.scatter(peak_sel[idx] + jit[0], peak_eval[idx] + jit[1], s=1.2, lw=0, color=COL[g],
@@ -225,7 +245,7 @@ def main(fig=None, cells=None, letters=None):
     ax.set_title("same latency in held-out trials", fontsize=6)
     ax.legend(loc="upper left", markerscale=3, frameon=True, facecolor="white", edgecolor="none", framealpha=0.85, fontsize=4.2, handlelength=1.2, borderpad=0.2); ax.spines[["top", "right"]].set_visible(False)
 
-    ax = fig.add_subplot(next(cell)); letter(ax)
+    ax = panel()
     for k, g in enumerate(("sequence", "tornado")):
         ax.bar([3 * k, 3 * k + 1], pop[g], color=COL[g], alpha=1)
         ax.bar([3 * k + 1], [pop[g][1]], color="white", edgecolor=COL[g], hatch="////", lw=0.6)
@@ -234,7 +254,7 @@ def main(fig=None, cells=None, letters=None):
     ax.set_title("aligned to stimulus or movement?", fontsize=6)
     ax.spines[["top", "right"]].set_visible(False)
 
-    ax = fig.add_subplot(next(cell)); letter(ax)
+    ax = panel()
     bb = np.linspace(0, 150, 31)
     for g, idx in (("tornado", rel_tor), ("sequence", rel_seq)):
         ax.hist(peak_sel[idx], bins=bb, density=True, histtype="step", lw=1, color=COL[g], label=NAME[g])
@@ -242,17 +262,17 @@ def main(fig=None, cells=None, letters=None):
     ax.set_title("latency distributions overlap", fontsize=6)
     ax.legend(loc="upper center", frameon=True, facecolor="white", edgecolor="none", framealpha=0.85, fontsize=4.2, handlelength=1.2, borderpad=0.2); ax.spines[["top", "right"]].set_visible(False)
 
-    ax = fig.add_subplot(next(cell)); letter(ax)
+    ax = panel()
     frac = [np.mean(rel[group == g] >= R_MIN) for g in ("sequence", "tornado", "other")]
     ax.bar([0, 1, 2], frac, color=[COL["sequence"], COL["tornado"], COL["other"]])
     ax.set_xticks([0, 1, 2], ["sparse", "dense", "other"])
     ax.set_ylabel(f"fraction reliable (r ≥ {R_MIN})")
-    ax.set_title("sparse cells: rarely reliable", fontsize=6)
+    ax.set_title("sparse tiling: rarely reliable", fontsize=6)
     ax.spines[["top", "right"]].set_visible(False)
 
     if embedded:
         return
-    fig.suptitle("The 'sequence' cluster (canonical 60–69) is a pool of low-reliability sparse cells; "
+    fig.suptitle(f"Sparse cells ({latency_tiling_groups.SPARSE_TEXT}) are low-reliability cells; "
                  "its reproducible part is stimulus-locked latency tiling, as in dense latency tiling (21–28)", fontsize=6.5)
     fig.savefig(RES / "sparse_tornado.png", dpi=250, facecolor="white")
     fig.savefig(RES / "sparse_tornado.pdf", facecolor="white")

@@ -1,12 +1,19 @@
 __pycache__/
-# per-figure caches and generated outputs (rebuilt by the figure scripts)
-fig*/cache/
-fig*/**/*.png
-fig*/**/*.svg
-fig*/**/*.pdf
-fig*/**/*_values.txt
-fig2/panel_e_selection.csv
-fig2/raster_rows.npz
+# per-figure caches and generated outputs (rebuilt by the figure scripts); the few
+# hand-made or extracted inputs (Fig. 1 elements, Fig. 3 source images, frozen S5/S6
+# source PDFs) are tracked explicitly
+fig_*/**/cache/
+fig_*/**/results/
+fig_*/**/*.png
+fig_*/**/*.svg
+fig_*/**/*.pdf
+fig_*/**/*.jpg
+fig_*/**/*.npz
+fig_*/**/*.npy
+fig_*/**/*_values.txt
+fig_*/**/*.log
+fig_*/**/*.aux
+fig_response_types/panel_e_selection.csv
 report/main.pdf
 
 # sequence_analysis outputs and caches (rebuilt by its scripts)
@@ -14,4 +21,8 @@ sequence_analysis/cache/
 sequence_analysis/results/
 sequence_analysis/rastermap_previews/
 sequence_analysis/sequences_old/
-si/*/results/
+wheel_movement_onset_review/results/
+
+# internal notes, kept out of the public repository
+fig_response_correlations/si/mixed_selectivity/REPORT.*
+fig_response_correlations/si/mixed_selectivity/tools/
