@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Preview (not a figure panel): all-trial feature vectors X (cv=False, 54,719
 neurons) sorted by a Rastermap fit on X itself, with the Methods' parameters
-(dmn_bwm.regional_group(mapping="rm", cv=False); cached in fig3/cache).
+(dmn_bwm.regional_group(mapping="rm", cv=False); cached in fig_anatomy/cache).
 """
 
 import matplotlib.pyplot as plt

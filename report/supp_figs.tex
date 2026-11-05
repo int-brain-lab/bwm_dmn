@@ -18,10 +18,21 @@
 \FloatBarrier
 
 \begin{figure}
+\safeincludegraphics[width=\linewidth]{figures/latency_tiling_controls.pdf}
+\caption{\textbf{Sparse versus dense latency tiling, response latency versus anatomical hierarchy, and stimulus locking.} Groups and data as in Fig.~\ref{fig:latency_tiling} (dense tiling, Rastermap clusters 21--28, 4,251 neurons; sparse tiling, clusters 0--7, 44--54 and 61--69, 13,275 neurons).
+\textbf{a--c} Noise alone turns dense tiling into sparse-tiling statistics. Dense tiling cells with added noise matched, neuron by neuron, to the sparse-tiling neurons' reliability distribution (noise scaled by $1/\sqrt{\text{trials}}$ per trial type), sorted by their own Rastermap fit on odd trials; \textbf{a} odd, \textbf{b} even trials, six stimulus-aligned types. \textbf{c} Median odd/even reliability, fraction of reliable cells ($r\geq0.3$), cross-validated time--time correlation at lag 0 (odd vs even bins) and peak-latency replication on held-out trial types ($\rho$), for sparse tiling, noisy dense tiling and dense tiling.
+\textbf{d} Peak-latency replication per firing-rate octile (Spearman $\rho$ between the peak latency on the two concordant stimulus types, odd trials, and on the four other stimulus-aligned types, even trials): at matched rate, sparse-tiling neurons replicate less than other cells. Rates in feature-vector units.
+\textbf{e, f} Does response latency follow the anatomical hierarchy? Median latency per area vs the area's hierarchy score (\cite{harris2019hierarchical}, confidence-weighted Cre-line scores, cortex and thalamus; one dot per area with $\geq$10 reliable cells, $r\geq0.3$; Beryl colours; circles cortex, squares thalamus). Latencies are cross-validated (cells selected on odd trials, latency read on even trials). \textbf{e} Stimulus window: peak of the mean of the four held-out stimulus-aligned types; cells selected on the two concordant types (55 areas, Spearman $\rho=-0.25$, permutation $p=0.07$; cortex $-0.20$, thalamus $-0.23$). \textbf{f} PETH type m, 150\,ms before movement onset (Table~\ref{tab1}; 53 areas, $\rho=-0.16$, $p=0.24$; cortex $0.08$, thalamus $-0.30$). Regional latencies are reproducible across trial halves (odd vs even, $\rho=0.73$ and $0.84$) but do not follow the hierarchy. \textbf{g} Stimulus- or movement-locked? Even trials of the four correct stimulus-aligned trial types, split at each session's median reaction time (fast, median 121\,ms; slow, 185\,ms). Bars: correlation between the fast- and slow-trial response patterns (neurons $\times$ time, z-scored per neuron; reliable cells, $r\geq0.3$) aligned to stimulus onset (stim, 0--150\,ms after) or to movement onset (move, 150\,ms before). Patterns agree better aligned to the stimulus: dense tiling 0.52 versus 0.18 (3,265 cells), sparse tiling 0.16 versus 0.08 (3,082 cells).}
+\label{fig:latency_tiling_controls}
+\end{figure}
+
+\FloatBarrier
+
+\begin{figure}
 \begin{fullwidth}
 \safeincludegraphics[width=\linewidth]{figures/rrr_peth_selectivity_comparison.pdf}
 \caption{\textbf{Regional selectivity similarity and clustering along the cortical hierarchy: RRR (Posani et al.) versus PETH features.}
-\textbf{a} RRR selectivity similarity \cite{posani2024rarely} uses each neuron's time-integrated absolute coefficient for every task variable as features; neurons are averaged within each region, features are standardized across regions, and cosine similarity is calculated between regional vectors.
+\textbf{a} RRR selectivity similarity \cite{posani2024rarely} uses each neuron's time-integrated absolute coefficient for every task variable as features (Methods); neurons are averaged within each region, features are standardized across regions, and cosine similarity is calculated between regional vectors.
 \textbf{b} PETH selectivity similarity uses every PETH time bin as features; neurons are averaged within each region and cosine similarity is calculated between regional vectors. The horizontal axis uses the same Posani-style anatomical connectivity score as in \textbf{a}.
 \textbf{c} Restricting to 67 regions with at least 50 UUID-matched neurons (10,477 included), regional DMN PETH geometry covaries with rank-5 RRR time-summed selectivity geometry.
 \textbf{d} Rank-5 RRR silhouette $z$-score versus Posani hierarchy position \cite{harris2019hierarchical} for 24 regions passing RRR selectivity, neuron-count, and session-dominance criteria.
@@ -38,18 +49,39 @@ Dashed lines show the one-sided Bonferroni-corrected clustering criterion; its l
 
 \begin{figure}
 \centering
-\safeincludegraphics[width=0.6\linewidth]{figures/movement_onset_subthreshold_wheel.pdf}
-\caption{\textbf{Wheel motion before the reported movement onset does not predict choice.}
+\safeincludegraphics[width=\linewidth]{figures/movement_onset_subthreshold_wheel.pdf}
+\caption{\textbf{Wheel motion before the reported movement onset does not predict choice, and stimulus and movement windows overlap on most trials.}
 Data from 396 BWM sessions (128 mice, 11 laboratories).
 \textbf{a} Example wheel traces (3 mice) aligned to the reported movement onset (\texttt{firstMovement\_times}) and sign-normalized to the eventual movement direction. Onset detection uses wheel displacement only, not choice or direction. The shaded 20~ms before onset was excluded from pre-onset measurements.
-\textbf{b} Per-session percentage of trials in which the wheel direction matched the final choice, for net displacement from go cue to 20~ms before onset (blue) and for the first 50~ms after onset (green). Crosses show session median and interquartile range; the dashed line marks chance (50\%).
+\textbf{b} Per-session percentage of trials in which the wheel direction matched the final choice, for net displacement from go cue to 20~ms before onset (blue) and for the first 50~ms after onset (green). Crosses show session median and interquartile range; the dashed line marks chance (50\%). \textbf{c} Distribution of reaction times (stimulus onset to movement onset) over the trials that enter the PETHs (0.08--2~s, choice made; 173,762 trials; dotted line, 80~ms lower bound; 6\% of trials above 800~ms not shown). Red: movement starts within the stimulus window (0--150~ms after stimulus onset; 39\%); orange: the stimulus window overlaps the 150~ms before movement onset (reaction time 150--300~ms; 43\%); grey: the windows are separate (18\%). Median reaction time 168~ms; per session, a median of 86\% of trials (IQR 74--92\%) have overlapping windows, and on average 60\% of the stimulus window overlaps the pre-movement window.
 \label{fig:movement_onset_subthreshold_wheel}
 }
+\end{figure}
+
+\FloatBarrier
+
+\begin{figure}
+\centering
+\safeincludegraphics[width=\linewidth]{figures/response_correlations.pdf}
+\caption{\textbf{How correlated are neurons' responses, and is there structure beyond these correlations?}
+\textbf{a} Cross-validated correlation matrix of the feature vectors of all 54,569 neurons with both trial halves. Entry $(i,j)$ is the correlation between neuron $i$'s odd-trial and neuron $j$'s even-trial feature vector, symmetrised, so only correlations that replicate across trial halves remain. The diagonal is each neuron's odd/even reliability (median 0.27). Neurons are in the Rastermap order fitted on odd trials (Fig.~\ref{fig:latency_tiling}a,b; ticks, cluster numbers). Bars: dense (orange) and sparse tiling (blue). The matrix is shown as exact means over blocks of $27\times27$ neurons. Two large, mutually anticorrelated groups dominate: clusters $\sim$13--35 (elevated before movement onset, suppressed at reward) and $\sim$78--99 (feedback). Sparse-tiling neurons correlate weakly with all others. Mean $|r|$ over all $3.0\times10^9$ pairs: 0.11.
+\textbf{b} Dense-tiling neurons (box in \textbf{a}; 4,251) at full resolution; lines, cluster boundaries. Correlation is highest within a cluster and falls off with distance along the latency tiling.
+\textbf{c--e} Structure beyond pairwise correlations. Data: all 54,719 neurons, all trials, top 10 (\textbf{c}, \textbf{d}) or 20 principal components of the feature vectors (\textbf{e}, left). All nulls have the data's covariance:
+Gaussian (blue);
+PC-marginal, principal-component scores permuted independently (orange);
+Gaussian copula, the exact distribution of each score plus their rank correlations (purple);
+ICA-marginal, independent components (FastICA) permuted independently, i.e.\ random mixing of independent sparse components (green).
+Positive control: a 25-cluster Gaussian mixture fitted to the data (pink). 10 null draws each.
+\textbf{c} ePAIRS-style test \cite{raposo2014category,hirokawa2019frontal}: each neuron's mean angle to its 5 nearest neighbours, with neighbours taken from other probe insertions only. AUC is the probability that a real neuron's angle is smaller than a null neuron's (0.5, no excess clustering), here against the Gaussian / PC-marginal nulls.
+\textbf{d} k-means silhouette against the number of clusters. Real neurons are slightly more clusterable than the nulls but have no preferred number of clusters, unlike the mixture control (bump near 20).
+\textbf{e} AUC against each null for response profiles (left) and for task-variable selectivity (right): RRR coefficients for 8 task variables summed over time, signed or absolute (38,853 neurons from 169 sessions; neighbours from other sessions; Methods; the features of Fig.~\ref{fig:rrr_peth_selectivity_comparison}). Response profiles are more clustered than every null (ICA-marginal: 0.55 and 0.59), about as much as the mixture control. Task-variable selectivity is close to random mixing (ICA-marginal: 0.51 signed, 0.52 absolute), although the test detects a 25-cluster mixture in the same space (0.56). Absolute values are non-negative and skewed, which only the copula and ICA-marginal nulls reproduce.}
+\label{fig:response_correlations}
 \end{figure}
 
 
 \FloatBarrier
 
+\iffalse % left out 2026-10-12 (umap_clustering_resolution)
 \begin{figure}
 \begin{fullwidth}
 \safeincludegraphics[width=0.9\linewidth]{figures/umap_clustering_resolution.pdf}
@@ -58,10 +90,12 @@ Data from 396 BWM sessions (128 mice, 11 laboratories).
 \label{fig:umap_clustering_resolution}
 \end{fullwidth}
 \end{figure}
+\fi
 
 \FloatBarrier
 
 
+\iffalse % left out 2026-10-12 (rastermap_cross_validation)
 \begin{figure}
 \begin{fullwidth}
 \safeincludegraphics[width=\linewidth]{figures/rastermap_cross_validation.pdf}
@@ -71,10 +105,12 @@ Trials are split into two sets (train and test) for each alignment and trial typ
 }
 \end{fullwidth}
 \end{figure}
+\fi
 
 \FloatBarrier
 
 
+\iffalse % left out 2026-10-12 (rastermap_functional_categories)
 \begin{figure}
 \begin{fullwidth}
 \safeincludegraphics[width=\linewidth]{figures/rastermap_functional_categories.pdf}
@@ -86,11 +122,13 @@ Right: The corresponding neuron fraction of each group.
 }
 \end{fullwidth}
 \end{figure}
+\fi
 
 
 \FloatBarrier
 
 
+\iffalse % left out 2026-10-12 (sequence_shuffle_control)
 \begin{figure}
 \begin{fullwidth}
 \safeincludegraphics[width=0.9\linewidth]{figures/sequence_shuffle_control.pdf}
@@ -104,15 +142,17 @@ Right: The corresponding neuron fraction of each group.
 }
 \end{fullwidth}
 \end{figure}
+\fi
 
 \FloatBarrier
 
 
 \begin{figure}
 \begin{fullwidth}
-\safeincludegraphics[width=\linewidth]{figures/regional_cluster_composition_k25.pdf}
-\caption{\textbf{Cluster composition per brain region}
-Each panel shows the normalized fraction of neurons belonging to each of the 25 k-means clusters for a given Beryl brain region. Only regions with at least 50 neurons are shown (155 regions total). Colors correspond to k-means cluster identity. X-axis: cluster index (0–24); Y-axis: fraction of neurons in that cluster. All regions contain neurons from all clusters.
+\safeincludegraphics[width=\linewidth]{figures/regional_cluster_composition.pdf}
+\caption{\textbf{Cluster composition per brain region, and its dependence on the number of clusters.}
+\textbf{a} Fraction of each Beryl region's neurons in each of the 25 k-means clusters (Fig.~\ref{fig:functional_response_structure}; x-axis, cluster index 0--24, i.e.\ cluster number minus one; colours, cluster identity), for 155 of the 158 regions with at least 50 neurons (LDT, PFL and SAG are not shown). A region contains a median of 23 of the 25 clusters (range 14--25); 44 of the 158 regions contain all 25.
+\textbf{b} Number of response types (clusters) present per region against the number of k-means clusters $k$ (10, 15, 25, 40, 60, 100; k-means as in Fig.~\ref{fig:functional_response_structure}, the 25-cluster solution is the one used throughout), for the 158 regions with at least 50 neurons (black) and for groups of the same sizes formed by shuffling neurons between regions (red; median over 100 shuffles), which shows how many types sampling alone allows. Lines, median over regions; bands, interquartile range; dotted line, all $k$ types. Labels give the median for the real regions.
 \label{fig:regional_cluster_composition}
 }
 
@@ -125,11 +165,13 @@ Each panel shows the normalized fraction of neurons belonging to each of the 25 
 
 \begin{figure}
 \begin{fullwidth}
-\safeincludegraphics[width=0.9\linewidth]{figures/specialization_metric_comparison.pdf}
-\caption{\textbf{Specialization metrics compared} 
-\textbf{a} Correlation between anatomical hierarchy (based on tract tracing \cite{harris2019hierarchical}) and specialization score based on k-means cluster counts is not significant.
-\textbf{b} The correlation between the k-means and decoding-based specialization scores (Fig.~\ref{fig:anatomy_function}j) is stable under k-means cluster number variation after a minimal number of about 15 and is also significant when using the clusters provided by rastermap (green, red). Rastermap and k-means results converge as the number of clusters increases. 
-\textbf{c} As with the k-means based specialization score in \textbf{a}, there is no correlation between decoding-based specialization and anatomical hierarchy score.
+\safeincludegraphics[width=\linewidth]{figures/specialization_metric_comparison.pdf}
+\caption{\textbf{Specialization metrics compared, and regional diversity of responses.}
+\textbf{a} The correlation between the k-means and decoding-based specialization scores (Fig.~\ref{fig:anatomy_function}j) is stable under variation of the number of k-means clusters above about 15, and is also significant when using Rastermap clusters (green, red). Rastermap and k-means results converge as the number of clusters increases.
+\textbf{b} The specialization score based on k-means cluster counts is not correlated with the anatomical hierarchy score (based on tract tracing \cite{harris2019hierarchical}).
+\textbf{c} As in \textbf{b}, the decoding-based specialization score is not correlated with the anatomical hierarchy score.
+\textbf{d} Regions are only slightly less diverse than random groups of neurons. Standard error of neurons' scores on the first principal component of their response coefficients (projections onto the mean feature vectors of 100 k-means clusters; Methods), per Beryl region with at least 20 neurons (blue, 198 regions) and per group of a random allocation of neurons to groups of the same sizes (red). EMD, normalized earth-mover distance between the two distributions; $p$, one-sided permutation test of the mean standard error against 1,000 random allocations (mean 241 versus $258\pm2$).
+\textbf{e} The same score as a reference scale: within-group standard deviation (which, unlike the standard error, does not shrink with group size) for the 100 k-means groups (green), Beryl regions (blue; 198) and random groups of the regions' sizes (red; 20 allocations, counts divided by 20). Mean s.d.: k-means groups 818, regions 2,393, random groups 2,549, so regions lie 91\% of the way from functional groups to random groups. k-means groups are formed to minimise this spread, so they set a lower reference rather than test anything.
 }    
 \label{fig:specialization_metrics}
 \end{fullwidth}
@@ -139,11 +181,12 @@ Each panel shows the normalized fraction of neurons belonging to each of the 25 
 \FloatBarrier
 
 
+\iffalse % left out 2026-10-12 with the mixed-selectivity analysis (basis vectors, k40)
 \begin{figure}
 \begin{fullwidth}
-\safeincludegraphics[width=\linewidth]{figures/prototype_vectors_k100.pdf}
-\caption{\textbf{Average feature vectors for 100 k-means clusters, sorted hierarchically}
-\textbf{a} The vectors are shown in order as used in Fig \ref{fig:mixed_selectivity}a when hierarchically sorting the coefficients of these 100 "basis" vectors (using Pearson correlation as the similarity metric), used to reconstruct the full response data. \textbf{b} In the same order, Pearson correlation matrix of coefficients across neurons, as in Fig \ref{fig:mixed_selectivity}b. 
+\safeincludegraphics[width=\linewidth]{figures/basis_vectors_k100.pdf}
+\caption{\textbf{The 100 basis vectors of Fig.~\ref{fig:mixed_selectivity}, in its coefficient order.}
+Mean z-scored feature vector of each of the 100 k-means clusters used as the basis in Fig.~\ref{fig:mixed_selectivity} (all trials, 54,719 neurons; 21 PETH types, dashed lines), ordered as the coefficients $\alpha$ in Fig.~\ref{fig:mixed_selectivity}a,b: average-linkage hierarchical clustering of $1-$ the Pearson correlation of the coefficients across neurons (dendrogram, left). Row $k$ is the basis vector of coefficient $\alpha=k$. Colours only separate neighbouring rows.
 \label{fig:prototype_vectors}
 }
 \end{fullwidth}
@@ -163,15 +206,18 @@ Same figure as Fig \ref{fig:mixed_selectivity} but with 40 k-means clusters as a
 }
 \end{fullwidth}
 \end{figure}
+\fi
+
 
 \FloatBarrier
 
 
+\iffalse % left out 2026-10-12: Louvain functional-similarity networks (section, Figs., Tables)
 \section{Dynamically evolving phase-specific functional similarity networks}
 
 We have seen that distinct computations unfold in different task phases and involve partially separate neuron groups. A natural question is how different parts of the brain coordinate during these distinct phases. The field of fMRI, with a longer history of brain-wide recordings, has approached this question by performing multi-region functional graph analyses to identify functional subnetworks. The IBL dataset enables similar analyses, but at much higher ($\sim 10^3 \times$ or $\sim 1$ ms versus $\sim 1$ s) temporal and spatial ($\sim 10^3 \times$, with $\sim 60K$ cellular measurements in the supersession versus $\sim 60$ voxels) resolution. We now seek an area-wise analysis of dynamical functional similarity networks, or how the brain forms subnetworks to compute over different phases of the task, at high precision. 
 
-To assay functional network-level interactions, we defined a functional similarity score between (Beryl) regions per task phase as a proxy for the strength between them, focusing on the following conditions: the resting period ("rest"); the enforced quiescent period ("quies") and pre-stimulus prior representation in this period ("$\mathrm{L_b}$" and "$\mathrm{R_b}$"); the stimulus response period in congruent trials (where the stimulus side equals the block side, i.e. "$\mathrm{L_{s}L_{c}L_{b}, s}$", "$\mathrm{R_{s}R_{c}R_{b}, s}$"); the stimulus response period in surprise trials (when the stimulus side is opposite the block side, i.e. "$\mathrm{L_{s}L_{c}R_{b}, s}$", "$\mathrm{R_{s}R_{c}L_{b}, s}$"); the stimulus response period in mistake trials ("mistake, s"); during movement initialization ('m'); in the movement period ("$\mathrm{L_{move}}$" and "$\mathrm{R_{move}}$"); and during feedback after correct ("feedbk1") and wrong ("feedbk0") trials. For each task phase, we subset the z-scored cellular feature vectors (as in Fig.~\ref{fig:architecture_task}f) to the relevant PETH time bins and trial conditions, construct region-wise smoothed 2D activity maps from those phase-specific cellular responses, and compute cosine similarity between the resulting region maps (see the following Method section and Fig.~\ref{fig:functional_networks}a), which yielded a similarity matrix across regions per task phase. All analyses use z-scoring normalization applied before subsetting to reduce baseline firing-rate differences and focus the comparison on response-pattern similarity. Thus similarity matrices compare regions within the same task phase using a common framework, ensuring comparability across phases. We then applied Louvain community detection to the similarity matrices to identify functional networks (region clusters with similar responses), and sorted neurons to be adjacent if they were assigned to the same community, Fig. ~\ref{fig:functional_networks}b-h (bottom-left in each panel). Note that the derived networks reflect phase-specific similarity of regional response motifs, not functional connectivity or direct inter-regional coupling. To assess which of the identified networks were reliable and meaningful, we applied three types of control analyses (see the following Methods section), as follows. Only networks that are deemed significant by the intersection of the three controls below are numbered in Fig.~\ref{fig:functional_networks}b-h. 
+To assay functional network-level interactions, we defined a functional similarity score between (Beryl) regions per task phase as a proxy for the strength between them, focusing on the following conditions: the resting period ("rest"); the enforced quiescent period ("quies") and pre-stimulus prior representation in this period ("$\mathrm{L_b}$" and "$\mathrm{R_b}$"); the stimulus response period in congruent trials (where the stimulus side equals the block side, i.e. "$\mathrm{L_{s}L_{c}L_{b}, s}$", "$\mathrm{R_{s}R_{c}R_{b}, s}$"); the stimulus response period in surprise trials (when the stimulus side is opposite the block side, i.e. "$\mathrm{L_{s}L_{c}R_{b}, s}$", "$\mathrm{R_{s}R_{c}L_{b}, s}$"); the stimulus response period in mistake trials ("mistake, s"); during movement initialization ('m'); in the movement period ("$\mathrm{L_{move}}$" and "$\mathrm{R_{move}}$"); and during feedback after correct ("feedbk1") and wrong ("feedbk0") trials. For each task phase, we subset the z-scored cellular feature vectors (as in Fig.~\ref{fig:architecture_task}e) to the relevant PETH time bins and trial conditions, construct region-wise smoothed 2D activity maps from those phase-specific cellular responses, and compute cosine similarity between the resulting region maps (see the following Method section and Fig.~\ref{fig:functional_networks}a), which yielded a similarity matrix across regions per task phase. All analyses use z-scoring normalization applied before subsetting to reduce baseline firing-rate differences and focus the comparison on response-pattern similarity. Thus similarity matrices compare regions within the same task phase using a common framework, ensuring comparability across phases. We then applied Louvain community detection to the similarity matrices to identify functional networks (region clusters with similar responses), and sorted neurons to be adjacent if they were assigned to the same community, Fig. ~\ref{fig:functional_networks}b-h (bottom-left in each panel). Note that the derived networks reflect phase-specific similarity of regional response motifs, not functional connectivity or direct inter-regional coupling. To assess which of the identified networks were reliable and meaningful, we applied three types of control analyses (see the following Methods section), as follows. Only networks that are deemed significant by the intersection of the three controls below are numbered in Fig.~\ref{fig:functional_networks}b-h. 
 
 First, we identified which networks had a high 'network stability' score through split-trial comparisons (Fig. \ref{fig:network_stability}). We repeated Louvain clustering across several trial splits; for each identified cluster (community) in each split, we defined a binary regional participation vector (whether the region was in the community), and used these to create a regional membership similarity matrix across all clusters and all splits for a condition. We assigned a network stability score ($\in [0,1]$) defined by the average value of its regional membership similarity score (Table \ref{tab:cluster_stability}), and only communities with a stability score exceeding a threshold were deemed statistically stable. 
 
@@ -413,17 +459,18 @@ Created by randomly shuffling region labels of all cells before computing the fu
 \end{fullwidth}
 \end{figure}
 
+\fi
+
 \section*{Cortical--subcortical separation in functional composition space}
 
   To quantify the cortical--subcortical distinction in functional cell-type
   composition, we computed for each Beryl region containing at least 20 neurons
   a 25-dimensional composition vector $\mathbf{p}_r$, where $p_{r,k}$ is the
   fraction of neurons in region $r$ assigned to functional cluster $k$
-  ($K = 25$ k-means clusters).
-  Regions were labelled cortical (Cosmos groups: Isocortex, OLF, HPF, CTXsp;
-  68 regions) or subcortical (CNU, TH, HY, MB, HB, CB; 130 regions);
-  regions mapped to `void' or `root' were excluded, yielding 198 regions in
-  total.
+  ($K = 25$ k-means clusters, all trials, as in Figs.~\ref{fig:functional_response_structure}--\ref{fig:anatomy_function}).
+  Neurons were labelled cortical (Cosmos groups: Isocortex, OLF, HPF, CTXsp)
+  or subcortical (CNU, TH, HY, MB, HB, CB); neurons whose Beryl or Cosmos label
+  is `void' or `root' were excluded, yielding 198 regions (68 cortical, 130 subcortical).
 
   Three complementary metrics were applied.
   First, a \textbf{weighted Fisher criterion}
@@ -436,35 +483,50 @@ Created by randomly shuffling region labels of all cells before computing the fu
   where $\boldsymbol{\mu}$ and $\sigma^2$ are the cell-count-weighted centroid
   and mean squared deviation of regional composition vectors within each group.
   Weighting by cell count means the result reflects neuron-weighted regional
-  composition rather than treating each region equally; this is the primary
-  analysis because regions with few neurons contribute unreliable composition
-  estimates.
+  composition rather than treating each region equally, because regions with few
+  neurons give unreliable composition estimates. The null distribution was obtained
+  by shuffling the cortical/subcortical labels of regions (group sizes kept).
   Second, \textbf{PERMANOVA} \citep{Anderson2001} was applied to the matrix of
   pairwise Euclidean distances between composition vectors (unweighted), with
   cortical/subcortical as the grouping factor (scikit-bio, 1000 permutations).
   Effect size $R^2$ was derived from the pseudo-$F$ statistic as
   $R^2 = F / (F + n - 2)$, where $n$ is the number of regions.
-  Third, \textbf{PCA} was performed on the composition matrix (rows weighted by
-  $\sqrt{n_r}$ prior to fitting) and the first two principal components were
-  visualised.
+  Third, \textbf{PCA} was fitted to the composition matrix with rows weighted by
+  $\sqrt{n_r}$, and the composition vectors were projected after subtracting the
+  cell-count-weighted mean. Specialization ($1-H(\mathbf{p}_r)/\log K$) was compared
+  between groups with a Mann--Whitney U test.
   For all permutation tests, empirical $p$-values use the $+1$ correction:
   $p = (1 + \#\{T_{\mathrm{perm}} \geq T_{\mathrm{obs}}\}) /
        (1 + N_{\mathrm{perm}})$,
   giving a minimum resolvable $p$ of $0.001$ for 1000 permutations.
 
-  \begin{figure}[h]
-\safeincludegraphics[width=\linewidth]{figures/cortical_subcortical_specialization.pdf}
-  \caption{
-  \textbf{Cortical--subcortical separation in functional-cluster composition space.}
-  For each of 198 Beryl regions ($\geq$20 neurons), we computed the fraction of neurons assigned to each of 25 cross-validated k-means functional clusters.
-  \textbf{a} Weighted Fisher criterion comparing cortical and subcortical composition vectors. The observed separation ($D=0.577$; vertical line) exceeded all 1000 label-shuffle permutations ($p=0.001$).
-  \textbf{b} PERMANOVA on pairwise Euclidean distances between regional composition vectors confirmed a significant but small group effect (pseudo-$F=7.32$, $R^2=0.036$, $p=0.001$).
-  \textbf{c} PCA of composition vectors (rows weighted by $\sqrt{n_{\mathrm{cells}}}$; PC1: 44.0\%, PC2: 13.5\%). Points are Beryl regions coloured by Allen atlas colour; circles denote cortical and squares subcortical regions; dashed ellipses show 1\,s.d. within-group scatter. Cortical/subcortical separation is significant in the full composition space but modest relative to the dominant shared axes of variation, consistent with broad anatomical mixing of functional response types and residual differences in their proportions. \textbf{d} Specialization score ($1 -H(\mathbf{p})/\log K$) per Beryl region,
-  separately for cortical ($n = 68$) and subcortical ($n = 130$) regions.
-  Normalised EMD $= 0.041$. Compare with Fig.\ref{fig:specialization_metrics}.
-  \label{fig:cortical_subcortical_specialization}
-  }
+\begin{figure}[h]
+\safeincludegraphics[width=\linewidth]{figures/cortical_subcortical_composition.pdf}
+\caption{\textbf{Cortical--subcortical separation in functional-cluster composition space.}
+For each of 198 Beryl regions ($\geq$20 neurons; 68 cortical, 130 subcortical; all trials, 47,378 neurons), the fraction of its neurons in each of the 25 k-means clusters of Figs.~\ref{fig:functional_response_structure}--\ref{fig:anatomy_function} (composition vector).
+\textbf{a} Cell-count-weighted Fisher criterion $D$ between cortical and subcortical composition vectors (vertical line, $D=0.62$) and its null distribution from 1,000 region-label shuffles ($0.20\pm0.05$; $p=0.001$, the smallest possible).
+\textbf{b} PERMANOVA on Euclidean distances between composition vectors: significant but small group effect (pseudo-$F=10.2$, $R^2=0.050$, $p=0.001$).
+\textbf{c} Specialization ($1-H(\mathbf{p})/\log K$) does not differ between cortical and subcortical regions (Mann--Whitney $p=0.80$).
+\textbf{d} PCA of the composition vectors (fit with rows weighted by $\sqrt{n_\mathrm{cells}}$, axes centred on the weighted mean; PC1 24\%, PC2 18\% of the variance). Regions in Beryl colours; circles cortical, squares subcortical; dashed ellipses, 1\,s.d.; the ten largest regions labelled. Cortical and subcortical regions are shifted along PC1 but overlap broadly.}
+\label{fig:cortical_subcortical_specialization}
 \end{figure}
+
+  \iffalse % left out 2026-10-12 (cortex_rate)
+\begin{figure}[h]
+\safeincludegraphics[width=\linewidth]{figures/cortex_rate.pdf}
+  \caption{\textbf{The cortical--subcortical divide in response types is mainly a firing-rate divide.}
+All trials, 47,378 neurons in 515 insertions (the neurons of Fig.~\ref{fig:anatomy_function}a with a cortical or subcortical Cosmos label). Cortical: Isocortex, OLF, HPF, CTXsp (green in the Swanson maps); subcortical: CNU, TH, HY, MB, HB, CB (pink/orange); neurons with Beryl or Cosmos label root or void removed. Firing rate: mean spike count of the feature vector (all PETH windows), in Hz.
+\textbf{a} Firing rate per Cosmos area (violins; dots, medians; bars, interquartile range). Subcortical neurons fire about twice as fast as cortical neurons (median 6.9 vs 3.5\,Hz).
+\textbf{b} Median rate of each Beryl region ($\geq$20 neurons; 198 regions, 68 cortical), ranked, coloured by Cosmos area as in \textbf{a}. Inset: fraction of cortical regions in a running window of 21 ranks (dotted, overall fraction). Regional median rate separates cortical from subcortical regions (AUC 0.87); it does not depend on the number of neurons recorded per region (Fig.~\ref{fig:latency_tiling}j).
+\textbf{c} Decoding a single neuron's cortical or subcortical location (logistic regression, 5-fold cross-validation grouped by insertion, so test probes are never seen in training; AUC) from its rate, odd/even reliability, peak stimulus latency (as Fig.~\ref{fig:latency_tiling}e), k-means cluster (Fig.~\ref{fig:anatomy_function}a), response shape (30 principal components of the $z$-scored feature vector) or shape and rate. Bottom: rate-matched neurons (cortical and subcortical neurons subsampled to the same log-rate histogram; mean of 5 resamples, 34,152 neurons each). Rate is the best single predictor (0.64); response shape adds little to it (0.66); on rate-matched neurons, response type and shape keep a small separation (0.58).
+\textbf{d} The cortical--subcortical separation of old Fig.~\ref{fig:cortical_subcortical_specialization}, recomputed: cell-weighted Fisher criterion $D$ between the regions' 25-cluster composition vectors (fraction of the region's neurons in each k-means cluster; regions $\geq$20 neurons), dots; grey, 95\% range of region-label shuffles (1,000 for all neurons, 200 per resample otherwise; line, median). Response-type composition, all neurons: $D=0.62$ (shuffle $0.20\pm0.05$, $p=0.001$). Random subsamples of the rate-matched size (20 resamples): $D=0.60$. Rate-matched (20 resamples): $D=0.50$, still above all shuffles ($p=0.005$). The same statistic on 25 rate-quantile bins instead of response types: $D=1.01$: regions differ more in their rate distributions than in their response types.
+\textbf{e} k-means clusters of Fig.~\ref{fig:anatomy_function}a (numbers): fraction of cortical neurons vs median rate (dot size, cluster size; dotted, overall cortical fraction). Low-rate clusters are more cortical (Spearman $\rho=-0.39$).
+\textbf{f} As \textbf{e} for the 100 Rastermap clusters of Fig.~\ref{fig:latency_tiling}a ($\rho=-0.63$); blue, sparse-tiling clusters; orange, dense-tiling clusters.
+\textbf{g} Sparse-tiling neurons and dense tiling (Fig.~\ref{fig:latency_tiling}) as a percentage of cortical (dark) and subcortical (light) neurons, all neurons and rate-matched (20 resamples). Sparse-tiling neurons are 1.64 times more frequent in cortex (28.4\% vs 17.3\%), 1.29 times after rate matching; dense tiling is about equally frequent (0.86, rate-matched 1.04).}
+\label{fig:cortical_subcortical_specialization}
+\label{fig:cortex_rate}
+\end{figure}
+\fi
 
 
 \begin{table}[h]

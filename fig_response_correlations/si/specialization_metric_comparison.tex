@@ -1,0 +1,23 @@
+\documentclass{standalone}
+\usepackage{graphicx,tikz}
+\usepackage{fontspec}\setmainfont{Liberation Sans}
+\newcommand{\src}{/home/mic/dmn/fig_response_correlations/si/specialization_metric_comparison_abc_source.pdf}
+\newcommand{\pan}[2]{\includegraphics[trim=#1 0 #2 0,clip]{\src}}
+\begin{document}
+\begin{tikzpicture}[inner sep=0]
+% old b (x 120-308 pt) -> a
+\node[anchor=north west] (A) at (0,0) {\pan{120bp}{110bp}};
+\fill[white] (147.5bp-120bp,-4.0bp) rectangle (156.5bp-120bp,-11.7bp);
+% old a (x 0-120 pt) -> b
+\node[anchor=north west] (B) at (190bp,0) {\pan{0bp}{298bp}};
+\fill[white] (190bp+6.5bp,-8.2bp) rectangle (190bp+12.7bp,-15.4bp);
+% old c (x 308-418 pt)
+\node[anchor=north west] (C) at (312bp,0) {\pan{308bp}{0bp}};
+\fill[white] (312bp+6.8bp,-10.3bp) rectangle (312bp+12.0bp,-17.5bp);
+% new d, e
+\node[anchor=north west] (D) at (428bp,0) {\includegraphics[height=129bp]{/home/mic/dmn/fig_response_correlations/si/specialization_metric_comparison_d.pdf}};
+\node[anchor=north west] (E) at (596bp,0) {\includegraphics[height=129bp]{/home/mic/dmn/fig_response_correlations/si/specialization_metric_comparison_e.pdf}};
+\foreach \x/\l in {2bp/a, 192bp/b, 314bp/c, 428bp/d, 596bp/e}
+  \node[anchor=north west,font=\bfseries\large] at (\x,-1bp) {\l};
+\end{tikzpicture}
+\end{document}

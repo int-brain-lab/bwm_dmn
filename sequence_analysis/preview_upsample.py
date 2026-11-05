@@ -31,7 +31,8 @@ def main():
     model = Rastermap(n_PCs=200, n_clusters=100, locality=0.75, grid_upsample=10,
                       time_lag_window=5, bin_size=1).fit(Xo)
     order = np.asarray(model.isort)
-    np.savez(OUT / "results/rastermap_upsample10.npz", isort=order, uuids=np.asarray(r["uuids"]))
+    np.savez(OUT / "results/rastermap_upsample10.npz", isort=order, labels=np.asarray(model.embedding_clust),
+             uuids=np.asarray(r["uuids"]))
 
     fig = plt.figure(figsize=(183 * MM, 120 * MM))
     n_bins = Xo.shape[1]

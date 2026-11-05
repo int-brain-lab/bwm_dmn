@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Raster helpers shared by the sequence previews and ../fig5/make_figure5.py
+"""Raster helpers shared by the sequence previews and ../fig_latency_tiling/make_latency_tiling.py
 (configure_style, label, scale_bar, raster_panel, segment-label style).
 
 main() assembles the earlier cluster-based draft of the sequence figure (preview).
