@@ -70,7 +70,7 @@ def load_data():
     rows = np.asarray(r["C_rows"], dtype=int)
     sub = rows[:500]
     assert np.allclose(X[sub].astype(np.float64) @ V.T, r["C"][:500], atol=1e-3)
-    return dict(X=X, V=V, lens=lens, pid_codes=pid_codes.astype(np.int64),
+    return dict(X=X, V=V, lens=lens, pid_codes=pid_codes.astype(np.int64), pid=pid,
                 beryl=np.asarray(r["Beryl"]), fr=np.asarray(r["fr"], dtype=float))
 
 

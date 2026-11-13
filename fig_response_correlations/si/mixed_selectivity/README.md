@@ -19,6 +19,13 @@ Files:
   (all numbers) and `cache/arrays.npz` (matrices and angle distributions).
 - `make_figure.py` draws the figure (`selectivity_test.pdf/.png`).
 - `selectivity_test_caption.tex` is the LaTeX caption.
+- `full_space_epairs.py` runs the panel e test on the full feature vectors
+  (1872 bins, no PCA) with GPU nulls (eigendecomposition sampling, torch FastICA,
+  chunked copula), plus a 25-cluster mixture fitted in that space and a
+  same-session-exclusion control. Its torch nulls reproduce the cached top-10-PC
+  AUCs to within 0.005. Results go to `cache/full_space_epairs.json` (~18 min).
+  Data, all bins: AUC 0.63-0.64 against all four nulls (same with session
+  exclusion); mixture control, all bins: 0.51-0.53.
 
 Validation of the GPU code against numpy/sklearn on a 3,000-neuron subset
 (`results.json["validation"]`):
