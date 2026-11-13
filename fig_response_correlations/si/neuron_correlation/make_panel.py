@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "sequence_analysis"
 import latency_tiling_groups as G  # noqa: E402
 
 MM = 1 / 25.4
-VMAX = 0.3
+VMAX = 0.4  # shared by panels a and b
 COL = dict(dense="#e8a33d", sparse="#3d7fc1")
 
 
@@ -83,7 +83,7 @@ def draw(fig, rect_a, rect_b, rect_ca, rect_cb, la="a", lb="b",
     f = 3
     m = n // f
     Ds = D[:m * f, :m * f].reshape(m, f, m, f).mean((1, 3))
-    ax2.imshow(Ds, cmap="RdBu_r", vmin=-0.8, vmax=0.8, interpolation="none",
+    ax2.imshow(Ds, cmap="RdBu_r", vmin=-VMAX, vmax=VMAX, interpolation="none",
                extent=(0, m * f, m * f, 0))
     Ld = L[dense_rows]
     for c in np.unique(Ld)[1:]:
@@ -92,14 +92,14 @@ def draw(fig, rect_a, rect_b, rect_ca, rect_cb, la="a", lb="b",
     mids = [np.median(np.flatnonzero(Ld == c)) for c in np.unique(Ld)]
     ax2.set_yticks(mids); ax2.set_yticklabels(np.unique(Ld), fontsize=5)
     ax2.set_xticks([0, n]); ax2.set_xticklabels([0, f"{n:,}"])
-    ax2.set_xlabel("neuron (full resolution)" if compact else "dense-tiling neuron (full resolution)")
+    ax2.set_xlabel("neuron (3 × 3 block means)" if compact else "dense-tiling neuron (3 × 3 block means)")
     ax2.set_ylabel("cluster")
     ax2.set_title(title_b, pad=4)
     if compact:
         ax2.text(-0.15, 1.06, lb, transform=ax2.transAxes, fontsize=7, fontweight="bold", va="top")
     else:
         ax2.text(-0.2, 1.04, lb, transform=ax2.transAxes, fontsize=8, fontweight="bold")
-    for rect, v, lab in ((rect_ca, VMAX, f"$r$ ({la}, block mean)"), (rect_cb, 0.8, f"$r$ ({lb})")):
+    for rect, v, lab in ((rect_ca, VMAX, f"$r$ ({la}, block mean)"), (rect_cb, VMAX, f"$r$ ({lb})")):
         cax = fig.add_axes(rect)
         cb = fig.colorbar(mpl.cm.ScalarMappable(mpl.colors.Normalize(-v, v), "RdBu_r"), cax=cax,
                           orientation="horizontal", ticks=[-v, 0, v])

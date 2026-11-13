@@ -27,7 +27,7 @@ Folder renames on 2026-11-04: `fig1` → `fig_task_intro`, `fig2` → `fig_respo
 | S1 | Latency-tiling controls | `fig_latency_tiling/si/` | `make_latency_tiling_controls.py` | `latency_tiling_controls.pdf` |
 | S2 | RRR (Posani et al.) vs PETH selectivity | `lorenzo/manuscript_comparison_figure/` | `reproduce_all.py` | `rrr_peth_selectivity_comparison.pdf` |
 | S3 | Wheel motion before movement onset | `wheel_movement_onset_review/` | `analyze_wheel_movement_onset.py` | `movement_onset_subthreshold_wheel.pdf` |
-| S4 | Neuron × neuron correlations; tests of random mixing | `fig_response_correlations/si/`: a, b `neuron_correlation/` (`compute_xcorr.py`, `make_panel.py`); c–e `mixed_selectivity/` (`selectivity_test.py`, `extra_nulls.py`, `rrr_epairs.py` on the S2 RRR fit) | `mixed_selectivity/si_figure/make_response_correlations.py` (assembles a–e) | `response_correlations.pdf` |
+| S4 | Neuron × neuron correlations; tests of random mixing | `fig_response_correlations/si/`: a, b `neuron_correlation/` (`compute_xcorr.py`, `make_panel.py`); c–e `mixed_selectivity/` (`selectivity_test.py`, `extra_nulls.py`, `rrr_epairs.py` on the S2 RRR fit, `full_space_epairs.py` for all bins) | `mixed_selectivity/si_figure/make_response_correlations.py` (assembles a–e) | `response_correlations.pdf` |
 | S5 | Cluster composition per region, types vs k | `fig_si/k_robustness/` | `make_regional_cluster_composition.py` | `regional_cluster_composition.pdf` |
 | S6 | Specialization metrics, regional diversity | `fig_response_correlations/si/` | `make_specialization_metrics.py` | `specialization_metric_comparison.pdf` |
 | S7 | Cortical–subcortical composition | `fig_si/` | `cortical_subcortical_composition.py` | `cortical_subcortical_composition.pdf` |
