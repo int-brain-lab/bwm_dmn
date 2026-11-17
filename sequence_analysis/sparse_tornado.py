@@ -107,6 +107,32 @@ def main(fig=None, cells=None, letters=None):
         lines.append(f"  rate {bins[b]:.3f}-{bins[b+1]:.3f}: " + " / ".join(
             "  -  " if np.isnan(rep[g][b]) else f"{rep[g][b]:.2f}" for g in ("sequence", "tornado", "other")))
 
+    # Rate-matched comparison (panel d of Fig. S1, simplified 2026-11-16): each tiling group
+    # vs "other" neurons resampled to the group's firing-rate distribution (40 rate-quantile
+    # bins over all neurons); bootstrap over neurons, N_BOOT draws.
+    N_BOOT = 1000
+    fine = np.quantile(fr, np.linspace(0, 1, 41))
+    fb = np.clip(np.digitize(fr, fine[1:-1]), 0, 39)
+    oth = np.flatnonzero((group == "other") & interior)
+    oth_by_bin = [oth[fb[oth] == b] for b in range(40)]
+    rng = np.random.default_rng(0)
+    matched = {}
+    for g in ("sequence", "tornado"):
+        gi = np.flatnonzero((group == g) & interior)
+        cnt = np.bincount(fb[gi], minlength=40)
+        rg, ro = np.empty(N_BOOT), np.empty(N_BOOT)
+        for k in range(N_BOOT):
+            bi = rng.choice(gi, gi.size)
+            oi = np.concatenate([rng.choice(oth_by_bin[b], c) for b, c in enumerate(cnt) if c])
+            rg[k] = spearmanr(peak_sel[bi], peak_eval[bi]).statistic
+            ro[k] = spearmanr(peak_sel[oi], peak_eval[oi]).statistic
+        p_less = (1 + np.sum(rg >= ro)) / (1 + N_BOOT)
+        matched[g] = dict(g=rg, o=ro, n=gi.size, p=p_less)
+        lines.append(f"rate-matched peak-time replication, {g} (n={gi.size:,}, median rate {np.median(fr[gi]):.3f}): "
+                     f"rho {np.median(rg):.2f} [{np.percentile(rg, 2.5):.2f}, {np.percentile(rg, 97.5):.2f}] vs "
+                     f"rate-matched other {np.median(ro):.2f} [{np.percentile(ro, 2.5):.2f}, {np.percentile(ro, 97.5):.2f}]; "
+                     f"bootstrap p(group >= other) = {p_less:.4f}")
+
     rel_seq = np.flatnonzero((group == "sequence") & (rel >= R_MIN) & interior)
     rel_tor = np.flatnonzero((group == "tornado") & (rel >= R_MIN) & interior)
     for g, idx in (("sequence", rel_seq), ("tornado", rel_tor)):
@@ -140,14 +166,24 @@ def main(fig=None, cells=None, letters=None):
         A, B = zr(P[a][rows]), zr(P[b][rows])
         return float(np.mean(np.sum(A * B, 1) / A.shape[1]))
 
-    pop = {}
+    pop, pop_ci = {}, {}
     for g, idx in (("sequence", rel_seq), ("tornado", rel_tor)):
         rows = np.array([prow[u] for u in np.asarray(r["uuids"]).astype(str)[idx] if u in prow])
         ok = np.isfinite(P["stim_fast"][rows]).all(1) & np.isfinite(P["move_fast"][rows]).all(1)
         rows = rows[ok]
         pop[g] = (pattern_corr(rows, "stim_fast", "stim_slow"), pattern_corr(rows, "move_fast", "move_slow"))
+        # 95% bootstrap intervals over neurons (Fig. S1g error bars, 2026-11-17); the statistic is
+        # the mean over neurons of each neuron's fast-slow correlation, so resample neurons
+        cs = np.sum(zr(P["stim_fast"][rows]) * zr(P["stim_slow"][rows]), 1) / P["stim_fast"].shape[1]
+        cm = np.sum(zr(P["move_fast"][rows]) * zr(P["move_slow"][rows]), 1) / P["move_fast"].shape[1]
+        rb = np.random.default_rng(2)
+        bs = np.array([(cs[i].mean(), cm[i].mean()) for i in
+                       (rb.integers(0, rows.size, rows.size) for _ in range(1000))])
+        pop_ci[g] = np.percentile(bs, [2.5, 97.5], axis=0).T            # 2 x 2
+        p_g = (1 + np.sum(bs[:, 0] <= bs[:, 1])) / 1001
         lines.append(f"fast vs slow pattern correlation, reliable {g} (n={rows.size}): stimulus frame "
-                     f"{pop[g][0]:.2f}, movement frame {pop[g][1]:.2f}")
+                     f"{pop[g][0]:.2f} [{pop_ci[g][0,0]:.2f}, {pop_ci[g][0,1]:.2f}], movement frame "
+                     f"{pop[g][1]:.2f} [{pop_ci[g][1,0]:.2f}, {pop_ci[g][1,1]:.2f}]; bootstrap p(stim <= move) = {p_g:.4f}")
     (RES / "sparse_tornado.txt").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
 
@@ -184,12 +220,20 @@ def main(fig=None, cells=None, letters=None):
     ax.legend(loc="upper left", frameon=True, facecolor="white", edgecolor="none", framealpha=0.85, fontsize=4.2, handlelength=1.2, borderpad=0.2); ax.spines[["top", "right"]].set_visible(False)
 
     ax = panel()
-    for g in ("other", "tornado", "sequence"):
-        ax.plot(centers, rep[g], color=COL[g] if g != "other" else "k", lw=1, marker="o", ms=2, label=NAME[g])
-    ax.set_xscale("log"); ax.set_xlabel("mean rate (stack units)")
-    ax.set_ylabel("peak-time ρ (held-out types)")
-    ax.set_title("timing replication at matched rate", fontsize=6)
-    ax.legend(loc="upper left", frameon=True, facecolor="white", edgecolor="none", framealpha=0.85, fontsize=4.2, handlelength=1.2, borderpad=0.2); ax.spines[["top", "right"]].set_visible(False)
+    xs, k = [], 0
+    for g in ("sequence", "tornado"):
+        for kind, col in (("g", COL[g]), ("o", "0.55")):
+            v = matched[g][kind]
+            lo, hi = np.percentile(v, [2.5, 97.5])
+            ax.bar(k, np.median(v), 0.8, color=col, yerr=[[np.median(v) - lo], [hi - np.median(v)]],
+                   error_kw=dict(lw=0.6, capsize=1.5))
+            k += 1
+        k += 0.6
+    ax.set_xticks([0, 1, 2.6, 3.6])
+    ax.set_xticklabels(["sparse\ntiling", "other,\nsame rates", "dense\ntiling", "other,\nsame rates"], fontsize=4.5)
+    ax.set_ylabel("latency replication (Spearman ρ)"); ax.set_yticks([0, 0.4, 0.8])
+    ax.set_title("latency replication at matched firing rate", fontsize=6)
+    ax.spines[["top", "right"]].set_visible(False)
 
     STIM6 = ["block_change_s", "stimLbLcL", "stimLbRcL", "stimRbRcR", "stimRbLcR", "mistake_s"]
     from seq_common import dmn_bwm
@@ -249,6 +293,9 @@ def main(fig=None, cells=None, letters=None):
     for k, g in enumerate(("sequence", "tornado")):
         ax.bar([3 * k, 3 * k + 1], pop[g], color=COL[g], alpha=1)
         ax.bar([3 * k + 1], [pop[g][1]], color="white", edgecolor=COL[g], hatch="////", lw=0.6)
+        c = pop_ci[g]
+        ax.errorbar([3 * k, 3 * k + 1], pop[g], yerr=[np.array(pop[g]) - c[:, 0], c[:, 1] - np.array(pop[g])],
+                    fmt="none", ecolor="k", elinewidth=0.6, capsize=1.5)
     ax.set_xticks([0, 1, 3, 4], ["sparse\nstim", "sparse\nmove", "dense\nstim", "dense\nmove"], fontsize=4.5)
     ax.set_ylabel("fast vs slow RT pattern correlation")
     ax.set_title("aligned to stimulus or movement?", fontsize=6)

@@ -7,7 +7,7 @@ through `fig_response_correlations/compute_synthetic.load(nclus=100)` from the e
 ## Run (iblenv, GPU)
 
 ```bash
-source /home/mic/miniforge3/etc/profile.d/conda.sh && conda activate iblenv
+conda activate bwm_dmn
 cd ~/dmn/fig_response_correlations/si/mixed_selectivity
 python selectivity_test.py            # ~5 min on the RTX 3500 Ada; cached in cache/
 python selectivity_test.py --rerun    # recompute (--n-null N, default 10)

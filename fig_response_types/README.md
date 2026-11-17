@@ -8,8 +8,8 @@ local DMN data, using `~/dmn/dmn_bwm.py` functions.
 
 ```bash
 cd ~/dmn/fig_response_types
-/home/mic/miniforge3/envs/iblenv/bin/python make_response_types.py --rasters  # full rebuild
-/home/mic/miniforge3/envs/iblenv/bin/python make_response_types.py            # reuse raster PNGs
+python make_response_types.py --rasters  # full rebuild
+python make_response_types.py            # reuse raster PNGs
 ```
 
 Outputs: `functional_response_structure.pdf/.svg/.png` and the

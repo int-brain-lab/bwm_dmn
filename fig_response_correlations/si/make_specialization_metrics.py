@@ -10,7 +10,8 @@ basis, row-aligned Beryl labels): standard error of the first-PC coefficient sco
 within Beryl regions (>= 20 neurons) versus within size-matched random groups, with a
 shuffle test on the mean SE (N_PERM region-label permutations).
 
-Panel e (2026-11-04; former Fig. 4k as a reference scale): within-group s.d. (not s.e.,
+Panels d and e merged 2026-11-16; since 2026-11-16 (later) panel d is make_regional_diversity_fullspace.py
+(full feature space, no projection); panel_d() below is the superseded PC1 version, kept for reference.
 which shrinks with group size) of the same score for Beryl regions, size-matched random
 groups and the 100 k-means groups. k-means groups minimise this spread by construction,
 so they are a lower reference, not a test.
@@ -56,50 +57,13 @@ TEX = r"""\documentclass{standalone}
 % old c (x 308-418 pt)
 \node[anchor=north west] (C) at (312bp,0) {\pan{308bp}{0bp}};
 \fill[white] (312bp+6.8bp,-10.3bp) rectangle (312bp+12.0bp,-17.5bp);
-% new d, e
+% new d
 \node[anchor=north west] (D) at (428bp,0) {\includegraphics[height=129bp]{DPATH}};
-\node[anchor=north west] (E) at (596bp,0) {\includegraphics[height=129bp]{EPATH}};
-\foreach \x/\l in {2bp/a, 192bp/b, 314bp/c, 428bp/d, 596bp/e}
+\foreach \x/\l in {2bp/a, 192bp/b, 314bp/c, 428bp/d}
   \node[anchor=north west,font=\bfseries\large] at (\x,-1bp) {\l};
 \end{tikzpicture}
 \end{document}
 """
-
-
-def panel_d():
-    v = compute(100, "rastermap")
-    r = load(nclus=100)
-    beryl, _ = use_private_base().synthetic_row_labels(r)
-    rng = np.random.default_rng(1)
-    obs = v["se_reg"].mean()
-    null = np.array([se_per_group(v["pc_real"], rng.permutation(beryl)).mean() for _ in range(N_PERM)])
-    p = (1 + (null <= obs).sum()) / (1 + N_PERM)  # one-sided: regions less diverse than random
-    emd = normalized_emd(v["se_reg"], v["se_rand"])
-
-    mpl.rcParams.update({"font.family": "sans-serif", "font.sans-serif": ["Arial", "Liberation Sans"],
-                         "font.size": 5.5, "pdf.fonttype": 42, "axes.linewidth": 0.6})
-    fig, ax = plt.subplots(figsize=(58 * MM, 129 / 72 * 25.4 * MM))
-    both = np.concatenate([v["se_reg"], v["se_rand"]])
-    bins = np.linspace(both.min(), both.max(), 30)
-    for x, lab, col in ((v["se_reg"], "Beryl regions", "tab:blue"), (v["se_rand"], "random groups", "red")):
-        ax.hist(x, bins=bins, histtype="step", lw=1, color=col, label=f"{lab} ({len(x)})")
-    ax.set_xlabel("SE of PC1 coefficient score per group")
-    ax.set_ylabel("count")
-    ax.spines[["top", "right"]].set_visible(False)
-    ax.locator_params(nbins=3)
-    ax.legend(frameon=False, loc="upper right", fontsize=5)
-    ax.text(0.97, 0.5, f"EMD = {emd:.3f}\nmean SE vs shuffle:\n$p$ = {p:.3f}", transform=ax.transAxes,
-            ha="right", va="top", fontsize=5)
-    fig.subplots_adjust(left=0.2, right=0.97, top=0.9, bottom=0.2)
-    out = HERE / "specialization_metric_comparison_d.pdf"
-    fig.savefig(out)
-    plt.close(fig)
-    txt = (f"d  regions (>= 20 neurons) {len(v['se_reg'])}; mean SE real {obs:.1f}, shuffle "
-           f"{null.mean():.1f} +- {null.std():.1f}; one-sided p (regions less diverse) = {p:.3f}; "
-           f"EMD real vs one random allocation = {emd:.4f}\n")
-    (HERE / "specialization_metric_comparison_values.txt").write_text(txt)
-    print(txt)
-    return out, v, beryl
 
 
 def sd_per_group(score, labels, exclude=("root", "void")):
@@ -114,38 +78,69 @@ def sd_per_group(score, labels, exclude=("root", "void")):
     return np.asarray(out)
 
 
-def panel_e(v, beryl):
+def functional_labels(beryl, clusters, rng):
+    """Relabel neurons so that groups have exactly the Beryl region sizes but are
+    functionally homogeneous: neurons are ordered by k-means cluster (clusters in random
+    order, neurons in random order within a cluster) and cut into contiguous blocks of
+    the region sizes (regions in random order)."""
+    _, inv = np.unique(clusters, return_inverse=True)
+    key = rng.permutation(inv.max() + 1)[inv]  # random cluster order
+    order = np.lexsort((rng.random(len(clusters)), key))
+    labs, counts = np.unique(beryl, return_counts=True)
+    perm = rng.permutation(len(labs))
+    out = np.empty_like(beryl)
+    out[order] = np.repeat(labs[perm], counts[perm])
+    return out
+
+
+def panel_d():
+    """Single panel replacing former d (SE) and e (s.d.): within-group s.d. of the PC1
+    coefficient score for Beryl regions, random groups and k-means-based functional groups,
+    the latter two with exactly the regions' sizes."""
+    v = compute(100, "rastermap")
     r = load(nclus=100)
-    _, clusters = use_private_base().synthetic_row_labels(r)
+    beryl, clusters = use_private_base().synthetic_row_labels(r)
+    beryl, clusters = np.asarray(beryl), np.asarray(clusters)
     pc = v["pc_real"]
     rng = np.random.default_rng(1)
     reg = sd_per_group(pc, beryl)
-    rand = np.concatenate([sd_per_group(pc, rng.permutation(beryl)) for _ in range(20)])
-    km = sd_per_group(pc, clusters)
-    pos = (reg.mean() - km.mean()) / (rand.mean() - km.mean())
+    rand_all = [sd_per_group(pc, rng.permutation(beryl)) for _ in range(N_PERM)]
+    null = np.array([x.mean() for x in rand_all])
+    rand = np.concatenate(rand_all)
+    p = (1 + (null <= reg.mean()).sum()) / (1 + N_PERM)  # one-sided: regions less diverse
+    N_FUNC = 20
+    func_all = [sd_per_group(pc, functional_labels(beryl, clusters, rng)) for _ in range(N_FUNC)]
+    func = np.concatenate(func_all)
+    fnull = np.array([x.mean() for x in func_all])
+    pos = (reg.mean() - func.mean()) / (rand.mean() - func.mean())
+
+    mpl.rcParams.update({"font.family": "sans-serif", "font.sans-serif": ["Arial", "Liberation Sans"],
+                         "font.size": 5.5, "pdf.fonttype": 42, "axes.linewidth": 0.6})
     fig, ax = plt.subplots(figsize=(58 * MM, 129 / 72 * 25.4 * MM))
-    bins = np.linspace(0, max(reg.max(), rand.max()) * 1.02, 36)
-    for x, lab, col, w in ((km, f"k-means groups ({len(km)})", "green", None),
-                           (reg, f"Beryl regions ({len(reg)})", "tab:blue", None),
-                           (rand, "random groups (20 draws)", "red", 1 / 20)):
-        ax.hist(x, bins=bins, histtype="step", lw=1, color=col, label=lab,
-                weights=None if w is None else np.full(len(x), w))
+    bins = np.linspace(0, max(reg.max(), rand.max(), func.max()) * 1.02, 40)
+    for x, lab, col, w in ((func, "functional groups", "green", 1 / N_FUNC),
+                           (reg, f"Beryl regions ({len(reg)})", "tab:blue", 1),
+                           (rand, "random groups", "red", 1 / N_PERM)):
+        ax.hist(x, bins=bins, histtype="step", lw=1, color=col, label=lab, weights=np.full(len(x), w))
     ax.set_xlabel("s.d. of PC1 coefficient score per group")
-    ax.set_ylabel("count")
+    ax.set_ylabel("groups")
     ax.spines[["top", "right"]].set_visible(False)
     ax.locator_params(nbins=3)
     ax.legend(frameon=False, loc="upper left", fontsize=5)
-    ax.text(0.33, 0.62, f"mean s.d.\nk-means {km.mean():.0f}\nregions {reg.mean():.0f}\n"
-            f"random {rand.mean():.0f}", transform=ax.transAxes, ha="left", va="top", fontsize=5)
+    ax.text(0.98, 0.62, f"mean s.d.\nfunctional {func.mean():.0f}\nregions {reg.mean():.0f}\n"
+            f"random {rand.mean():.0f}\nregions vs random:\n$p$ = {p:.3f}",
+            transform=ax.transAxes, ha="right", va="top", fontsize=5)
     fig.subplots_adjust(left=0.2, right=0.97, top=0.9, bottom=0.2)
-    out = HERE / "specialization_metric_comparison_e.pdf"
+    out = HERE / "specialization_metric_comparison_d.pdf"
     fig.savefig(out)
     plt.close(fig)
-    txt = (f"e  within-group s.d. of the PC1 score: k-means groups {len(km)} mean {km.mean():.1f}; "
-           f"Beryl regions {len(reg)} mean {reg.mean():.1f}; random groups (20 allocations) mean "
-           f"{rand.mean():.1f}; regions at {100 * pos:.0f}% of the way from k-means to random\n")
-    with open(HERE / "specialization_metric_comparison_values.txt", "a") as fh:
-        fh.write(txt)
+    txt = (f"d  within-group s.d. of the PC1 score, all groups with the sizes of the {len(reg)} Beryl "
+           f"regions (>= {MIN_GROUP_N} neurons): regions mean {reg.mean():.1f}; random groups "
+           f"{null.mean():.1f} +- {null.std():.1f} ({N_PERM} allocations; regions "
+           f"{100 * (1 - reg.mean() / null.mean()):.1f}% lower, one-sided p = {p:.4f}); functional "
+           f"groups (k-means-ordered blocks) {fnull.mean():.1f} +- {fnull.std():.1f} ({N_FUNC} "
+           f"allocations); regions at {100 * pos:.0f}% of the way from functional to random\n")
+    (HERE / "specialization_metric_comparison_values.txt").write_text(txt)
     print(txt)
     return out
 
@@ -153,10 +148,11 @@ def panel_e(v, beryl):
 def main():
     if not SRC.exists():
         SRC.write_bytes(OLD.read_bytes())
-    d, v, beryl = panel_d()
-    e = panel_e(v, beryl)
+    import make_regional_diversity_fullspace as fs
+    fs.main()
+    d = HERE / "regional_diversity_fullspace.pdf"
     tex = HERE / "specialization_metric_comparison.tex"
-    tex.write_text(TEX.replace("SRCPATH", str(SRC)).replace("DPATH", str(d)).replace("EPATH", str(e)))
+    tex.write_text(TEX.replace("SRCPATH", str(SRC)).replace("DPATH", str(d)))
     subprocess.run(["tectonic", "-X", "compile", str(tex), "--outdir", str(HERE)], check=True,
                    capture_output=True)
     print(f"Saved {HERE / 'specialization_metric_comparison.pdf'}")

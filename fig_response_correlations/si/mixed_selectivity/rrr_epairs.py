@@ -39,7 +39,20 @@ VARS = ["block", "stimulus side", "contrast", "choice", "outcome", "wheel", "whi
 DELTA = 0.015
 
 
+COMPACT = Path(os.environ.get("DMN_DATA", Path.home() / "dmn")) / "rrr_selectivity_rank5_l275.npz"
+
+
 def load_rrr():
+    """Per-neuron RRR selectivity. Uses the compact export (export_rrr_selectivity.py; part of
+    the intermediate data release) when present, otherwise the full model file."""
+    if COMPACT.exists():
+        with np.load(COMPACT, allow_pickle=False) as z:
+            return dict(abs=z["abs"], signed=z["signed"], sess=z["sess"], acronym=z["acronym"].astype(str),
+                        n_all=int(z["n_all"]), n_sessions=int(z["n_sessions"]))
+    return load_rrr_full()
+
+
+def load_rrr_full():
     ck = torch.load(AUDIT / "RRRGD_rank5_l275_full.pt", map_location="cpu",
                     weights_only=False, mmap=True)["RRRGD_model"]
     state = ck["model"]

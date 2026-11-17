@@ -19,6 +19,8 @@ conda env create -f environment.yml && conda activate bwm_dmn
 export DMN_DATA=~/dmn            # data, stacks and caches (default ~/dmn)
 pipeline/run_all.sh              # download -> stacks -> caches -> check -> figures -> report/main.pdf
 pipeline/run_all.sh --from 5     # only figures + manuscript, from existing stacks
+# without the raw data: install the intermediate data release, then build from step 3
+python pipeline/install_intermediate.py /path/to/release && pipeline/run_all.sh --from 3
 report/build.sh                  # only compile, with the figure PDFs in report/figures
 ```
 
@@ -27,7 +29,8 @@ report/build.sh                  # only compile, with the figure PDFs in report/
   stacks with the canonical Rastermap fit), `03_caches.py` (25-cluster k-means,
   region/cluster counts), `check_stacks.py` (neuron counts etc. against the published build).
 - Inputs the code cannot download (BWM decoding tables, the RRR fit for Fig. S2 and
-  Fig. S4e) are listed in `DATA_REQUIREMENTS.md`.
+  Fig. 4e) are listed in `DATA_REQUIREMENTS.md`; all of them, in compact form, are in the
+  intermediate data release (`pipeline/install_intermediate.py`, ~2.8 GB, checksummed).
 
 ## Layout
 
@@ -39,17 +42,18 @@ main and supplementary figure to its folder, script and manuscript PDF.
 | `fig_task_intro/` | Fig. 1 (task, recordings, feature vectors) |
 | `fig_response_types/` | Fig. 2 (k-means response types) |
 | `fig_anatomy/` | Fig. 3 (response types across regions) |
-| `fig_latency_tiling/` (+ `si/`) | Fig. 4 (stimulus-locked latency tiling), Fig. S1 |
-| `fig_response_correlations/si/` | Fig. S4 (neuron × neuron correlations, tests of random mixing), Fig. S6 |
-| `fig_si/` | Fig. S5 (`k_robustness/`), Fig. S7, analyses feeding Fig. 4 and S1 |
-| `wheel_movement_onset_review/` | Fig. S3 (needs the wheel objects in the ONE cache) |
-| `sequence_analysis/` | latency-tiling analyses used by Fig. 4, S1 and S4 |
+| `fig_response_correlations/si/` | Fig. 4 (correlations between neurons, tests beyond pairwise correlations), Fig. S5 |
+| `fig_latency_tiling/` (+ `si/`) | Fig. 5 (stimulus-locked latency tiling), Fig. S1 |
+| `lorenzo/manuscript_comparison_figure/` | Fig. S2 (comparison with the RRR of Posani et al.) |
+| `wheel_movement_onset_review/` | Fig. S3 (needs the wheel objects in the ONE cache, or the release) |
+| `fig_si/` | Fig. S4 (`k_robustness/`), Fig. S6, analyses feeding Fig. 5 and S1 |
+| `sequence_analysis/` | latency-tiling analyses used by Figs. 4, 5 and S1 |
 | `report/` | the LaTeX manuscript and the figure PDFs it includes |
 | `auxiliary_analyses/` | analyses not used in the manuscript |
 
 Each figure folder rebuilds its figure from the data stacks with `dmn_bwm.py` functions and
 keeps its caches in its own `cache/`; see each folder's README. Figure style defaults:
-`FIGURE_STYLE.md`. Fig. S4 and parts of other figures use PyTorch on a CUDA GPU (validated
+`FIGURE_STYLE.md`. Fig. 4 and parts of other figures use PyTorch on a CUDA GPU (validated
 against NumPy / scikit-learn).
 
 ## Requirements
