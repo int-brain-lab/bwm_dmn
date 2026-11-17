@@ -8,7 +8,7 @@ k-means basis instead of 100. Panels j–k use the row-aligned labels
 
 ```bash
 cd ~/dmn/fig_response_correlations
-/home/mic/miniforge3/envs/iblenv/bin/python si/make_mixed_selectivity_k40.py   # ~2.5 min from scratch
+python si/make_mixed_selectivity_k40.py   # ~2.5 min from scratch
 ```
 
 It computes the 40-cluster synthetic analyses (caches in `fig_response_correlations/cache`), runs

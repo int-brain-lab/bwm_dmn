@@ -122,17 +122,34 @@ def main():
     S = {"sparse tiling": stats(Xo[seq], Xe[seq], seg),
          "dense tiling + noise": stats(Do, De, seg),
          "dense tiling": stats(Xo[tor], Xe[tor], seg)}
+    # 95% bootstrap intervals over neurons (rows resampled with replacement; for the noisy
+    # group with its single noise realisation), added 2026-11-17 for the error bars of Fig. S1c
+    N_BOOT = 1000
+    rb = np.random.default_rng(1)
+    pairs = {"sparse tiling": (Xo[seq], Xe[seq]), "dense tiling + noise": (Do, De),
+             "dense tiling": (Xo[tor], Xe[tor])}
+    CI = {}
+    for k, (A, B_) in pairs.items():
+        vals = np.empty((N_BOOT, 4))
+        for i in range(N_BOOT):
+            ix = rb.integers(0, A.shape[0], A.shape[0])
+            v = stats(A[ix], B_[ix], seg)
+            vals[i] = [v["rel"], v["frac"], v["lag0"], v["rho"]]
+        CI[k] = np.percentile(vals, [2.5, 97.5], axis=0).T          # 4 x 2
     lines = [f"per-neuron noise (median scale {s:.2f} x feature SD) maps the tornado reliability "
              f"distribution onto the sequence cells' (median {target:.2f})",
              "group | median reliability | fraction r>=0.3 | xval lag-0 corr | peak-time rho"]
     for k, v in S.items():
-        lines.append(f"{k:26s} | {v['rel']:.2f} | {v['frac']:.0%} | {v['lag0']:.2f} | {v['rho']:.2f}")
+        c = CI[k]
+        lines.append(f"{k:26s} | {v['rel']:.2f} [{c[0,0]:.2f}, {c[0,1]:.2f}] | {v['frac']:.0%} [{c[1,0]:.0%}, {c[1,1]:.0%}] | "
+                     f"{v['lag0']:.2f} [{c[2,0]:.2f}, {c[2,1]:.2f}] | {v['rho']:.2f} [{c[3,0]:.2f}, {c[3,1]:.2f}]")
     (RES / "degrade_tornado.txt").write_text("\n".join(lines) + "\n")
     cols = np.concatenate([np.arange(seg[t].start, seg[t].stop) for t in STIM])
     np.savez_compressed(RES / "degrade_tornado.npz", noisy_odd=Do[dsort][:, cols],
                         noisy_even=De[dsort][:, cols], stim_types=np.array(STIM),
                         stats_names=np.array(list(S)),
-                        stats=np.array([[v["rel"], v["frac"], v["lag0"], v["rho"]] for v in S.values()]))
+                        stats=np.array([[v["rel"], v["frac"], v["lag0"], v["rho"]] for v in S.values()]),
+                        stats_ci=np.array([CI[k] for k in S]))
     print("\n".join(lines))
 
     matplotlib.rcParams.update({"font.family": "sans-serif", "font.sans-serif": ["Liberation Sans"],

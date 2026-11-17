@@ -10,9 +10,9 @@ base folder, as in `fig_response_types`).
 
 ```bash
 cd ~/dmn/fig_response_correlations
-/home/mic/miniforge3/envs/iblenv/bin/python compute_synthetic.py      # once, ~2 min
-/home/mic/miniforge3/envs/iblenv/bin/python make_structured_mixed_selectivity.py --rasters  # full figure
-/home/mic/miniforge3/envs/iblenv/bin/python check_row_alignment.py     # j-k regression check
+python compute_synthetic.py      # once, ~2 min
+python make_structured_mixed_selectivity.py --rasters  # full figure
+python check_row_alignment.py     # j-k regression check
 ```
 
 Outputs: `structured_mixed_selectivity.pdf/.svg/.png` and
@@ -79,7 +79,7 @@ vary widely).
 ## k-means-sorted version (2026-10-06)
 
 ```bash
-/home/mic/miniforge3/envs/iblenv/bin/python make_structured_mixed_selectivity.py --sort kmeans --rasters
+python make_structured_mixed_selectivity.py --sort kmeans --rasters
 ```
 
 Writes `structured_mixed_selectivity_kmeans_sort.*` and `panel_h_kmeans_*.png`.

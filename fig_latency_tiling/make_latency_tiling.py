@@ -220,8 +220,12 @@ def noise_panels(fig, cells, letters):
     colors = ["#1f77b4", "0.45", "#ff7f0e"]
     metrics = ["median reliability", "fraction r ≥ 0.3", "xval lag-0 corr", "peak-time ρ"]
     S = D["stats"]
+    CI = D["stats_ci"]  # 95% bootstrap intervals over neurons (degrade_tornado.py)
     for j in range(3):
-        ax.bar(np.arange(4) + 0.27 * (j - 1), S[j], width=0.26, color=colors[j], label=names[j])
+        x = np.arange(4) + 0.27 * (j - 1)
+        ax.bar(x, S[j], width=0.26, color=colors[j], label=names[j])
+        ax.errorbar(x, S[j], yerr=[S[j] - CI[j][:, 0], CI[j][:, 1] - S[j]], fmt="none", ecolor="k",
+                    elinewidth=0.5, capsize=1.2)
     ax.set_xticks(range(4), metrics, fontsize=5)
     ax.set_title("noise alone turns dense tiling into sparse-tiling statistics", fontsize=6)
     ax.legend(frameon=False, fontsize=4.8)

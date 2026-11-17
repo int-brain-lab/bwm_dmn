@@ -1,0 +1,18 @@
+{
+  "panel_d": {
+    "regions_with_at_least_5_neurons": 244,
+    "observed_pairs": 732,
+    "pearson_r": 0.11737531204586997,
+    "qap_p": 9.999000099990002e-05,
+    "computation": "cosine of full-DMN regional mean concat_z PETH; symmetric mean raw unmasked ipsilateral Harris LOG-NPV"
+  },
+  "panel_e": {
+    "matched_neurons": 12692,
+    "regions": 165,
+    "pairs": 13530,
+    "pearson_r": 0.568270206451416,
+    "qap_p": 9.999000099990002e-05,
+    "computation": "same UUIDs and Beryl labels; cosine of regional mean concat_z versus fresh full-fit rank-5 signed time-summed beta"
+  },
+  "inference": "two-sided 10000-permutation region-label QAP, seed 42"
+}
