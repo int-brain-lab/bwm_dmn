@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Panel: cross-validated neuron x neuron correlation matrix (results/xcorr.npz),
-Rastermap order of Fig. 4a, b. Left: all 54,569 neurons (means over 27 x 27 neuron
+k-means order of Fig. 4a, b (kmeans_order.py; Rastermap before 2026-11-20). Left: all 54,569 neurons (means over 27 x 27 neuron
 blocks). Right: the dense-tiling neurons at full resolution (exact entries).
 Writes neuron_correlation.pdf/.png (183 mm wide).
 """
@@ -63,7 +63,7 @@ def draw(fig, rect_a, rect_b, rect_ca, rect_cb, la="a", lb="b",
     med, cut = G.cluster_bounds(L)
     dense_rows, sparse_rows = R["dense_rows"], R["sparse_rows"]
     ax = fig.add_axes(rect_a)
-    # exact mean correlation per pair of Rastermap clusters (compute_cluster_means.py);
+    # exact mean correlation per pair of k-means clusters (compute_cluster_means.py);
     # each cell spans its clusters' rows, so axes stay in the neuron index of b
     CM = np.load(HERE / "results" / "xcorr_clusters.npz")
     edges = CM["cut"].astype(float)
@@ -73,16 +73,10 @@ def draw(fig, rect_a, rect_b, rect_ca, rect_cb, la="a", lb="b",
     ticks = list(range(0, 100, 10))
     ax.set_yticks(med[ticks]); ax.set_yticklabels(ticks)
     ax.set_xticks(med[ticks]); ax.set_xticklabels(ticks)
-    ax.set_ylabel("Rastermap cluster")
-    ax.set_xlabel("Rastermap cluster")
+    ax.set_ylabel("k-means cluster")
+    ax.set_xlabel("k-means cluster")
     ax.set_title(title_a, pad=17)
-    for g, rows in (("dense", dense_rows), ("sparse", sparse_rows)):
-        group_bar(ax, rows, COL[g], 1, N * (1.015 if g == "dense" else 1.035), N * 0.015)
-    if not compact:
-      ax.text(N * 1.0225, -N * 0.01, "dense", color=COL["dense"], rotation=90, ha="center",
-            va="bottom", fontsize=4.5)
-      ax.text(N * 1.0425, -N * 0.01, "sparse", color=COL["sparse"], rotation=90, ha="center",
-            va="bottom", fontsize=4.5)
+    # dense/sparse tiling bars removed 2026-11-20: tiling is introduced only in the latency figure
     d0, d1 = dense_rows.min(), dense_rows.max()
     WB = np.load(HERE / "results" / "window.npz")  # pick_window.py
     r0, c0, Wn = int(WB["r0"]), int(WB["c0"]), int(WB["W"])

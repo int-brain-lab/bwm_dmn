@@ -41,5 +41,5 @@ and subcortical shifted along PC1); (2) specialization had no test and does not 
 - `cortical_subcortical_composition.py` -> `cortical_subcortical_composition.pdf/.png`
   (183 x 120 mm, a-d), `results/cortical_subcortical_composition.txt`; reuses
   `cortex_rate_analysis.py` (data, Fisher D).
-- `cortical_subcortical_composition_caption.tex`; in the manuscript as Fig. S10
+- `cortical_subcortical_composition_caption.tex`; in the manuscript as Fig. S6 (panels reordered 2026-11-20: a PCA, b Fisher D, c PERMANOVA, d specialization)
   (label `fig:cortical_subcortical_specialization`), cited for Fig. 3a, d.

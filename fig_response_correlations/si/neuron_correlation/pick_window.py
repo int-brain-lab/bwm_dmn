@@ -2,7 +2,7 @@
 """Window and example neurons for Fig. 4b (2026-11-17, replaces pick_examples.py).
 
 Scans the cross-validated correlation matrix (as compute_xcorr.py: S = (C + C^T)/2,
-C[i, j] = corr(odd_i, even_j), Rastermap order of Fig. 4a) for a W x W block (rows and
+C[i, j] = corr(odd_i, even_j), k-means order of Fig. 4a, kmeans_order.py) for a W x W block (rows and
 columns on a STRIDE grid, on or off the diagonal) that contains both strongly positive
 and strongly negative pairs: score = |TL - TR - BL + BR| / 4 of the 2 x 2 quadrant means (a checkerboard:
 row halves and column halves with opposite correlation), among blocks with at least
@@ -24,6 +24,7 @@ import torch
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from compute_xcorr import unit_rows  # noqa: E402
+import kmeans_order  # noqa: E402
 
 W, STRIDE, T, R_MIN, NEX, MIN_SEP = 500, 250, 0.3, 0.5, 5, 60
 DEV = torch.device("cuda")
@@ -32,7 +33,7 @@ DEV = torch.device("cuda")
 def main():
     f = np.load(Path(os.environ.get("DMN_DATA", Path.home() / "dmn")) / "concat_cvTrue.npy",
                 allow_pickle=True).flat[0]
-    order = np.asarray(f["isort"])
+    order, _ = kmeans_order.get_order(f)
     Zo, _ = unit_rows(np.asarray(f["X_odd"])[order])
     Ze, _ = unit_rows(np.asarray(f["X_even"])[order])
     N = len(order)
@@ -59,6 +60,28 @@ def main():
             best = (float(sc[k]), (int(r0), int(starts[k]), float(fp[k]), float(fn[k]),
                                    float(sd_r[k]), float(sd_c[k])))
     sc, (r0, c0, fp, fn, sdr, sdc) = best
+    if sc <= 0:
+        # k-means order (2026-11-20): neighbouring clusters are similar, so no grid block passes.
+        # Use the row cluster whose mean correlation flips sign most strongly across the
+        # boundary of two adjacent column clusters (results/xcorr_clusters.npz); rows centred
+        # on that cluster, columns centred on the boundary.
+        CM = np.load(HERE / "results" / "xcorr_clusters.npz")
+        M, n, cut = CM["mean"], CM["counts"], CM["cut"].astype(int)
+        cand = []
+        for r in range(len(M)):
+            for q in range(len(M) - 1):
+                a_, b_ = M[r, q], M[r, q + 1]
+                s_ = min(a_, -b_) if a_ > 0 else min(-a_, b_)
+                if n[q] >= W // 2 and n[q + 1] >= W // 2:
+                    cand.append((s_, r, q))
+        s_, rc, q = max(cand)
+        r0 = int(np.clip((cut[rc] + cut[rc + 1]) // 2 - W // 2, 0, N - W))
+        c0 = int(cut[q + 1] - W // 2)
+        Sb = 0.5 * (o[r0:r0 + W] @ e[c0:c0 + W].T + e[r0:r0 + W] @ o[c0:c0 + W].T)
+        fp, fn = float((Sb > T).float().mean()), float((Sb < -T).float().mean())
+        sdc = float(M[rc, q] - M[rc, q + 1])
+        print(f"cluster-guided window: row cluster {rc}, columns across clusters {q}|{q + 1} "
+              f"(mean r {M[rc, q]:+.2f} / {M[rc, q + 1]:+.2f})")
     print(f"best block rows {r0}-{r0 + W - 1}, cols {c0}-{c0 + W - 1}: frac r>{T} {fp:.3f}, r<-{T} {fn:.3f}, "
           f"checkerboard interaction {sdc:+.3f}")
 

@@ -100,14 +100,14 @@ def main():
     for k, (null, obs, lab, txt) in enumerate((
             (D_null, D, "Fisher criterion $D$", f"$D={D:.2f}$\n$p={p_D:.3f}$"),
             (F_null, F, "PERMANOVA pseudo-$F$", f"$F={F:.1f}$, $R^2={R2:.3f}$\n$p={p_F:.3f}$"))):
-        ax = fig.add_subplot(g[0, k])
+        ax = fig.add_subplot([g[0, 1], g[1, 0]][k])  # b Fisher D, c PERMANOVA (PCA is a since 2026-11-20)
         ax.hist(null, bins=40, color="0.8", edgecolor="none")
         ax.axvline(obs, color="k", lw=1)
         ax.text(0.9, 0.6, txt, transform=ax.transAxes, ha="right", va="top", fontsize=5)
         ax.set_xlabel(lab); ax.set_ylabel("shuffles")
         ax.locator_params(nbins=3)
-        MCR.letter(ax, "ab"[k], -0.15)
-    ax = fig.add_subplot(g[1, 0])
+        MCR.letter(ax, "bc"[k], -0.15)
+    ax = fig.add_subplot(g[1, 1])
     bins = np.linspace(0, spec.max() * 1.02, 25)
     for m, c, lab in ((ctx, C_CTX, "cortical"), (~ctx, C_SUB, "subcortical")):
         ax.hist(spec[m], bins=bins, density=True, histtype="step", color=c, lw=1,
@@ -115,8 +115,8 @@ def main():
     ax.text(0.97, 0.6, f"Mann–Whitney\n$p={p_spec:.2f}$", transform=ax.transAxes, ha="right", fontsize=5)
     ax.legend(frameon=False, fontsize=4.8, loc="upper right")
     ax.set_xlabel("specialization $1-H/\\log K$"); ax.set_ylabel("density"); ax.locator_params(nbins=3)
-    MCR.letter(ax, "c", -0.15)
-    ax = fig.add_subplot(g[1, 1])
+    MCR.letter(ax, "d", -0.15)
+    ax = fig.add_subplot(g[0, 0])
     for m, mk, c in ((ctx, "o", C_CTX), (~ctx, "s", C_SUB)):
         ax.scatter(PC[m, 0], PC[m, 1], c=cols[m], marker=mk, s=8, edgecolors="none", zorder=3)
         cov = np.cov(PC[m, 0], PC[m, 1]); vals, vecs = np.linalg.eigh(cov)
@@ -129,7 +129,7 @@ def main():
     ax.locator_params(nbins=3)
     ax.text(0.02, 0.97, "circles cortical, squares subcortical;\ndashed, 1 s.d.", transform=ax.transAxes,
             va="top", fontsize=4.5, color="0.3")
-    MCR.letter(ax, "d", -0.15)
+    MCR.letter(ax, "a", -0.15)
     for ext, kw in (("pdf", {}), ("png", {"dpi": 300})):
         fig.savefig(HERE / f"cortical_subcortical_composition.{ext}", facecolor="white", **kw)
 
