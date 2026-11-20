@@ -24,7 +24,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.ticker import MaxNLocator
-from matplotlib.transforms import blended_transform_factory
+from matplotlib.transforms import ScaledTranslation, blended_transform_factory
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -152,7 +152,9 @@ def panel_b(seg, labels):
     trans = blended_transform_factory(ax.transData, ax.transAxes)
     for name, ev in (("stimulus onset", "stim"), ("movement onset", "move"), ("feedback onset", "fdbk")):
         ax.axvline(anchor[ev], color="0.6", lw=0.4, ls=(0, (2, 1.5)), zorder=0)
-        ax.text(anchor[ev] - 0.006, 1.0, name, transform=trans, ha="right", va="top",
+        # movement-onset label shifted left by one text height so it clears the curves
+        tr = trans + ScaledTranslation(-4.5 / 72, 0, fig.dpi_scale_trans) if ev == "move" else trans
+        ax.text(anchor[ev] - 0.006, 1.0, name, transform=tr, ha="right", va="top",
                 rotation=90, fontsize=4.5, color="0.35")
     ylo = ax.get_ylim()[0]
     # axis break between rest and quiescence, 100 ms scale bar

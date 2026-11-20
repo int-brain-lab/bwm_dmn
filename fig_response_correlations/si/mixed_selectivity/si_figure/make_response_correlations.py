@@ -2,7 +2,7 @@
 """SI figure: neuron x neuron correlations and tests of random mixing.
 
 Panels a, b: cross-validated neuron x neuron correlation matrix of the feature vectors
-(odd vs even trials, Rastermap order), drawn by ../../neuron_correlation/make_panel.py
+(odd vs even trials, order of 100 k-means clusters), drawn by ../../neuron_correlation/make_panel.py
 from its results/xcorr.npz (compute_xcorr.py).
 Panels c-e from the full analysis in the parent folder (selectivity_test.py,
 cache/results.json and cache/arrays.npz; drawing helpers from make_figure.py):
@@ -59,7 +59,7 @@ def main():
     XC.draw(fig, R_(14, top1, s1, s1), R_(xb, tb, sb, sb),
             R_(14 + s1 * 0.2, top1 + s1 + 10, s1 * 0.6, 1.3), R_(xb + sb * 0.15, tb + sb + 9, sb * 0.7, 1.3),
             rect_tr=R_(100, tb, 26, sb), rect_tt=R_(xb, top1 + 2, sb, 24),
-            title_a="average correlation per pair of Rastermap clusters", title_b="", compact=True)
+            title_a="average correlation per pair of k-means clusters", title_b="", compact=True)
 
     top2, h2 = 101, 34  # row 2: c, d, e
     # c

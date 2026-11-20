@@ -2,8 +2,8 @@
 """Cluster x cluster mean of the cross-validated correlation matrix (Fig. 4a, 2026-11-17).
 
 Same matrix as compute_xcorr.py: S[i, j] = (C[i, j] + C[j, i]) / 2 with C[i, j] the Pearson
-correlation of neuron i's odd-trial and neuron j's even-trial feature vector. For Rastermap
-clusters A, B the mean over all pairs i in A, j in B is exact via cluster-mean unit vectors:
+correlation of neuron i's odd-trial and neuron j's even-trial feature vector. For k-means
+clusters A, B (kmeans_order.py; Rastermap clusters before 2026-11-20) the mean over all pairs i in A, j in B is exact via cluster-mean unit vectors:
 mean_AB = (mo_A . me_B + me_A . mo_B) / 2. Within a cluster, self-pairs (i = j, the
 neuron's odd/even reliability) are excluded. Checked against brute force for a few
 cluster pairs. Output: results/xcorr_clusters.npz (mean, counts, cut).
@@ -19,6 +19,7 @@ import torch
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from compute_xcorr import unit_rows  # noqa: E402
+import kmeans_order  # noqa: E402
 
 DEV = torch.device("cuda")
 
@@ -26,8 +27,8 @@ DEV = torch.device("cuda")
 def main():
     f = np.load(Path(os.environ.get("DMN_DATA", Path.home() / "dmn")) / "concat_cvTrue.npy",
                 allow_pickle=True).flat[0]
-    order = np.asarray(f["isort"])
-    L = np.asarray(f["rm_labels"])[order]
+    order, labels = kmeans_order.get_order(f)
+    L = labels[order]
     Zo, _ = unit_rows(np.asarray(f["X_odd"])[order])
     Ze, _ = unit_rows(np.asarray(f["X_even"])[order])
     ref = np.load(HERE / "results" / "xcorr.npz")

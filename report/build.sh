@@ -45,6 +45,7 @@ if [[ "${1:-}" == "--figures" ]]; then
   run fig_anatomy regenerate_from_data.py --pointclouds "${FIG3_POINTCLOUDS:-source}"
   # Fig. 4 (correlations between neurons; tests beyond pairwise correlations)
   run fig_response_correlations compute_synthetic.py
+  run fig_response_correlations/si/neuron_correlation kmeans_order.py             # a, b: 100 k-means clusters (order)
   run fig_response_correlations/si/neuron_correlation compute_xcorr.py            # a, b
   run fig_response_correlations/si/neuron_correlation compute_cluster_means.py    # a
   run fig_response_correlations/si/neuron_correlation pick_window.py              # b

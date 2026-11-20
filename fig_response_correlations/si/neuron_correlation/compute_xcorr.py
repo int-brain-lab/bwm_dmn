@@ -8,7 +8,8 @@ j's even-trial feature vector (1872 bins; ~/dmn/concat_cvTrue.npy: X_odd, X_even
 54,569 neurons). No spikes are shared between the two, so the diagonal is each neuron's
 odd/even reliability, and off-diagonal structure is what replicates across trial halves.
 The matrix is symmetrised, S = (C + C^T) / 2, and ordered by the Rastermap fit on odd
-trials (isort, as in Fig. 4a, b).
+trials. Since 2026-11-20 the order is that of 100 k-means clusters
+(kmeans_order.py; before, the Rastermap fit on odd trials, isort).
 
 Full matrix (3.0e9 entries) is computed blockwise on the GPU and reduced to a
 B x B grid of BIN x BIN neuron blocks: mean (exact, also = Gram of block-mean unit
@@ -30,6 +31,8 @@ HERE = Path(__file__).resolve().parent
 (HERE / "results").mkdir(exist_ok=True)
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "sequence_analysis"))
 import latency_tiling_groups  # noqa: E402
+sys.path.insert(0, str(HERE))
+import kmeans_order  # noqa: E402
 
 DEV = torch.device("cuda")
 BIN = 27  # 54,569 / 27 -> 2,022 blocks
@@ -47,8 +50,7 @@ def unit_rows(X):
 def main():
     t0 = time.time()
     f = np.load(Path(os.environ.get("DMN_DATA", Path.home() / "dmn")) / "concat_cvTrue.npy", allow_pickle=True).flat[0]
-    order = np.asarray(f["isort"])
-    labels = np.asarray(f["rm_labels"])
+    order, labels = kmeans_order.get_order(f)
     Zo, oko = unit_rows(np.asarray(f["X_odd"])[order])
     Ze, oke = unit_rows(np.asarray(f["X_even"])[order])
     L = labels[order]

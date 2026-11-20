@@ -106,13 +106,38 @@ def main():
     for t, n in TRIALS_PER_HALF.items():
         col_scale[seg[t]] = np.sqrt(64.0 / n)
     No *= col_scale; Ne *= col_scale
-    lo, hi = np.zeros(tor.size, np.float32), np.full(tor.size, 50, np.float32)
-    for _ in range(25):
-        s_i = (lo + hi) / 2
+    # Noise scale per neuron (fixed 2026-11-17). Matching each neuron's realised reliability to
+    # its target by bisection fails for the ~40% of targets <= 0 (sparse-tiling reliabilities are
+    # negative only through sampling noise): those neurons hit the noise cap and keep whatever
+    # their single noise draw gives, which selects draws above target (median 0.08 vs 0.02).
+    # Instead, each neuron's EXPECTED reliability over the stimulus window,
+    #   cov(o, e) / sqrt((var o + s^2 c_o)(var e + s^2 c_e)),
+    # is set to its target (bisection in s; targets <= 0 -> noise dominated), one noise draw is
+    # added, and the rank -> target curve is calibrated for N_CAL rounds so that the realised
+    # distribution matches the sparse-tiling one (no selection of individual noise draws).
+    cols_s = np.concatenate([np.arange(seg[t].start, seg[t].stop) for t in STIM])
+    o_ = Xo[tor][:, cols_s] - Xo[tor][:, cols_s].mean(1, keepdims=True)
+    e_ = Xe[tor][:, cols_s] - Xe[tor][:, cols_s].mean(1, keepdims=True)
+    cov, vo, ve = (o_ * e_).mean(1), (o_ * o_).mean(1), (e_ * e_).mean(1)
+    cno, cne = No[:, cols_s].var(1).mean(), Ne[:, cols_s].var(1).mean()
+
+    def scale_for(tgt):
+        lo, hi = np.zeros(tor.size), np.full(tor.size, 1e3)
+        for _ in range(60):
+            sc = (lo + hi) / 2
+            up = cov / np.sqrt((vo + sc ** 2 * cno) * (ve + sc ** 2 * cne)) > tgt
+            lo, hi = np.where(up, sc, lo), np.where(up, hi, sc)
+        return ((lo + hi) / 2).astype(np.float32)
+
+    qs = np.linspace(0, 1, 101)
+    Qs = np.quantile(so_seq, qs)
+    tgt = target_i.copy()
+    N_CAL = 8
+    for _ in range(N_CAL):
+        s_i = scale_for(tgt)
         rel = rel_rows(zrows(Xo[tor] + s_i[:, None] * No), zrows(Xe[tor] + s_i[:, None] * Ne))
-        up = rel > target_i
-        lo, hi = np.where(up, s_i, lo), np.where(up, hi, s_i)
-    s_i = (lo + hi) / 2
+        tgt = tgt - np.interp(ranks, qs, np.quantile(rel, qs) - Qs)
+    s_i = scale_for(tgt)
     s = float(np.median(s_i))
     Do, De = zrows(Xo[tor] + s_i[:, None] * No), zrows(Xe[tor] + s_i[:, None] * Ne)
     model = Rastermap(n_PCs=200, n_clusters=30, locality=0.75, grid_upsample=0,
@@ -136,8 +161,8 @@ def main():
             v = stats(A[ix], B_[ix], seg)
             vals[i] = [v["rel"], v["frac"], v["lag0"], v["rho"]]
         CI[k] = np.percentile(vals, [2.5, 97.5], axis=0).T          # 4 x 2
-    lines = [f"per-neuron noise (median scale {s:.2f} x feature SD) maps the tornado reliability "
-             f"distribution onto the sequence cells' (median {target:.2f})",
+    lines = [f"per-neuron noise (median scale {s:.2f} x feature SD), calibrated so that the noisy tornado reliability "
+             f"distribution matches the sequence cells' (median {target:.2f})",
              "group | median reliability | fraction r>=0.3 | xval lag-0 corr | peak-time rho"]
     for k, v in S.items():
         c = CI[k]
